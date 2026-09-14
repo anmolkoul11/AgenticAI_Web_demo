@@ -1,47 +1,43 @@
 # Progress
 
-## Current checkpoint
+## Completed checkpoint 1
 
-Checkpoint 1: project foundation implemented and verified; awaiting user review.
-No website or agent workflow is implemented yet.
+- User verified package startup and all 7 foundation tests in VS Code.
+- User approved local commit and checkpoint 2.
+- Foundation commit: `7625e46` (no push).
+- Windows setup required uv installation from the explicit WinGet source and
+  refreshing terminal PATH. The user then installed/synchronized Python locally.
 
-## Initial inspection
+## Current checkpoint 2
 
-- Repository: `D:\Projects\AgenticAI_Web_demo`.
-- Existing branch: `main`, tracking `origin/main`.
-- Initial working tree: clean; existing README contains the repository title.
-- Initial commit: `8d4ab44` (`Initial commit`).
-- Git and Docker CLI are available; Docker engine has not been tested.
-- `uv` is not on the task's PATH. The normal `python` command resolves to a
-  Windows Apps alias and did not report a version.
-- A bundled Python 3.12.14 is available for bootstrapping tooling; the project's
-  intended developer runtime remains Python 3.11.
+Implemented a local FastAPI/Jinja2 portal with dedicated login, six seeded hotel
+listings, city/date search, empty/error states, CSRF, session expiry, logout
+revocation, and responsive CSS. Configuration requires explicit secrets.
 
-## Verification
+Automated verification passed. Browser visual review remains a user checkpoint.
+The detailed startup and review instructions are in `PORTAL_GUIDE.md`.
 
-- Working branch: `feat/project-foundation`; no commit or push performed.
-- Installed uv 0.12.13 into temporary tooling outside the repository, not on
-  the user's PATH. Install uv normally for the README's `uv` commands.
-- Downloaded Python 3.11.16. Automatic minor-version link setup reported an
-  error; selecting the downloaded `python.exe` directly succeeded.
-- Created a fresh repository `.venv`, installed the package and development
-  dependencies, and generated `uv.lock`.
-- `uv run --locked pytest`: 7 passed on Python 3.11.16.
-- `uv run --locked ruff check .`: passed.
-- `uv run --locked agentic-demo status`: passed; explicitly reports that the
-  workflow is not implemented yet.
-- Final format, Git exclusions, and whitespace checks are recorded at handoff.
+### Verification evidence
 
-For immediate review without installing uv on PATH, run in the repository:
+- Python 3.11.16: 29 tests passed (7 foundation, 22 portal cases).
+- Ruff lint and formatting checks passed; `git diff --check` passed.
+- Source distribution and wheel built; all three templates and the CSS asset
+  were verified inside the wheel.
+- Started a real loopback Uvicorn process with temporary credentials: health,
+  denied anonymous listing access, login, four New York results, and CSS delivery
+  passed. Stopped the temporary process afterward; no server is left running.
+- Two upstream deprecation warnings remain: Starlette's httpx test-client
+  integration and its AnyIO BlockingPortal alias. Neither failed the tests;
+  revisit test-client compatibility during dependency maintenance.
+- No automated browser/visual test is claimed at this checkpoint. User browser
+  review follows the manual checklist; Playwright comes in checkpoint 3.
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\ruff.exe format --check .
-.\.venv\Scripts\agentic-demo.exe status
-```
+## Boundaries
 
-## Next step after user review
+No external websites accessed, no scraping/storage/rules/events/agent workflow
+implemented, no model provider chosen. Checkpoint 2 is not committed or pushed.
 
-Approve checkpoint 1 and a commit, then begin checkpoint 2: demo website.
-Do not implement agents, scrape external sites, or choose a paid model yet.
+## Next step
+
+Complete automated checks, have the user review the website in their browser,
+then request approval to commit checkpoint 2 and begin checkpoint 3.

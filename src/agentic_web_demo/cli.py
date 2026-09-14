@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "project": "AgenticAI_Web_demo",
-                    "checkpoint": "1-foundation",
+                    "checkpoint": "2-demo-portal",
                     "data_dir": str(settings.data_dir),
                     "log_level": settings.log_level,
                     "workflow_implemented": False,

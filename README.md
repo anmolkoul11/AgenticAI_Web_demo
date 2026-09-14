@@ -4,8 +4,9 @@ A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.
 
-**Current scope: checkpoint 1, project foundation.** No website, scraping workflow,
-message bus integration, or agent is implemented yet. This is a demo starter kit,
+**Current scope: checkpoint 2, login-protected demo portal.** The website is
+implemented; scraping, storage, rules, messaging, and agents are not yet implemented.
+This is a demo starter kit,
 not a production-certified platform.
 
 ## Development setup (PowerShell)
@@ -13,7 +14,7 @@ not a production-certified platform.
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if needed:
 
 ```powershell
-winget install --id=astral-sh.uv -e
+winget install --id astral-sh.uv --exact --source winget
 ```
 
 Reopen your terminal after installing, then from the repository directory:
@@ -36,9 +37,18 @@ See [uv's project guide](https://docs.astral.sh/uv/guides/projects/).
 The status command only checks package startup and configuration. It does not
 check Docker, NATS, browser access, or model connectivity.
 
+## Run the demo website
+
+Follow [the portal startup and review guide](docs/PORTAL_GUIDE.md) to configure
+your demo account and start the login-protected website at `http://127.0.0.1:8000`.
+It includes Windows setup troubleshooting from checkpoint 1.
+
+The status command now reports `2-demo-portal`. `workflow_implemented` remains
+false until the complete agent workflow has been built and verified.
+
 ## Configuration
 
-Checkpoint 1 reads process environment variables. `.env.example` documents the
+The application reads process environment variables. `.env.example` documents the
 non-secret defaults; merely copying it to `.env` does **not** load it yet.
 
 ```powershell
