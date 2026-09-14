@@ -1,0 +1,39 @@
+# Python and development tooling
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Secrets: keep only the sanitized example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local records, authenticated browser state, screenshots and logs
+/data/
+/artifacts/
+/playwright/.auth/
+/test-results/
+/playwright-report/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# Editor and OS-local settings
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# uv.lock is intentionally tracked for reproducible dependency resolution.
