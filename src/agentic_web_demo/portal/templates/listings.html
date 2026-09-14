@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Explore listings{% endblock %}
+{% block content %}
+<div class="heading-row">
+  <div><p class="eyebrow">YOUR AUTOMATION PLAYGROUND</p><h1>Find your next demo stay.</h1></div>
+  <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="secondary">Sign out</button></form>
+</div>
+<p class="muted">Seeded nightly rates in USD, including demo taxes and fees. Ratings use a 5-point scale.</p>
+<form class="search" action="/listings" method="get">
+  <div><label for="city">City</label><input id="city" name="city" value="{{ city }}" placeholder="New York or Boston" maxlength="100"></div>
+  <div><label for="check_in">Check-in</label><input id="check_in" name="check_in" type="date" value="{{ check_in }}" required></div>
+  <div><label for="check_out">Check-out</label><input id="check_out" name="check_out" type="date" value="{{ check_out }}" required></div>
+  <button type="submit">Search stays</button>
+</form>
+<p class="muted small">Dates describe the requested stay. This demo has fixed prices and no live availability engine.</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% else %}
+<p class="results" data-testid="result-count">{{ listings|length }} listings · {{ check_in }} to {{ check_out }}</p>
+<div class="grid">
+{% for listing in listings %}
+<article class="card" id="{{ listing.id }}" data-testid="listing" data-listing-id="{{ listing.id }}">
+  <p class="eyebrow" data-field="city">{{ listing.city }}</p>
+  <h2><a data-field="url" href="{{ request.url }}#{{ listing.id }}"><span data-field="title">{{ listing.title }}</span></a></h2>
+  <p class="rating"><span data-field="rating">{{ listing.rating }}</span> / <span data-field="rating_scale">5</span> rating</p>
+  <p class="price"><span data-field="currency">USD</span> <strong data-field="price">{{ listing.price }}</strong> <span class="muted">/ night</span></p>
+  <p class="small muted" data-field="price_basis">Per night, taxes and fees included</p>
+  <p class="small muted">Listing <span data-field="id">{{ listing.id }}</span></p>
+</article>
+{% else %}<section class="empty" data-testid="empty-state"><h2>No listings found</h2><p>Try New York or Boston, or leave the city blank to see all listings.</p></section>{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

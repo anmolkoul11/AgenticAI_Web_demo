@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="login-panel">
+  <p class="eyebrow">CHECKPOINT 02 / DEMO PORTAL</p>
+  <h1>A small stay.<br>A complete workflow.</h1>
+  <p class="muted">Sign in with your dedicated demo account to explore the listings our agents will use.</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form action="/login" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" maxlength="128" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="muted small">Use the credentials configured in your server terminal. Do not use a personal account.</p>
+</section>
+{% endblock %}
