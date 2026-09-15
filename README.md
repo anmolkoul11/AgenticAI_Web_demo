@@ -4,8 +4,9 @@ A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.
 
-**Current scope: checkpoint 2, login-protected demo portal.** The website is
-implemented; scraping, storage, rules, messaging, and agents are not yet implemented.
+**Current scope: checkpoint 4, rules and event delivery.** The website, browser
+extraction, validation, SQLite/JSON, deterministic rules and NATS JetStream
+publisher/consumer are implemented. AI agent orchestration is not implemented yet.
 This is a demo starter kit,
 not a production-certified platform.
 
@@ -43,7 +44,14 @@ Follow [the portal startup and review guide](docs/PORTAL_GUIDE.md) to configure
 your demo account and start the login-protected website at `http://127.0.0.1:8000`.
 It includes Windows setup troubleshooting from checkpoint 1.
 
-The status command now reports `2-demo-portal`. `workflow_implemented` remains
+Follow [the extraction guide](docs/EXTRACTION_GUIDE.md) to install Chromium and run
+the browser-to-SQLite/JSON workflow. Browser tests are opt-in: `uv run --locked pytest --run-browser`.
+
+Follow [the rules and events guide](docs/EVENTS_GUIDE.md) to start NATS, process an
+existing extraction run, and verify consumer receipt. `config/rules.yaml` is
+non-secret business configuration. Pending events and receipts stay under ignored `data/`.
+
+The status command now reports `4-rules-events`. `workflow_implemented` remains
 false until the complete agent workflow has been built and verified.
 
 ## Configuration

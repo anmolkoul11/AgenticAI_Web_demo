@@ -38,7 +38,7 @@ def test_status_is_explicit_about_unimplemented_workflow(monkeypatch, capsys):
     monkeypatch.setenv("AGENTIC_DEMO_LOG_LEVEL", "INFO")
     assert main(["status"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["checkpoint"] == "2-demo-portal"
+    assert result["checkpoint"] == "4-rules-events"
     assert result["workflow_implemented"] is False
 
 

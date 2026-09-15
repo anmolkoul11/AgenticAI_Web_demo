@@ -1,0 +1,9 @@
+# Inclusive boundaries: price <= 200 USD/night and rating >= 4 out of 5.
+# Non-secret configuration is intentionally tracked in Git.
+rule_id: affordable-quality-stay
+version: 1
+max_price: "200"
+min_rating: "4"
+currency: USD
+rating_scale: 5
+price_basis: per_night_taxes_included

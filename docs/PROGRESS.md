@@ -1,43 +1,43 @@
 # Progress
 
-## Completed checkpoint 1
+## Completed implementation
 
-- User verified package startup and all 7 foundation tests in VS Code.
-- User approved local commit and checkpoint 2.
-- Foundation commit: `7625e46` (no push).
-- Windows setup required uv installation from the explicit WinGet source and
-  refreshing terminal PATH. The user then installed/synchronized Python locally.
+- Checkpoints 1 and 2: foundation and portal, reviewed by the user and merged.
+- Checkpoint 3: browser extraction, validation, SQLite/JSON; 59 tests passed
+  including real Chromium. User reports the workflow works.
+- User owns all commits and pushes.
 
-## Current checkpoint 2
+## Current checkpoint 4
 
-Implemented a local FastAPI/Jinja2 portal with dedicated login, six seeded hotel
-listings, city/date search, empty/error states, CSRF, session expiry, logout
-revocation, and responsive CSS. Configuration requires explicit secrets.
+Working on `browser_extraction_storage`. Checkpoint 3 remains uncommitted in the
+working tree; those changes were preserved rather than reset or stashed.
 
-Automated verification passed. Browser visual review remains a user checkpoint.
-The detailed startup and review instructions are in `PORTAL_GUIDE.md`.
+Added typed YAML rules, persisted decisions, deterministic event IDs, local
+SQLite outbox, JetStream publisher, durable pull consumer and local receipts.
+Compose provides a loopback-only NATS service. No dashboard or LLM calls yet.
 
-### Verification evidence
+Verification on Python 3.11.16:
 
-- Python 3.11.16: 29 tests passed (7 foundation, 22 portal cases).
-- Ruff lint and formatting checks passed; `git diff --check` passed.
-- Source distribution and wheel built; all three templates and the CSS asset
-  were verified inside the wheel.
-- Started a real loopback Uvicorn process with temporary credentials: health,
-  denied anonymous listing access, login, four New York results, and CSS delivery
-  passed. Stopped the temporary process afterward; no server is left running.
-- Two upstream deprecation warnings remain: Starlette's httpx test-client
-  integration and its AnyIO BlockingPortal alias. Neither failed the tests;
-  revisit test-client compatibility during dependency maintenance.
-- No automated browser/visual test is claimed at this checkpoint. User browser
-  review follows the manual checklist; Playwright comes in checkpoint 3.
+- `pytest --run-browser --run-nats`: 79 passed, no skips; two existing upstream
+  test-client deprecation warnings remain (httpx and AnyIO BlockingPortal).
+- Full pipeline test: actual Chromium login/extraction -> 4 NYC records -> 2
+  rule matches -> 2 JetStream publish acknowledgments -> 2 persisted receipts.
+- Verified repeat evaluation/publish, explicit threshold boundary, empty/no-match
+  runs, refused broker connection retaining pending events, consumer duplicate
+  handling, invalid payload rejection, and rule-file validation.
+- Initial outage testing revealed zero retry count meant unlimited retries in
+  the client. Replaced it with a bounded retry count; outage test now terminates.
+- Ruff lint/format and Git whitespace checks passed; sdist and wheel built.
+- Docker Compose service is healthy on loopback ports 4222 and 8222. It remains
+  running for user review; `docker compose stop nats` stops it without deleting data.
+- Integration tests used unique TEST streams and removed those streams afterward.
+  User extraction records and exports were not changed or published by these tests.
 
-## Boundaries
+See EVENTS_GUIDE.md for the developer walkthrough.
+No commits or pushes made by the assistant.
 
-No external websites accessed, no scraping/storage/rules/events/agent workflow
-implemented, no model provider chosen. Checkpoint 2 is not committed or pushed.
+## Next
 
-## Next step
-
-Complete automated checks, have the user review the website in their browser,
-then request approval to commit checkpoint 2 and begin checkpoint 3.
+Finish automated and live-broker verification, then user review of checkpoint 4.
+Next implementation is LangGraph (checkpoint 5), including a model-provider
+choice and the separately discussed minimal demo dashboard scope.
