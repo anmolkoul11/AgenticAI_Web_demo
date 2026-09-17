@@ -37,6 +37,7 @@ def run_saved_command(args, data_dir):
 
 
 def _run(args, data_dir):
+    framework = args.command
     if args.adapter != "demo-hotels" or args.scenario or args.list_scenarios or args.plan_only:
         raise ValueError("Unsupported adapter or legacy flags.")
     fields = [args.city, args.check_in, args.check_out, args.max_price, args.min_rating]
@@ -51,6 +52,8 @@ def _run(args, data_dir):
         ):
             raise ValueError("Execution accepts a saved plan, not new planning inputs.")
         proposal = load_proposal(data_dir, args.plan_id)
+        if proposal.framework != framework:
+            raise ValueError("Use the framework recorded in the proposal")
         if args.action == "review":
             if args.approve or args.base_url or args.headed or args.policy:
                 raise ValueError("Review does not change execution settings.")
@@ -83,7 +86,8 @@ def _run(args, data_dir):
             args.approve,
             load_rules(args.policy or Path("config/rules.yaml")),
             tools,
-            progress=lambda stage: print(f"[langgraph] {stage}", file=sys.stderr),
+            progress=lambda stage: print(f"[{framework}] {stage}", file=sys.stderr),
+            framework=framework,
         )
         print(json.dumps(result, indent=2))
         return 0 if result["status"] == "completed" else 1
@@ -97,6 +101,8 @@ def _run(args, data_dir):
         if args.mode not in {None, "live"}:
             raise ValueError("Model-assisted planning cannot be simulated.")
         provider = os.environ.get("AGENTIC_MODEL_PROVIDER", "openai")
+        if framework == "crewai" and provider != "ollama":
+            raise ValueError("CrewAI initially supports the explicit local Ollama provider only")
         if provider == "ollama":
             from agentic_web_demo.agents.ollama_planner import (
                 OllamaPlanner,
@@ -113,7 +119,13 @@ def _run(args, data_dir):
             planner = OpenAIPlanner(ModelSettings.from_env())
         else:
             raise ValueError("Unknown provider or missing hosted API permission.")
-        from agentic_web_demo.agents.langgraph_workflow import run_workflow
+        from agentic_web_demo.agents.runners import get_runner
+
+        if framework == "crewai":
+            from agentic_web_demo.agents.crewai_planner import CrewAIPlanner
+
+            planner = CrewAIPlanner(planner)
+        run_workflow = get_runner(framework)
 
         # plan_only guarantees no browser/storage/event tools are called.
         result = run_workflow(args.request, planner, None, policy=policy, plan_only=True)
@@ -147,6 +159,7 @@ def _run(args, data_dir):
         source=source,
         request=args.request,
         model=metadata,
+        framework=framework,
     )
     print(
         json.dumps(

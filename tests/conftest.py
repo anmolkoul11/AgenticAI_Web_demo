@@ -5,6 +5,12 @@ import pytest
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--model-framework",
+        choices=["langgraph", "crewai"],
+        default="langgraph",
+        help="Framework used for opt-in live semantic evaluations",
+    )
+    parser.addoption(
         "--run-model",
         action="store_true",
         default=False,
@@ -33,11 +39,18 @@ def live_planner(request):
         from agentic_web_demo.agents.ollama_planner import OllamaPlanner, OllamaSettings
 
         try:
-            return OllamaPlanner(OllamaSettings.from_env())
+            planner = OllamaPlanner(OllamaSettings.from_env())
+            if request.config.getoption("--model-framework") == "crewai":
+                from agentic_web_demo.agents.crewai_planner import CrewAIPlanner
+
+                return CrewAIPlanner(planner)
+            return planner
         except ValueError:
             pytest.fail("Configure local Ollama settings as documented in OLLAMA_GUIDE.md")
     if provider != "openai":
         pytest.fail("Unsupported model provider; no fallback is used")
+    if request.config.getoption("--model-framework") == "crewai":
+        pytest.fail("CrewAI evaluation currently requires AGENTIC_MODEL_PROVIDER=ollama")
     if os.environ.get("AGENTIC_ALLOW_MODEL_API") != "1":
         pytest.fail("Set AGENTIC_ALLOW_MODEL_API=1 only after approval for paid synthetic tests")
     from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
@@ -47,3 +60,10 @@ def live_planner(request):
     except ValueError:
         pytest.fail("Configure approved model access locally; never paste a key into test output")
     return OpenAIPlanner(settings)
+
+
+@pytest.fixture
+def model_workflow(request):
+    from agentic_web_demo.agents.runners import get_runner
+
+    return get_runner(request.config.getoption("--model-framework"))

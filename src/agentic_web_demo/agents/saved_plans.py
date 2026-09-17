@@ -20,7 +20,8 @@ from agentic_web_demo.rules import Rules
 
 class Proposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 1
+    framework: Literal["langgraph", "crewai"] = "langgraph"
     plan_id: UUID
     adapter: Literal["demo-hotels"] = "demo-hotels"
     use_case: Literal["hotel-search-v1"] = "hotel-search-v1"
@@ -35,7 +36,12 @@ class Proposal(BaseModel):
 
 
 def revision(proposal: Proposal) -> str:
-    raw = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    payload = proposal.model_dump(mode="json")
+    if proposal.version == 1:
+        if proposal.framework != "langgraph":
+            raise ValueError("Version 1 supports LangGraph only")
+        payload.pop("framework")  # Preserve existing v1 review hashes.
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -43,12 +49,16 @@ def plan_path(data_dir: Path, plan_id: str) -> Path:
     return data_dir / "plans" / (str(UUID(str(plan_id))) + ".json")
 
 
-def save_proposal(data_dir, plan, policy, base_url, *, source, request=None, model=None):
+def save_proposal(
+    data_dir, plan, policy, base_url, *, source, request=None, model=None, framework="langgraph"
+):
     checked = validate_candidate(plan, date.today(), policy)
     if checked["status"] != "running":
         raise ValueError("Only complete policy-compliant plans can be proposed.")
     now = datetime.now(UTC)
     proposal = Proposal(
+        version=2,
+        framework=framework,
         plan_id=uuid4(),
         source=source,
         request=request,
@@ -84,10 +94,15 @@ class NoModel:
         raise AssertionError("Approved execution must never call a planner.")
 
 
-def execute_proposal(data_dir, plan_id, approval, policy, tools, *, progress=None):
-    from agentic_web_demo.agents.langgraph_workflow import run_workflow
+def execute_proposal(
+    data_dir, plan_id, approval, policy, tools, *, progress=None, framework="langgraph"
+):
+    from agentic_web_demo.agents.runners import get_runner
 
     proposal = load_proposal(data_dir, plan_id)
+    if proposal.framework != framework or (proposal.version == 1 and framework != "langgraph"):
+        raise ValueError("Framework differs from reviewed proposal")
+    run_workflow = get_runner(framework)
     if approval != revision(proposal):
         raise ValueError("Approval must match the reviewed revision.")
     if proposal.expires_at <= datetime.now(UTC):

@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import pytest
 
-from agentic_web_demo.agents.langgraph_workflow import run_workflow
 from agentic_web_demo.rules import Rules
 
 
@@ -31,7 +30,7 @@ class NoTools:
         ("strict-boundary", "needs_input"),
     ],
 )
-def test_real_model_interpretation(live_planner, case, expected, record_property):
+def test_real_model_interpretation(live_planner, case, expected, record_property, model_workflow):
     today = date.today()
     check_in = (today + timedelta(days=7)).isoformat()
     check_out = (today + timedelta(days=9)).isoformat()
@@ -59,7 +58,7 @@ def test_real_model_interpretation(live_planner, case, expected, record_property
         prompt = prompt.replace("in New York", "in all cities")
     elif case == "strict-boundary":
         prompt = prompt.replace("at most", "strictly under")
-    result = run_workflow(
+    result = model_workflow(
         prompt, live_planner, NoTools(), policy=Rules(), plan_only=True, today=today
     )
     record_property("model", live_planner.settings.model)
@@ -240,7 +239,9 @@ VARIANTS = [
 @pytest.mark.parametrize(
     "case,template,expected,detail", VARIANTS, ids=[item[0] for item in VARIANTS]
 )
-def test_real_model_wording_variants(live_planner, case, template, expected, detail):
+def test_real_model_wording_variants(
+    live_planner, case, template, expected, detail, model_workflow
+):
     today = date.today()
     check_in = (today + timedelta(days=7)).isoformat()
     check_out = (today + timedelta(days=9)).isoformat()
@@ -250,7 +251,7 @@ def test_real_model_wording_variants(live_planner, case, template, expected, det
         check_out=check_out,
         criteria="at most USD 200 per night including taxes and rating at least 4 out of 5",
     )
-    result = run_workflow(
+    result = model_workflow(
         prompt, live_planner, NoTools(), policy=Rules(), plan_only=True, today=today
     )
     # Only synthetic inputs and sanitized workflow fields are included in failures.
