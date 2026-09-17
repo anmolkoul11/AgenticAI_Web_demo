@@ -8,8 +8,8 @@ from pathlib import Path
 from agentic_web_demo.agents.planning import SCENARIOS, SimulatedPlanner
 
 
-def add_command(commands):
-    command = commands.add_parser("langgraph", help="Run the bounded LangGraph hotel workflow")
+def add_command(commands, name="langgraph"):
+    command = commands.add_parser(name, help=f"Run the bounded {name} hotel workflow")
     command.add_argument("action", nargs="?", choices=["plan", "review", "execute"])
     command.add_argument("--mode", choices=["simulated", "live"])
     command.add_argument("--city")
@@ -45,6 +45,9 @@ def run_command(args, data_dir: Path) -> int:
         from agentic_web_demo.agents.plan_commands import run_saved_command
 
         return run_saved_command(args, data_dir)
+    if args.command == "crewai":
+        print("CrewAI requires plan, review or execute; no unreviewed direct run.", file=sys.stderr)
+        return 2
     if args.mode is None:
         print("Choose plan/review/execute or an explicit legacy --mode.", file=sys.stderr)
         raise SystemExit(2)

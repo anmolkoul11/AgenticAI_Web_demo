@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     add_commands(commands)
     add_agent_command(commands)
+    add_agent_command(commands, "crewai")
     commands.add_parser("status", help="Show implemented checkpoint, not service health")
     extract = commands.add_parser("extract", help="Log in, extract, validate, save and export")
     extract.add_argument("--city", default="")
@@ -43,7 +44,9 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "project": "AgenticAI_Web_demo",
-                    "checkpoint": "5c-reviewed-langgraph-acceptance-pending",
+                    "checkpoint": "6-crewai-review-pending",
+                    "frameworks_implemented": ["langgraph", "crewai"],
+                    "crewai_language_evaluation_baseline": {"passed": 21, "failed": 17},
                     "reviewed_plan_execution_implemented": True,
                     "language_evaluation_baseline": {"passed": 20, "failed": 18},
                     "model_used": False,
@@ -58,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command in COMMANDS:
         return run_command(args, settings.data_dir)
-    if args.command == "langgraph":
+    if args.command in {"langgraph", "crewai"}:
         return run_agent_command(args, settings.data_dir)
     try:
         if args.command == "export":

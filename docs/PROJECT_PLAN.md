@@ -1,5 +1,15 @@
 # Project plan
 
+## Current checkpoint: CrewAI developer review
+
+CrewAI plan/review/execute is implemented with its own Flow and local planning
+Agent/Task/Crew. See CREWAI_GUIDE.md. It shares adapters/contracts/services, not
+LangGraph orchestration. Both LangGraph reviewed paths were manually verified;
+CrewAI actual-repository checks and manual approval-path acceptance are pending.
+Language baselines remain explicit: LangGraph 20/38 and CrewAI 21/38; neither
+is accepted for unrestricted natural-language execution. Checkpoint 7 follows
+review/merge and covers clean-checkout reproducibility and developer handoff.
+
 ## Current bounded handoff scope
 
 The reference use case is local hotel extraction, not an arbitrary-site scraper.

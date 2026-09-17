@@ -47,6 +47,23 @@ class OllamaPlanner:
         self.metadata = {}
 
     def plan(self, request: str, today: date) -> dict:
+        return self._plan(request, today)
+
+    def plan_messages(self, messages: list[dict], today: date) -> dict:
+        """Bounded CrewAI conversation through the same local-only transport."""
+        if (
+            not messages
+            or len(json.dumps(messages)) > 16000
+            or any(
+                item.get("role") not in {"system", "user", "assistant"}
+                or not isinstance(item.get("content"), str)
+                for item in messages
+            )
+        ):
+            raise PlanningError("request_invalid")
+        return self._plan("CrewAI hotel planning task", today, messages=messages)
+
+    def _plan(self, request: str, today: date, *, messages=None) -> dict:
         self.metadata = {
             "provider": self.provider,
             "model": self.settings.model,
@@ -78,6 +95,9 @@ class OllamaPlanner:
             "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 1200},
         }
         client = self.client
+        if messages is not None:
+            payload["messages"] = [payload["messages"][0], *messages]
+            payload["options"]["num_ctx"] = 8192
         owned = client is None
         try:
             if owned:

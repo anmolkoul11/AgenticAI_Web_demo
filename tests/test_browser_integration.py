@@ -172,7 +172,8 @@ def test_browser_through_rules_to_consumer(portal, request, tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize(
-    "planner_kind", ["simulated", "mocked-openai", "mocked-ollama", "saved-plan"]
+    "planner_kind",
+    ["simulated", "mocked-openai", "mocked-ollama", "saved-plan", "crewai-saved", "crewai-mocked"],
 )
 def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypatch, planner_kind):
     if not request.config.getoption("--run-nats"):
@@ -195,7 +196,7 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
     tools = DemoTools(data_dir=tmp_path, broker=broker, base_url=origin)
 
     def run_scenario(name):
-        if planner_kind == "saved-plan":
+        if planner_kind in {"saved-plan", "crewai-saved"}:
             from agentic_web_demo.agents.saved_plans import (
                 execute_proposal,
                 revision,
@@ -209,9 +210,15 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
                 Rules(),
                 origin,
                 source="structured",
+                framework="crewai" if planner_kind == "crewai-saved" else "langgraph",
             )
             return execute_proposal(
-                tmp_path, str(proposal.plan_id), revision(proposal), Rules(), tools
+                tmp_path,
+                str(proposal.plan_id),
+                revision(proposal),
+                Rules(),
+                tools,
+                framework=proposal.framework,
             )
         if planner_kind == "simulated":
             return run_workflow(SCENARIOS[name], SimulatedPlanner(), tools)
@@ -221,7 +228,7 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
         from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
 
         candidate = decision(**SimulatedPlanner().plan(SCENARIOS[name], date.today()))
-        if planner_kind == "mocked-ollama":
+        if planner_kind in {"mocked-ollama", "crewai-mocked"}:
             from test_ollama_planner import body
 
             from agentic_web_demo.agents.ollama_planner import OllamaPlanner, OllamaSettings
@@ -231,6 +238,15 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
                     lambda request: httpx.Response(200, json=body(candidate))
                 )
             ) as client:
+                if planner_kind == "crewai-mocked":
+                    from agentic_web_demo.agents.crewai_planner import CrewAIPlanner
+                    from agentic_web_demo.agents.crewai_workflow import run_workflow as crew_run
+
+                    return crew_run(
+                        SCENARIOS[name],
+                        CrewAIPlanner(OllamaPlanner(OllamaSettings(), client=client)),
+                        tools,
+                    )
                 return run_workflow(
                     SCENARIOS[name], OllamaPlanner(OllamaSettings(), client=client), tools
                 )
@@ -261,7 +277,9 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
         assert result["record_count"] == 4
         assert result["evaluation"]["matched"] == 2
         assert result["receipts_verified"] == 2
-        assert result["model_used"] is (planner_kind in {"mocked-openai", "mocked-ollama"})
+        assert result["model_used"] is (
+            planner_kind in {"mocked-openai", "mocked-ollama", "crewai-mocked"}
+        )
         assert credentials.password not in json.dumps(result)
         result = run_scenario("no-matches")
         assert result["status"] == "completed"
@@ -273,7 +291,7 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
 
 
 def test_langgraph_live_model_real_tools(
-    live_planner, portal, request, tmp_path, monkeypatch, record_property
+    live_planner, portal, request, tmp_path, monkeypatch, record_property, model_workflow
 ):
     """Live local/hosted acceptance; OpenAI additionally requires API-use permission."""
     if not request.config.getoption("--run-nats"):
@@ -281,7 +299,6 @@ def test_langgraph_live_model_real_tools(
     import asyncio
     from uuid import uuid4
 
-    from agentic_web_demo.agents.langgraph_workflow import run_workflow
     from agentic_web_demo.agents.tools import DemoTools
     from agentic_web_demo.messaging import Broker, connect
     from agentic_web_demo.rules import Rules
@@ -314,7 +331,7 @@ def test_langgraph_live_model_real_tools(
             await nc.close()
 
     try:
-        result = run_workflow(prompt, live_planner, tools, policy=Rules())
+        result = model_workflow(prompt, live_planner, tools, policy=Rules())
         record_property("model", live_planner.settings.model)
         record_property("run_id", result.get("run_id", ""))
         record_property("receipts_verified", result.get("receipts_verified", 0))

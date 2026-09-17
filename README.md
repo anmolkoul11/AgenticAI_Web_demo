@@ -1,5 +1,12 @@
 # AgenticAI_Web_demo
 
+**CrewAI checkpoint ready for repository review:** see
+[CREWAI_GUIDE.md](docs/CREWAI_GUIDE.md) for structured/model-assisted planning and
+approved execution using an independent CrewAI Flow. User-run staging tests:
+222 passed / 39 skipped; CrewAI live interpretation: 21 passed / 17 failed.
+Actual-repository checks and manual CrewAI acceptance remain pending. The
+LangGraph implementation and its known language limitations are preserved.
+
 A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.

@@ -38,7 +38,9 @@ def test_status_is_explicit_about_pending_live_verification(monkeypatch, capsys)
     monkeypatch.setenv("AGENTIC_DEMO_LOG_LEVEL", "INFO")
     assert main(["status"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["checkpoint"] == "5c-reviewed-langgraph-acceptance-pending"
+    assert result["checkpoint"] == "6-crewai-review-pending"
+    assert result["frameworks_implemented"] == ["langgraph", "crewai"]
+    assert result["crewai_language_evaluation_baseline"] == {"passed": 21, "failed": 17}
     assert result["reviewed_plan_execution_implemented"] is True
     assert result["workflow_implemented"] is True
     assert result["live_model_verified"] is False
