@@ -169,3 +169,163 @@ def test_browser_through_rules_to_consumer(portal, request, tmp_path, monkeypatc
         assert json.loads(capsys.readouterr().out)["delivery"]["acknowledged"] == 0
     finally:
         asyncio.run(cleanup())
+
+
+@pytest.mark.parametrize(
+    "planner_kind", ["simulated", "mocked-openai", "mocked-ollama", "saved-plan"]
+)
+def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypatch, planner_kind):
+    if not request.config.getoption("--run-nats"):
+        pytest.skip("LangGraph real-tool integration requires --run-nats")
+    import asyncio
+    from uuid import uuid4
+
+    from agentic_web_demo.agents.langgraph_workflow import run_workflow
+    from agentic_web_demo.agents.planning import SCENARIOS, SimulatedPlanner
+    from agentic_web_demo.agents.tools import DemoTools
+    from agentic_web_demo.messaging import Broker, connect
+
+    origin, credentials = portal
+    monkeypatch.setenv("DEMO_USERNAME", credentials.username)
+    monkeypatch.setenv("DEMO_PASSWORD", credentials.password)
+    broker = Broker(
+        url=os.environ.get("NATS_URL", "nats://127.0.0.1:4222"),
+        stream="TEST_" + uuid4().hex.upper(),
+    )
+    tools = DemoTools(data_dir=tmp_path, broker=broker, base_url=origin)
+
+    def run_scenario(name):
+        if planner_kind == "saved-plan":
+            from agentic_web_demo.agents.saved_plans import (
+                execute_proposal,
+                revision,
+                save_proposal,
+            )
+            from agentic_web_demo.rules import Rules
+
+            proposal = save_proposal(
+                tmp_path,
+                SimulatedPlanner().plan(SCENARIOS[name], date.today()),
+                Rules(),
+                origin,
+                source="structured",
+            )
+            return execute_proposal(
+                tmp_path, str(proposal.plan_id), revision(proposal), Rules(), tools
+            )
+        if planner_kind == "simulated":
+            return run_workflow(SCENARIOS[name], SimulatedPlanner(), tools)
+        from openai import OpenAI
+        from test_openai_planner import decision, response_payload
+
+        from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
+
+        candidate = decision(**SimulatedPlanner().plan(SCENARIOS[name], date.today()))
+        if planner_kind == "mocked-ollama":
+            from test_ollama_planner import body
+
+            from agentic_web_demo.agents.ollama_planner import OllamaPlanner, OllamaSettings
+
+            with httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json=body(candidate))
+                )
+            ) as client:
+                return run_workflow(
+                    SCENARIOS[name], OllamaPlanner(OllamaSettings(), client=client), tools
+                )
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response_payload(candidate))
+        )
+        with OpenAI(
+            api_key="fixture-only", max_retries=0, http_client=httpx.Client(transport=transport)
+        ) as client:
+            planner = OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"), client=client)
+            return run_workflow(SCENARIOS[name], planner, tools)
+
+    async def cleanup():
+        from nats.js.errors import NotFoundError
+
+        nc = await connect(broker)
+        try:
+            try:
+                await nc.jetstream().delete_stream(broker.stream)
+            except NotFoundError:
+                pass
+        finally:
+            await nc.close()
+
+    try:
+        result = run_scenario("new-york")
+        assert result["status"] == "completed"
+        assert result["record_count"] == 4
+        assert result["evaluation"]["matched"] == 2
+        assert result["receipts_verified"] == 2
+        assert result["model_used"] is (planner_kind in {"mocked-openai", "mocked-ollama"})
+        assert credentials.password not in json.dumps(result)
+        result = run_scenario("no-matches")
+        assert result["status"] == "completed"
+        assert result["record_count"] == 4
+        assert result["evaluation"]["matched"] == 0
+        assert "publish:ok" not in result["trace"]
+    finally:
+        asyncio.run(cleanup())
+
+
+def test_langgraph_live_model_real_tools(
+    live_planner, portal, request, tmp_path, monkeypatch, record_property
+):
+    """Live local/hosted acceptance; OpenAI additionally requires API-use permission."""
+    if not request.config.getoption("--run-nats"):
+        pytest.skip("Live end-to-end acceptance also requires --run-nats")
+    import asyncio
+    from uuid import uuid4
+
+    from agentic_web_demo.agents.langgraph_workflow import run_workflow
+    from agentic_web_demo.agents.tools import DemoTools
+    from agentic_web_demo.messaging import Broker, connect
+    from agentic_web_demo.rules import Rules
+
+    origin, credentials = portal
+    monkeypatch.setenv("DEMO_USERNAME", credentials.username)
+    monkeypatch.setenv("DEMO_PASSWORD", credentials.password)
+    broker = Broker(
+        url=os.environ.get("NATS_URL", "nats://127.0.0.1:4222"),
+        stream="TEST_" + uuid4().hex.upper(),
+    )
+    tools = DemoTools(data_dir=tmp_path, broker=broker, base_url=origin)
+    start = date.today() + timedelta(days=7)
+    end = start + timedelta(days=2)
+    prompt = (
+        f"Find New York hotels from {start} to {end}, at most USD 200 per night "
+        "including taxes and rating at least 4 out of 5."
+    )
+
+    async def cleanup():
+        from nats.js.errors import NotFoundError
+
+        nc = await connect(broker)
+        try:
+            try:
+                await nc.jetstream().delete_stream(broker.stream)
+            except NotFoundError:
+                pass
+        finally:
+            await nc.close()
+
+    try:
+        result = run_workflow(prompt, live_planner, tools, policy=Rules())
+        record_property("model", live_planner.settings.model)
+        record_property("run_id", result.get("run_id", ""))
+        record_property("receipts_verified", result.get("receipts_verified", 0))
+        assert result["status"] == "completed"
+        assert result["model_used"] and result["workflow_verified"]
+        assert result["plan"]["city"] == "New York"
+        assert result["plan"]["check_in"] == start.isoformat()
+        assert result["plan"]["check_out"] == end.isoformat()
+        assert result["record_count"] == 4
+        assert result["evaluation"]["matched"] == 2
+        assert result["receipts_verified"] == 2
+        assert credentials.password not in json.dumps(result)
+    finally:
+        asyncio.run(cleanup())

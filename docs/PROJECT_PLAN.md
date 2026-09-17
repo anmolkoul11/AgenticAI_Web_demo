@@ -1,5 +1,21 @@
 # Project plan
 
+## Current bounded handoff scope
+
+The reference use case is local hotel extraction, not an arbitrary-site scraper.
+LangGraph now supports explicit structured inputs or experimental model-assisted
+proposals, followed by review and exact saved-plan execution. See
+PLAN_EXECUTION_GUIDE.md. CrewAI should reuse schemas, tools and proposal contracts
+through its own runner, not wrap the LangGraph graph. Website/domain onboarding
+requires explicit adapters, definitions and tests. A dashboard and generic adapter
+registry are deferred. Historical checkpoint notes below remain as context.
+
+Acceptance is split: reproducible bounded workflow versus general language
+interpretation. The user demonstrated local Ollama plus the complete real-tool
+workflow; the language baseline is 20/38 passing and remains an open limitation.
+Human review is a mitigation, not proof that interpretation is correct. Do not
+claim all original semantic evaluations pass or enterprise production readiness.
+
 ## Objective and requirements
 
 Give developers a reusable template for quick agent demos, not a new platform.
@@ -32,9 +48,12 @@ iterate. Model fine-tuning is outside the initial scope.
 | Supporting services | Docker Compose |
 | Tests and quality | pytest, Ruff |
 
-The LLM interprets the request, coordinates approved tools, and explains results.
-Code handles credentials, validation, exact rule evaluation, storage, and events.
-The model provider is undecided; no paid provider is assumed in checkpoint 1.
+The LLM interprets the request into a structured plan. LangGraph coordinates
+approved tools; code reports evidence-backed results and handles credentials,
+validation, exact rule evaluation, storage, and events. Autonomous tool selection
+is not required for this bounded demo. OpenAI and local Ollama adapters are
+implemented. Ollama enables synthetic local evaluation without a paid API;
+enterprise provider selection and hosted usage remain separate approval decisions.
 MCP is optional future agent-to-tool integration, not a replacement for NATS.
 
 Start locally with a login-protected, seeded listings portal that we control.
@@ -63,6 +82,21 @@ Do not compare ambiguous currencies or rating scales without normalization.
 Every checkpoint: implement -> automated checks -> user review in VS Code ->
 approved commit. Do not proceed beyond the agreed checkpoint without review.
 Do not automatically commit, push, delete existing work, or choose a paid service.
+
+### Checkpoint 5 interim split
+
+Model access is pending organizational approval. Checkpoint 5a builds and tests
+the real LangGraph tool workflow with explicitly simulated planning. This does
+not satisfy the real-model agent requirement. Checkpoint 5b must integrate an
+approved model and evaluate request interpretation, tool coordination and errors
+before checkpoint 5 is complete. The 5b adapter, request CLI, policy gate and offline
+tests are now implemented; real model quality/end-to-end verification is pending.
+Personal API use was not approved at implementation time: offline tests only.
+Local Ollama is now an alternative for real-model acceptance; successful local
+semantic and end-to-end evaluations can close the model-verification requirement.
+Installing an adapter alone does not demonstrate model quality.
+The proposed minimal dashboard is a separate scope confirmation, not required to
+close checkpoint 5. CrewAI follows after LangGraph acceptance and user review.
 
 ## End-to-end acceptance
 

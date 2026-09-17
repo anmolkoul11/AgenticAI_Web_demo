@@ -37,3 +37,4 @@ dist/
 Thumbs.db
 
 # uv.lock is intentionally tracked for reproducible dependency resolution.
+/live-model-results*.txt
