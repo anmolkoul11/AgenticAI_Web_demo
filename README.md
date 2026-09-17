@@ -4,9 +4,14 @@ A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.
 
-**Current scope: checkpoint 4, rules and event delivery.** The website, browser
-extraction, validation, SQLite/JSON, deterministic rules and NATS JetStream
-publisher/consumer are implemented. AI agent orchestration is not implemented yet.
+**Current scope: bounded LangGraph demo; broad language reliability remains pending.**
+LangGraph coordinates the real browser, validation, SQLite/JSON, rules and NATS
+tools. Planning supports offline scripted scenarios and an opt-in OpenAI adapter
+and a local Ollama adapter, with structured output, policy checks, and plan-only
+preview. See [the Ollama setup guide](docs/OLLAMA_GUIDE.md) for real inference
+without hosted API charges. The user verified a real local-model end-to-end run.
+The expanded language evaluation passed 20/38 cases; it is not fully accepted.
+Use [reviewed plan execution](docs/PLAN_EXECUTION_GUIDE.md) for the new bounded path.
 This is a demo starter kit,
 not a production-certified platform.
 
@@ -51,8 +56,15 @@ Follow [the rules and events guide](docs/EVENTS_GUIDE.md) to start NATS, process
 existing extraction run, and verify consumer receipt. `config/rules.yaml` is
 non-secret business configuration. Pending events and receipts stay under ignored `data/`.
 
-The status command now reports `4-rules-events`. `workflow_implemented` remains
-false until the complete agent workflow has been built and verified.
+Follow [the LangGraph guide](docs/LANGGRAPH_GUIDE.md) for the single-command
+offline demo, approved live-model setup, graph structure, policy and acceptance tests.
+
+The status command reports `5b-langgraph-live-verification-pending`,
+`workflow_implemented: true` and `live_model_verified: false`. These describe the
+implementation milestone, not service health or automatic discovery of test results.
+Ordinary tests never call a live model. Live tests require `--run-model` and
+explicit provider configuration. OpenAI tests additionally require the paid-use
+permission variable; local Ollama tests do not. See the guides before enabling them.
 
 ## Configuration
 
@@ -96,3 +108,10 @@ Work in small checkpoints. Inspect changes in VS Code, run tests, then approve a
 Git commit. No automatic commits, remote pushes, or external-site automation.
 The landscape document is the separate research deliverable; this repository
 will contain the implementations and the two step-by-step developer guides.
+# Reviewed LangGraph demo
+
+Start with [the plan/review/execute guide](docs/PLAN_EXECUTION_GUIDE.md) for the
+recommended two-path interface: explicit inputs or model-assisted proposals,
+then execution of the exact reviewed revision without replanning. The local hotel
+adapter is the reference implementation, not a universal website scraper.
+Natural-language interpretation remains experimental (baseline 20/38 passing).

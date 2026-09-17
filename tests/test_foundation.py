@@ -33,13 +33,15 @@ def test_invalid_log_level_is_rejected():
         Settings.from_env({"AGENTIC_DEMO_LOG_LEVEL": "everything"})
 
 
-def test_status_is_explicit_about_unimplemented_workflow(monkeypatch, capsys):
+def test_status_is_explicit_about_pending_live_verification(monkeypatch, capsys):
     monkeypatch.setenv("AGENTIC_DEMO_DATA_DIR", "./data")
     monkeypatch.setenv("AGENTIC_DEMO_LOG_LEVEL", "INFO")
     assert main(["status"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["checkpoint"] == "4-rules-events"
-    assert result["workflow_implemented"] is False
+    assert result["checkpoint"] == "5c-reviewed-langgraph-acceptance-pending"
+    assert result["reviewed_plan_execution_implemented"] is True
+    assert result["workflow_implemented"] is True
+    assert result["live_model_verified"] is False
 
 
 def test_cli_reports_invalid_configuration(monkeypatch, capsys):

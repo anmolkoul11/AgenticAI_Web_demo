@@ -73,6 +73,12 @@ Playwright browser automation belongs to checkpoint 3.
 
 ## Windows setup troubleshooting
 
+If startup reports a forbidden socket on port 8000, check Windows reservations
+with `netsh interface ipv4 show excludedportrange protocol=tcp`. Use an available
+unreserved port such as 8100: replace `--port 8000` with `--port 8100` and open
+http://127.0.0.1:8100. Set the matching `--base-url` when creating agent plans or
+running legacy extraction. Do not remove Windows reservations or weaken firewalls.
+
 If WinGet reports a Microsoft Store certificate problem, use the explicit
 `--source winget` installation command in the main README; do not weaken TLS checks.
 If uv is installed but unrecognized, restart VS Code. To refresh PATH in the

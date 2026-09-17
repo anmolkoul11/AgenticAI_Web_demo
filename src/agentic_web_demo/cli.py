@@ -1,4 +1,4 @@
-"""Local demo commands. No paid model calls, external scraping or event publishing."""
+"""Local demo commands, with opt-in live model planning and loopback-only browser tools."""
 
 import argparse
 import json
@@ -8,6 +8,8 @@ from datetime import date, timedelta
 
 from pydantic import ValidationError
 
+from agentic_web_demo.agents.cli import add_command as add_agent_command
+from agentic_web_demo.agents.cli import run_command as run_agent_command
 from agentic_web_demo.browser import Credentials, ExtractionError, extract_listings
 from agentic_web_demo.config import Settings
 from agentic_web_demo.event_cli import COMMANDS, add_commands, run_command
@@ -19,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Agentic AI Web Demo starter kit")
     commands = parser.add_subparsers(dest="command", required=True)
     add_commands(commands)
+    add_agent_command(commands)
     commands.add_parser("status", help="Show implemented checkpoint, not service health")
     extract = commands.add_parser("extract", help="Log in, extract, validate, save and export")
     extract.add_argument("--city", default="")
@@ -40,10 +43,14 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "project": "AgenticAI_Web_demo",
-                    "checkpoint": "4-rules-events",
+                    "checkpoint": "5c-reviewed-langgraph-acceptance-pending",
+                    "reviewed_plan_execution_implemented": True,
+                    "language_evaluation_baseline": {"passed": 20, "failed": 18},
+                    "model_used": False,
                     "data_dir": str(settings.data_dir),
                     "log_level": settings.log_level,
-                    "workflow_implemented": False,
+                    "workflow_implemented": True,
+                    "live_model_verified": False,
                 },
                 indent=2,
             )
@@ -51,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command in COMMANDS:
         return run_command(args, settings.data_dir)
+    if args.command == "langgraph":
+        return run_agent_command(args, settings.data_dir)
     try:
         if args.command == "export":
             path = export_snapshot(args.run_id, settings.data_dir)
