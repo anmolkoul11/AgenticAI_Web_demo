@@ -1,5 +1,9 @@
 # Project plan
 
+Current provider update: OpenAI only for live planning in both frameworks;
+Ollama support is retired. Prompt v3 and the CrewAI OpenAI bridge await user-run
+verification. Earlier checkpoint notes below are historical. See OPENAI_SETUP.md.
+
 ## Current checkpoint: CrewAI developer review
 
 CrewAI plan/review/execute is implemented with its own Flow and local planning
@@ -61,9 +65,9 @@ iterate. Model fine-tuning is outside the initial scope.
 The LLM interprets the request into a structured plan. LangGraph coordinates
 approved tools; code reports evidence-backed results and handles credentials,
 validation, exact rule evaluation, storage, and events. Autonomous tool selection
-is not required for this bounded demo. OpenAI and local Ollama adapters are
-implemented. Ollama enables synthetic local evaluation without a paid API;
-enterprise provider selection and hosted usage remain separate approval decisions.
+is not required for this bounded demo. OpenAI is the implemented live provider
+for both frameworks. Structured proposals need no paid model. The Ollama adapter
+has been retired; earlier checkpoint entries describe historical implementation.
 MCP is optional future agent-to-tool integration, not a replacement for NATS.
 
 Start locally with a login-protected, seeded listings portal that we control.

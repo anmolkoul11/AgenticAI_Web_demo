@@ -1,5 +1,6 @@
 """Explicit OpenAI adapter; no credentials or provider SDK objects enter graph state."""
 
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -68,6 +69,30 @@ class OpenAIPlanner:
         self.metadata = {}
 
     def plan(self, request: str, today: date) -> dict:
+        self._reset_metadata()
+        if not request.strip() or len(request) > 2000:
+            raise PlanningError("request_invalid")
+        return self._plan([{"role": "user", "content": request}], today)
+
+    def plan_messages(self, messages: list[dict], today: date) -> dict:
+        """Forward bounded real CrewAI task messages through the same API contract."""
+        self._reset_metadata()
+        if (
+            not isinstance(messages, list)
+            or not messages
+            or any(
+                not isinstance(message, dict)
+                or set(message) != {"role", "content"}
+                or message["role"] not in {"system", "user", "assistant"}
+                or not isinstance(message["content"], str)
+                for message in messages
+            )
+            or len(json.dumps(messages)) > 16000
+        ):
+            raise PlanningError("request_invalid")
+        return self._plan(messages, today)
+
+    def _reset_metadata(self):
         self.metadata = {
             "provider": self.provider,
             "model": self.settings.model,
@@ -75,8 +100,8 @@ class OpenAIPlanner:
             "api_attempted": False,
             "response_received": False,
         }
-        if not request.strip() or len(request) > 2000:
-            raise PlanningError("request_invalid")
+
+    def _plan(self, messages: list[dict], today: date) -> dict:
         # Prevent SDK debug logging (including inherited OPENAI_LOG) from emitting payloads.
         for name in ("openai", "httpx", "httpcore"):
             logging.getLogger(name).setLevel(logging.CRITICAL)
@@ -104,7 +129,7 @@ class OpenAIPlanner:
                         "role": "system",
                         "content": INSTRUCTIONS + "\nLocal reference date: " + today.isoformat(),
                     },
-                    {"role": "user", "content": request},
+                    *messages,
                 ],
                 text_format=ModelDecision,
                 store=False,

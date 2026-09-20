@@ -17,6 +17,23 @@ from agentic_web_demo.rules import Rules
 TODAY = date(2026, 9, 15)
 
 
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [],
+        [{"role": "tool", "content": "not allowed"}],
+        [{"role": "user", "content": "x" * 17000}],
+        [{"role": "user", "content": "text", "extra": True}],
+    ],
+)
+def test_invalid_crew_messages_never_call_api(mocked_planner, messages):
+    planner, requests = mocked_planner()
+    with pytest.raises(PlanningError, match="request_invalid"):
+        planner.plan_messages(messages, TODAY)
+    assert requests == []
+    assert planner.metadata["api_attempted"] is False
+
+
 @pytest.fixture(autouse=True)
 def openai_test_provider(monkeypatch):
     monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "openai")

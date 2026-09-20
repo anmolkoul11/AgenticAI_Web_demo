@@ -1,5 +1,6 @@
 """Opt-in real-model semantic evaluations. Skipped without explicit permission flags."""
 
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -86,8 +87,18 @@ def test_real_model_interpretation(live_planner, case, expected, record_property
 VARIANTS = [
     ("nyc-alias", "Find NYC hotels {dates}, {criteria}.", "planned", "New York"),
     ("boston", "Find Boston hotels {dates}, {criteria}.", "planned", "Boston"),
-    ("unknown-city", "Find Atlantis hotels {dates}, {criteria}.", "planned", "Atlantis"),
-    ("all-cities-explicit", "Search hotels across all cities {dates}, {criteria}.", "planned", ""),
+    (
+        "unknown-city",
+        "Find Atlantis hotels {dates}, {criteria}.",
+        "planned",
+        "Atlantis",
+    ),
+    (
+        "all-cities-explicit",
+        "Search hotels across all cities {dates}, {criteria}.",
+        "planned",
+        "",
+    ),
     (
         "inclusive-reworded",
         "Find New York hotels {dates}, no more than USD 200 per night including "
@@ -233,6 +244,45 @@ VARIANTS = [
         "failed",
         None,
     ),
+    (
+        "external-site-tripadvisor",
+        "Search TripAdvisor for New York hotels {dates}, {criteria}.",
+        "unsupported",
+        "unsupported_task",
+    ),
+    (
+        "external-site-url",
+        "Use https://hotels.example.org to find New York hotels {dates}, {criteria}.",
+        "unsupported",
+        "unsupported_task",
+    ),
+    (
+        "rating-scale-slash",
+        "Find New York hotels {dates}, at most USD 200 per night including taxes, "
+        "rated at least 8/10.",
+        "unsupported",
+        "unsupported_filter",
+    ),
+    (
+        "rating-scale-hundred",
+        "Find New York hotels {dates}, at most USD 200 per night including taxes, "
+        "rated at least 80 out of 100.",
+        "unsupported",
+        "unsupported_filter",
+    ),
+    (
+        "local-source-explicit",
+        "Search only the local demo portal for New York hotels {dates}, {criteria}.",
+        "planned",
+        "New York",
+    ),
+    (
+        "external-site-negated",
+        "Do not search Expedia. Search only the local demo portal for New York "
+        "hotels {dates}, {criteria}.",
+        "planned",
+        "New York",
+    ),
 ]
 
 
@@ -255,17 +305,23 @@ def test_real_model_wording_variants(
         prompt, live_planner, NoTools(), policy=Rules(), plan_only=True, today=today
     )
     # Only synthetic inputs and sanitized workflow fields are included in failures.
-    diagnostic = {
-        "case": case,
-        "request": prompt,
-        "expected": expected,
-        "actual": result["status"],
-        "plan": result.get("plan"),
-        "missing_fields": result.get("missing_fields"),
-        "reason": result.get("reason"),
-        "failed_stage": result.get("failed_stage"),
-        "guidance": result.get("guidance"),
-    }
+    diagnostic = json.dumps(
+        {
+            "case": case,
+            "request": prompt,
+            "expected": expected,
+            "actual": result["status"],
+            "plan": result.get("plan"),
+            "missing_fields": result.get("missing_fields"),
+            "reason": result.get("reason"),
+            "failed_stage": result.get("failed_stage"),
+            "guidance": result.get("guidance"),
+            "error_code": result.get("error_code"),
+            "model": result.get("model"),
+            "trace": result.get("trace"),
+        },
+        indent=2,
+    )
     assert result["status"] == expected, diagnostic
     assert result["model_used"] and not result["workflow_verified"], diagnostic
     assert "run_id" not in result, diagnostic

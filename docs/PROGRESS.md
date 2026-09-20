@@ -1,5 +1,19 @@
 # Progress
 
+## Current: OpenAI-only migration and prompt v3 (user validation pending)
+
+Both frameworks now use the shared OpenAI Responses adapter for live planning.
+CrewAI forwards its actual Agent/Task messages through the bounded bridge.
+Ollama code, provider-specific tests and setup guide are removed; installed apps
+and downloaded models are untouched. Earlier entries below are historical and
+may reference retired providers or superseded approval/status information.
+
+Prompt v2 user results exposed three strict-comparison classification failures.
+Prompt v3 clarifies that these require input, rather than unsupported-filter
+rejection. Original test expectations are preserved. No tests or paid calls were
+run for this migration; follow OPENAI_SETUP.md. Do not infer acceptance from
+earlier staging or local-provider results.
+
 ## Checkpoint 6: CrewAI implementation, developer review pending
 
 Implemented an independent CrewAI Flow plus one Agent/Task/Crew for local Ollama

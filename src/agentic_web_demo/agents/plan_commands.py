@@ -101,16 +101,7 @@ def _run(args, data_dir):
         if args.mode not in {None, "live"}:
             raise ValueError("Model-assisted planning cannot be simulated.")
         provider = os.environ.get("AGENTIC_MODEL_PROVIDER", "openai")
-        if framework == "crewai" and provider != "ollama":
-            raise ValueError("CrewAI initially supports the explicit local Ollama provider only")
-        if provider == "ollama":
-            from agentic_web_demo.agents.ollama_planner import (
-                OllamaPlanner,
-                OllamaSettings,
-            )
-
-            planner = OllamaPlanner(OllamaSettings.from_env())
-        elif provider == "openai" and args.allow_model_api:
+        if provider == "openai" and args.allow_model_api:
             from agentic_web_demo.agents.openai_planner import (
                 ModelSettings,
                 OpenAIPlanner,

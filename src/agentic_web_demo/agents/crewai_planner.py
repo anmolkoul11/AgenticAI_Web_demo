@@ -15,8 +15,8 @@ from agentic_web_demo.agents.model_contract import INSTRUCTIONS, ModelDecision  
 from agentic_web_demo.agents.planning import PlanningError  # noqa: E402
 
 
-class LocalPlanningLLM(BaseLLM):
-    """Single-call bridge: actual Crew task messages reach the local model.
+class PlanningLLM(BaseLLM):
+    """Single-call bridge: actual Crew task messages reach the OpenAI adapter.
 
     JSON is validated by the transport and wrapped in CrewAI's final-answer
     envelope locally. No parsing repair or second inference is allowed.
@@ -36,6 +36,22 @@ class LocalPlanningLLM(BaseLLM):
         self._calls += 1
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
+        # CrewAI marks prompt-cache boundaries even with Crew cache=False.
+        # This is internal routing metadata, not a Responses API input field.
+        # Copy messages to avoid mutating Crew's history; leave every other key
+        # for the transport's strict validation rather than silently dropping it.
+        if isinstance(messages, list):
+            normalized = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    raise PlanningError("request_invalid")
+                item = dict(message)
+                if "cache_breakpoint" in item:
+                    if not isinstance(item["cache_breakpoint"], bool):
+                        raise PlanningError("request_invalid")
+                    item.pop("cache_breakpoint")
+                normalized.append(item)
+            messages = normalized
         decision = self._transport.plan_messages(messages, self._today)
         return "Final Answer: " + json.dumps(decision)
 
@@ -51,7 +67,7 @@ class LocalPlanningLLM(BaseLLM):
 
 class CrewAIPlanner:
     mode = "live"
-    provider = "ollama"
+    provider = "openai"
 
     def __init__(self, transport):
         self.transport = transport
@@ -68,7 +84,7 @@ class CrewAIPlanner:
     def plan(self, request, today):
         if not request.strip() or len(request) > 2000:
             raise PlanningError("request_invalid")
-        llm = LocalPlanningLLM(self.transport, today)
+        llm = PlanningLLM(self.transport, today)
         agent = Agent(
             role="Hotel request planner",
             goal="Propose a faithful bounded hotel search decision",

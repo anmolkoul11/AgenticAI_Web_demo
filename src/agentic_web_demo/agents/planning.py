@@ -11,7 +11,11 @@ from agentic_web_demo.rules import Rules
 
 ClarificationField = Literal["city", "check_in", "check_out", "max_price", "min_rating", "request"]
 Reason = Literal[
-    "none", "unsupported_task", "unsupported_currency", "unsupported_filter", "ambiguous_request"
+    "none",
+    "unsupported_task",
+    "unsupported_currency",
+    "unsupported_filter",
+    "ambiguous_request",
 ]
 
 
@@ -57,9 +61,6 @@ class PlanningError(Exception):
 
 
 PLANNER_ERRORS = {
-    "local_connection": "Cannot connect to local Ollama. Start Ollama and check port 11434.",
-    "local_model_missing": "Local model not found. Pull the configured model using Ollama first.",
-    "local_service_error": "Local Ollama request failed. Check Ollama version, model and memory.",
     "authentication": "Model authentication failed. Check local API credentials and access.",
     "rate_limit": "Model rate or quota limit reached. Check API budget and retry later.",
     "timeout": "Model request timed out. No browser tools ran; retry explicitly if desired.",
@@ -74,7 +75,16 @@ PLANNER_ERRORS = {
 
 def validate_candidate(candidate: dict, today: date, policy: Rules | None = None) -> dict:
     """Shared deterministic gate for either framework and plan-only evaluation."""
-    parsed = Candidate.model_validate(candidate)
+    # A rejection is not an executable plan. Discard its unused search fields before
+    # applying domain constraints (e.g. an unsupported /10 numerator may be 8).
+    # Still validate outcome, reason, clarification fields and unknown keys normally.
+    validation_input = candidate
+    if candidate.get("outcome") == "unsupported":
+        validation_input = {
+            **candidate,
+            **dict.fromkeys(("city", "check_in", "check_out", "max_price", "min_rating")),
+        }
+    parsed = Candidate.model_validate(validation_input)
     if parsed.outcome == "unsupported":
         return {
             "status": "unsupported",

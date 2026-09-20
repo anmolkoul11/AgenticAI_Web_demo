@@ -58,18 +58,17 @@ uv run --locked agentic-demo crewai execute --plan-id $planId --approve $revisio
 Expected: framework `crewai`, status `completed`, four records, two matches and
 two verified receipts. Execution calls no model. Do not execute the same plan twice.
 
-## Path B: local model-assisted proposal
+## Path B: OpenAI model-assisted proposal
 
-Install/configure Ollama using OLLAMA_GUIDE.md, including disabling cloud features.
-This CrewAI adapter currently supports only local Ollama qwen3:8b or qwen3:4b.
-It does not silently select a hosted provider. LangGraph's OpenAI adapter remains
-available separately; CrewAI hosted-provider integration is future work.
+Follow [OPENAI_SETUP.md](OPENAI_SETUP.md) to set your API key in this terminal.
+Both frameworks use the same explicit OpenAI adapter; no fallback is selected.
+The following planning command makes a billable model call with synthetic data.
 
 ```powershell
-$env:AGENTIC_MODEL_PROVIDER = "ollama"
-$env:AGENTIC_MODEL_NAME = "qwen3:8b"
+$env:AGENTIC_MODEL_PROVIDER = "openai"
+$env:AGENTIC_MODEL_NAME = "gpt-5.4-mini"
 $demoRequest = "Find New York hotels from $checkIn to $checkOut, at most USD 200 per night including taxes, rated at least 4 out of 5."
-$proposalJson = uv run --locked agentic-demo crewai plan --request $demoRequest --base-url $portalUrl
+$proposalJson = uv run --locked agentic-demo crewai plan --request $demoRequest --base-url $portalUrl --allow-model-api
 if ($LASTEXITCODE -ne 0) { $proposalJson; throw "Planning failed; stop here." }
 $proposal = ($proposalJson -join "`n") | ConvertFrom-Json
 $planId = $proposal.proposal.plan_id
@@ -87,7 +86,7 @@ without another inference call. To cancel a proposal, do not execute it.
 ## Implementation and customization
 
 - `agents/crewai_planner.py`: defines the agent role, goal, task and sequential crew.
-  The BaseLLM bridge sends actual task messages to local Ollama and validates JSON.
+  The BaseLLM bridge sends actual task messages through OpenAI and validates JSON.
   It wraps validated JSON in CrewAI's final-answer format without a second inference.
 - `agents/model_contract.py`: shared instructions and schema. "Train" here means
   configure instructions/examples and evaluate, not fine-tune weights.
@@ -104,9 +103,10 @@ without another inference call. To cancel a proposal, do not execute it.
   tests to support another website; changing only the URL is insufficient.
 
 No delegation, execution tools, memory, embedding service or additional planning
-agent is enabled in the planning Crew. The adapter permits one local HTTP call
-per planning attempt, no model repair loop, 1200 output tokens and an 8192-token
-context for Crew task overhead (LangGraph's direct adapter remains at 4096).
+agent is enabled in the planning Crew. The bridge permits one inference invocation
+per attempt, with no model repair loop. SDK retries follow AGENTIC_MODEL_MAX_RETRIES;
+set it to 0 for cost-controlled evaluation. Output defaults to 1200 tokens, and
+serialized task messages are bounded to 16000 characters before API access.
 CrewAI tracing/tracking and OpenTelemetry are disabled before runtime import.
 These process-level settings suit a local CLI; shared hosting needs its own
 isolation, identity, authorization and telemetry policy.
@@ -121,7 +121,8 @@ PLAN_EXECUTION_GUIDE.md. Never delete an attempt claim merely to repeat side eff
 Default `data/` is ignored by Git. Credentials stay in local environment variables,
 not proposals or model prompts. Use synthetic requests: proposal text is stored.
 
-CrewAI's observed Qwen3 baseline: **21 passed, 17 failed** in 38 semantic tests.
+Historical, retired-provider evidence: CrewAI's Qwen3 baseline was **21 passed,
+17 failed** in 38 semantic tests. This is not an OpenAI validation result.
 Thirteen failed cases accepted incorrect plans (including wrong relative dates);
 three stopped with the wrong classification and one returned a generic failure.
 Human review is required but does not guarantee semantic correctness. Do not
@@ -141,11 +142,15 @@ uv run --locked ruff check src tests
 uv run --locked ruff format --check src tests
 ```
 
-Optional real-model checks (expect documented semantic failures until improved):
+Optional paid real-model checks, after configuring OpenAI in this terminal:
 
 ```powershell
-uv run --locked pytest tests/test_model_live.py --run-model --model-framework crewai -v --tb=short
-uv run --locked pytest tests/test_browser_integration.py -k live_model --run-model --model-framework crewai --run-browser --run-nats -v --tb=short
+$env:AGENTIC_ALLOW_MODEL_API = "1"
+try {
+    uv run --locked pytest tests/test_model_live.py --run-model --model-framework crewai -v --tb=short
+} finally {
+    Remove-Item Env:AGENTIC_ALLOW_MODEL_API -ErrorAction SilentlyContinue
+}
 ```
 
 The shared semantic expectations are unchanged. Upstream CrewAI deprecation

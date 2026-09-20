@@ -173,7 +173,7 @@ def test_browser_through_rules_to_consumer(portal, request, tmp_path, monkeypatc
 
 @pytest.mark.parametrize(
     "planner_kind",
-    ["simulated", "mocked-openai", "mocked-ollama", "saved-plan", "crewai-saved", "crewai-mocked"],
+    ["simulated", "mocked-openai", "saved-plan", "crewai-saved", "crewai-mocked"],
 )
 def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypatch, planner_kind):
     if not request.config.getoption("--run-nats"):
@@ -228,28 +228,6 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
         from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
 
         candidate = decision(**SimulatedPlanner().plan(SCENARIOS[name], date.today()))
-        if planner_kind in {"mocked-ollama", "crewai-mocked"}:
-            from test_ollama_planner import body
-
-            from agentic_web_demo.agents.ollama_planner import OllamaPlanner, OllamaSettings
-
-            with httpx.Client(
-                transport=httpx.MockTransport(
-                    lambda request: httpx.Response(200, json=body(candidate))
-                )
-            ) as client:
-                if planner_kind == "crewai-mocked":
-                    from agentic_web_demo.agents.crewai_planner import CrewAIPlanner
-                    from agentic_web_demo.agents.crewai_workflow import run_workflow as crew_run
-
-                    return crew_run(
-                        SCENARIOS[name],
-                        CrewAIPlanner(OllamaPlanner(OllamaSettings(), client=client)),
-                        tools,
-                    )
-                return run_workflow(
-                    SCENARIOS[name], OllamaPlanner(OllamaSettings(), client=client), tools
-                )
         transport = httpx.MockTransport(
             lambda request: httpx.Response(200, json=response_payload(candidate))
         )
@@ -257,6 +235,11 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
             api_key="fixture-only", max_retries=0, http_client=httpx.Client(transport=transport)
         ) as client:
             planner = OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"), client=client)
+            if planner_kind == "crewai-mocked":
+                from agentic_web_demo.agents.crewai_planner import CrewAIPlanner
+                from agentic_web_demo.agents.crewai_workflow import run_workflow as crew_run
+
+                return crew_run(SCENARIOS[name], CrewAIPlanner(planner), tools)
             return run_workflow(SCENARIOS[name], planner, tools)
 
     async def cleanup():
@@ -277,9 +260,7 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
         assert result["record_count"] == 4
         assert result["evaluation"]["matched"] == 2
         assert result["receipts_verified"] == 2
-        assert result["model_used"] is (
-            planner_kind in {"mocked-openai", "mocked-ollama", "crewai-mocked"}
-        )
+        assert result["model_used"] is (planner_kind in {"mocked-openai", "crewai-mocked"})
         assert credentials.password not in json.dumps(result)
         result = run_scenario("no-matches")
         assert result["status"] == "completed"

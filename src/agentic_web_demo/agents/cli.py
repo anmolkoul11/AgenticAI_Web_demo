@@ -70,9 +70,9 @@ def run_command(args, data_dir: Path) -> int:
         print("Saved-plan fields require plan/review/execute.", file=sys.stderr)
         return 2
     provider = os.environ.get("AGENTIC_MODEL_PROVIDER", "openai")
-    if args.mode == "live" and provider not in {"openai", "ollama"}:
+    if args.mode == "live" and provider != "openai":
         print(
-            "Unsupported model provider; choose openai or ollama. No fallback is used.",
+            "Unsupported model provider; choose openai. No fallback is used.",
             file=sys.stderr,
         )
         return 2
@@ -118,28 +118,13 @@ def run_command(args, data_dir: Path) -> int:
         )
         if args.mode == "live":
             request = args.request
-            if provider == "ollama":
-                from agentic_web_demo.agents.ollama_planner import (
-                    OllamaPlanner,
-                    OllamaSettings,
-                )
+            from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
 
-                planner = OllamaPlanner(OllamaSettings.from_env())
-                print(
-                    "LIVE LOCAL PLANNING: Ollama on localhost; no hosted API calls.",
-                    file=sys.stderr,
-                )
-            else:
-                from agentic_web_demo.agents.openai_planner import (
-                    ModelSettings,
-                    OpenAIPlanner,
-                )
-
-                planner = OpenAIPlanner(ModelSettings.from_env())
-                print(
-                    "LIVE PLANNING: request sent to OpenAI; API usage may incur charges.",
-                    file=sys.stderr,
-                )
+            planner = OpenAIPlanner(ModelSettings.from_env())
+            print(
+                "LIVE PLANNING: request sent to OpenAI; API usage may incur charges.",
+                file=sys.stderr,
+            )
         else:
             planner = SimulatedPlanner()
             request = SCENARIOS[args.scenario or "new-york"]

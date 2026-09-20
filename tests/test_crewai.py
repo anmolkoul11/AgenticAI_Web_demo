@@ -4,14 +4,14 @@ from datetime import date
 
 import httpx
 import pytest
+from openai import OpenAI
 from test_langgraph import FakeTools
-from test_ollama_planner import body
-from test_openai_planner import decision
+from test_openai_planner import decision, response_payload
 from test_saved_plans import args as structured_args
 
-from agentic_web_demo.agents.crewai_planner import CrewAIPlanner, LocalPlanningLLM
+from agentic_web_demo.agents.crewai_planner import CrewAIPlanner, PlanningLLM
 from agentic_web_demo.agents.crewai_workflow import run_workflow
-from agentic_web_demo.agents.ollama_planner import OllamaPlanner, OllamaSettings
+from agentic_web_demo.agents.openai_planner import ModelSettings, OpenAIPlanner
 from agentic_web_demo.agents.planning import SCENARIOS, PlanningError, SimulatedPlanner
 from agentic_web_demo.agents.saved_plans import execute_proposal, revision, save_proposal
 from agentic_web_demo.cli import main
@@ -24,21 +24,28 @@ def test_real_crew_task_with_mocked_transport():
 
     def respond(request):
         calls.append(request)
-        return httpx.Response(200, json=body(candidate))
+        return httpx.Response(200, json=response_payload(candidate))
 
-    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        planner = CrewAIPlanner(OllamaPlanner(OllamaSettings(), client=client))
+    with OpenAI(
+        api_key="fixture-only",
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        planner = CrewAIPlanner(
+            OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"), client=client)
+        )
         result = run_workflow(SCENARIOS["new-york"], planner, None, plan_only=True)
     assert result["status"] == "planned", result
     assert result["model"]["orchestrator"] == "crewai"
     assert result["model_used"] is True
     assert len(calls) == 1
     payload = json.loads(calls[0].content)
-    assert payload["options"]["num_ctx"] == 8192
-    assert "Hotel request planner" in json.dumps(payload["messages"])
-    assert SCENARIOS["new-york"] in json.dumps(payload["messages"])
-    assert str(calls[0].url) == "http://127.0.0.1:11434/api/chat"
-    assert "authorization" not in calls[0].headers
+    assert payload["store"] is False
+    assert all(set(message) == {"role", "content"} for message in payload["input"])
+    assert "Hotel request planner" in json.dumps(payload["input"])
+    assert SCENARIOS["new-york"] in json.dumps(payload["input"])
+    assert str(calls[0].url) == "https://api.openai.com/v1/responses"
+    assert calls[0].headers["authorization"] == "Bearer fixture-only"
 
 
 @pytest.mark.parametrize(
@@ -133,19 +140,92 @@ def test_crewai_cli_structured_review_and_provider_rejection(tmp_path, monkeypat
     capsys.readouterr()
     assert main(["langgraph", "review", "--plan-id", plan_id]) == 2
     monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "openai")
-    assert main(["crewai", "plan", "--request", "demo", "--allow-model-api"]) == 2
+    assert main(["crewai", "plan", "--request", "demo"]) == 2
 
 
 def test_bridge_cannot_retry_or_call_tools():
-    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))) as client:
-        llm = LocalPlanningLLM(OllamaPlanner(OllamaSettings(), client=client), date.today())
+    with OpenAI(
+        api_key="fixture-only",
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+    ) as client:
+        llm = PlanningLLM(
+            OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"), client=client),
+            date.today(),
+        )
         with pytest.raises(PlanningError):
             llm.call("test")
         with pytest.raises(PlanningError):
             llm.call("retry")
 
 
-def test_local_conversation_bound():
-    transport = OllamaPlanner(OllamaSettings())
+def test_conversation_bound():
+    transport = OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"))
     with pytest.raises(PlanningError):
         transport.plan_messages([{"role": "user", "content": "x" * 17000}], date.today())
+
+
+def test_bridge_strips_only_internal_cache_marker_without_mutating_history():
+    from types import SimpleNamespace
+
+    class CaptureTransport:
+        settings = SimpleNamespace(model="fixture-model")
+        messages = None
+
+        def plan_messages(self, messages, today):
+            self.messages = messages
+            return decision()
+
+    transport = CaptureTransport()
+    messages = [{"role": "user", "content": "synthetic", "cache_breakpoint": True}]
+    PlanningLLM(transport, date.today()).call(messages)
+    assert transport.messages == [{"role": "user", "content": "synthetic"}]
+    assert messages[0]["cache_breakpoint"] is True
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"cache_breakpoint": "not-a-boolean"},
+        {"cache_breakpoint": True, "unexpected": "do not silently discard"},
+    ],
+)
+def test_bridge_still_rejects_invalid_message_metadata(extra):
+    transport = OpenAIPlanner(ModelSettings("fixture-model", "fixture-only"))
+    llm = PlanningLLM(transport, date.today())
+    with pytest.raises(PlanningError, match="request_invalid"):
+        llm.call([{"role": "user", "content": "synthetic", **extra}])
+    assert not transport.metadata.get("api_attempted", False)
+
+
+@pytest.mark.parametrize("framework", ["langgraph", "crewai"])
+def test_hosted_permission_and_retired_provider_fail_before_transport(framework, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No transport may be constructed")
+
+    monkeypatch.setattr(OpenAIPlanner, "__init__", forbidden)
+    monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "openai")
+    assert main([framework, "plan", "--request", "synthetic request"]) == 2
+    monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "retired-provider")
+    assert main([framework, "plan", "--request", "synthetic request", "--allow-model-api"]) == 2
+
+
+def test_crewai_cli_openai_proposal(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setenv("AGENTIC_DEMO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("AGENTIC_MODEL_NAME", "fixture-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-only")
+
+    def fake_messages(self, messages, today):
+        calls.append(messages)
+        self.metadata = {"provider": "openai", "api_attempted": True, "response_received": True}
+        return decision(**SimulatedPlanner().plan(SCENARIOS["new-york"], today))
+
+    monkeypatch.setattr(OpenAIPlanner, "plan_messages", fake_messages)
+    assert main(["crewai", "plan", "--request", SCENARIOS["new-york"], "--allow-model-api"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "awaiting_review"
+    assert result["proposal"]["model"]["provider"] == "openai"
+    assert result["proposal"]["model"]["orchestrator"] == "crewai"
+    assert len(calls) == 1

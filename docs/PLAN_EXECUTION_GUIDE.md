@@ -21,21 +21,20 @@ No portal, credentials, broker or model is required for proposal creation.
 
 ## 2. Model-assisted proposal (experimental interpretation)
 
-Follow OLLAMA_GUIDE.md to install/configure local-only Ollama first:
+Follow OPENAI_SETUP.md to configure your API key in this terminal first:
 
 ```powershell
-$env:AGENTIC_MODEL_PROVIDER = "ollama"
-$env:AGENTIC_MODEL_NAME = "qwen3:8b"
+$env:AGENTIC_MODEL_PROVIDER = "openai"
+$env:AGENTIC_MODEL_NAME = "gpt-5.4-mini"
 $demoRequest = "Find New York hotels from $checkIn to $checkOut, at most USD 200 per night including taxes, rated at least 4 out of 5."
-uv run --locked agentic-demo langgraph plan --request $demoRequest --base-url "http://127.0.0.1:8100"
+uv run --locked agentic-demo langgraph plan --request $demoRequest --base-url "http://127.0.0.1:8100" --allow-model-api
 ```
 
 Never combine `--request` with explicit search fields. The model proposes; it
 does not execute tools. Unsupported/missing/invalid outcomes do not create plans.
-However, our baseline Qwen3 evaluation passed 20/38 cases: incorrect plans can
-pass validation. Compare every field and omitted requirement with the original
+Incorrect plans can pass validation. Compare every field and omitted requirement with the original
 request. Approval does not prove semantic correctness. Use synthetic requests only.
-OpenAI remains optional and requires its configuration plus `--allow-model-api`.
+OpenAI is required only for the model-assisted path, not the structured path.
 
 ## 3. Review, then approve an exact revision
 
