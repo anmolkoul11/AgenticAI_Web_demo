@@ -2,21 +2,18 @@
 
 ## Scope and completion status
 
-The implementation supports simulated planning, local Ollama, and opt-in OpenAI.
+The implementation supports simulated planning, structured proposals and opt-in OpenAI.
 All use the same browser, SQLite/JSON storage, Python rules, and NATS tools.
-**Actual inference is not yet verified. Checkpoint 5 remains pending real-model
-acceptance. A passing local model is sufficient; paid API use is not required.**
-
-For the local route, start with [OLLAMA_GUIDE.md](OLLAMA_GUIDE.md). Sections 2-3
-and the paid test instructions below describe the OpenAI route specifically.
-Ollama uses --mode live without --allow-model-api and needs no OpenAI key.
+Real inference has been demonstrated, but prompt v3 semantic acceptance is pending.
+Follow [OPENAI_SETUP.md](OPENAI_SETUP.md) for current model configuration and tests.
+Structured proposals do not require paid API access.
 
 This is a controlled, model-assisted workflow, not an autonomous browser agent.
 The model interprets the request; LangGraph routes through code-approved tools.
 It cannot choose arbitrary websites, paths, shell commands, credentials, or brokers.
 The portal contains fictional listings. Expedia/Tripadvisor integration, a UI,
 durable graph resumption, multi-turn conversation storage, and fine-tuning are out
-of scope. CrewAI is the next framework, not implemented by this checkpoint.
+not yet implemented. See CREWAI_GUIDE.md for the independent second framework.
 
 ## 1. Install and run the offline demo
 
@@ -94,7 +91,7 @@ loaded**. Prefer an approved secret manager in shared deployments.
 
 | Setting | Default / allowed values |
 | --- | --- |
-| AGENTIC_MODEL_PROVIDER | openai or ollama; default openai |
+| AGENTIC_MODEL_PROVIDER | openai only; default openai |
 | AGENTIC_MODEL_NAME | Required, no default |
 | OPENAI_API_KEY | Required locally; excluded from settings repr/report |
 | AGENTIC_MODEL_TIMEOUT_SECONDS | 30; range 1-60, per network operation |
@@ -181,7 +178,6 @@ receipts, not a global consumer count or just a broker acknowledgment.
 | agents/planning.py | Plan/Candidate contracts, planner protocol, validation, fixtures |
 | agents/model_contract.py | Shared versioned instructions and wire schema |
 | agents/openai_planner.py | Hosted OpenAI SDK adapter and safe errors |
-| agents/ollama_planner.py | Local-only Ollama HTTP adapter and safe errors |
 | agents/langgraph_workflow.py | StateGraph, deterministic tool routing, result projection |
 | agents/tools.py | Existing shared browser/storage/rule/NATS wrappers |
 | agents/cli.py | Explicit modes, request input, policy and permission gates |

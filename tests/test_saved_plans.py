@@ -155,15 +155,17 @@ def test_cli_reject_mixed_or_unsupported_inputs(tmp_path, monkeypatch, extra):
 
 def test_cli_model_proposal_only(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENTIC_DEMO_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "ollama")
-    from agentic_web_demo.agents.ollama_planner import OllamaPlanner
+    monkeypatch.setenv("AGENTIC_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("AGENTIC_MODEL_NAME", "fixture-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-only")
+    from agentic_web_demo.agents.openai_planner import OpenAIPlanner
 
     def fake_plan(self, request, today):
-        self.metadata = {"provider": "ollama", "response_received": True}
+        self.metadata = {"provider": "openai", "response_received": True}
         return SimulatedPlanner().plan(SCENARIOS["new-york"], today)
 
-    monkeypatch.setattr(OllamaPlanner, "plan", fake_plan)
-    assert main(["langgraph", "plan", "--request", "synthetic request"]) == 0
+    monkeypatch.setattr(OpenAIPlanner, "plan", fake_plan)
+    assert main(["langgraph", "plan", "--request", "synthetic request", "--allow-model-api"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "awaiting_review"
     assert output["proposal"]["source"] == "model-assisted"

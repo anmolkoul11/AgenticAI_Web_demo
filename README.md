@@ -1,5 +1,17 @@
 # AgenticAI_Web_demo
 
+**OpenAI-only migration ready for user testing:** see [OPENAI_SETUP.md](docs/OPENAI_SETUP.md).
+Prompt v3 addresses strict-comparison classification; both frameworks now share
+the OpenAI transport. Live semantic acceptance is still pending. Historical
+staging/provider results below are not verification of this migration.
+
+**CrewAI checkpoint:** see
+[CREWAI_GUIDE.md](docs/CREWAI_GUIDE.md) for structured/model-assisted planning and
+approved execution using an independent CrewAI Flow. User-run staging tests:
+222 passed / 39 skipped; CrewAI live interpretation: 21 passed / 17 failed.
+Actual-repository checks and manual CrewAI acceptance remain pending. The
+LangGraph implementation and its known language limitations are preserved.
+
 A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.
@@ -7,10 +19,9 @@ rules, and event publishing.
 **Current scope: bounded LangGraph demo; broad language reliability remains pending.**
 LangGraph coordinates the real browser, validation, SQLite/JSON, rules and NATS
 tools. Planning supports offline scripted scenarios and an opt-in OpenAI adapter
-and a local Ollama adapter, with structured output, policy checks, and plan-only
-preview. See [the Ollama setup guide](docs/OLLAMA_GUIDE.md) for real inference
-without hosted API charges. The user verified a real local-model end-to-end run.
-The expanded language evaluation passed 20/38 cases; it is not fully accepted.
+with structured output, policy checks, and plan-only preview. Both frameworks
+also support structured proposals without a model. Historical local-model
+results are retained in PROGRESS.md, not current acceptance evidence.
 Use [reviewed plan execution](docs/PLAN_EXECUTION_GUIDE.md) for the new bounded path.
 This is a demo starter kit,
 not a production-certified platform.
@@ -64,7 +75,7 @@ The status command reports `5b-langgraph-live-verification-pending`,
 implementation milestone, not service health or automatic discovery of test results.
 Ordinary tests never call a live model. Live tests require `--run-model` and
 explicit provider configuration. OpenAI tests additionally require the paid-use
-permission variable; local Ollama tests do not. See the guides before enabling them.
+permission variable. See the guides before enabling them.
 
 ## Configuration
 

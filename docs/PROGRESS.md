@@ -1,5 +1,43 @@
 # Progress
 
+## Current: OpenAI-only migration and prompt v3 (user validation pending)
+
+Both frameworks now use the shared OpenAI Responses adapter for live planning.
+CrewAI forwards its actual Agent/Task messages through the bounded bridge.
+Ollama code, provider-specific tests and setup guide are removed; installed apps
+and downloaded models are untouched. Earlier entries below are historical and
+may reference retired providers or superseded approval/status information.
+
+Prompt v2 user results exposed three strict-comparison classification failures.
+Prompt v3 clarifies that these require input, rather than unsupported-filter
+rejection. Original test expectations are preserved. No tests or paid calls were
+run for this migration; follow OPENAI_SETUP.md. Do not infer acceptance from
+earlier staging or local-provider results.
+
+## Checkpoint 6: CrewAI implementation, developer review pending
+
+Implemented an independent CrewAI Flow plus one Agent/Task/Crew for local Ollama
+planning. Reuses validated hotel inputs and browser/storage/rules/NATS services,
+not the LangGraph runner. Shared CLI now offers crewai plan/review/execute.
+Version-2 proposals bind framework into approval; legacy v1 LangGraph hashes are
+preserved. Added bounded Crew task-message transport and disabled CrewAI tracing.
+
+User-reported staging verification: 222 passed, 39 skipped, 40 warnings in the
+full browser/NATS regression run. User live semantic evaluation: 21 passed,
+17 failed, 494 repeated upstream CrewAI deprecation warnings. Thirteen semantic
+failures accepted incorrect plans; three misclassified unsupported requests;
+one failed generically. No general-language reliability acceptance is claimed.
+The previous LangGraph baseline remains 20 passed / 18 failed; both LangGraph
+reviewed paths were subsequently manually demonstrated successfully by the user.
+
+Final handoff adds the CrewAI guide and checkpoint status; no tests were rerun
+at the user's request. Actual-repository tests and manual CrewAI structured and
+model-assisted reviewed runs remain pending. No commit, push or branch change.
+See CREWAI_GUIDE.md for setup, customization, recovery and acceptance commands.
+
+Remaining: developer review/acceptance of CrewAI, then checkpoint 7 clean-checkout
+starter-kit reproduction. Generic website discovery and a dashboard remain deferred.
+
 ## Integration re-verification after Docker startup
 
 The local NATS container was healthy. `pytest --run-browser --run-nats` passed:
