@@ -40,7 +40,14 @@ def _run(args, data_dir):
     framework = args.command
     if args.adapter != "demo-hotels" or args.scenario or args.list_scenarios or args.plan_only:
         raise ValueError("Unsupported adapter or legacy flags.")
-    fields = [args.city, args.check_in, args.check_out, args.max_price, args.min_rating]
+    fields = [
+        args.city,
+        args.check_in,
+        args.check_out,
+        args.min_price,
+        args.max_price,
+        args.min_rating,
+    ]
     if args.action in {"review", "execute"}:
         if (
             not args.plan_id
@@ -134,6 +141,7 @@ def _run(args, data_dir):
             city="" if args.all_cities else args.city,
             check_in=args.check_in,
             check_out=args.check_out,
+            min_price=args.min_price,
             max_price=args.max_price,
             min_rating=args.min_rating,
         )

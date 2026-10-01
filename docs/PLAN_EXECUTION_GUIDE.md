@@ -16,7 +16,8 @@ uv run --locked agentic-demo langgraph plan --city "New York" --check-in $checkI
 ```
 
 Use `--all-cities` instead of `--city` for an intentional unrestricted city search.
-Missing fields do not acquire defaults. Inputs may tighten policy, not loosen it.
+Missing required fields do not acquire defaults. The optional lower price bound
+defaults to no lower bound; supplied user thresholds are not capped by the mock site.
 No portal, credentials, broker or model is required for proposal creation.
 
 ## 2. Model-assisted proposal (experimental interpretation)
@@ -68,7 +69,7 @@ Execution uses the saved target and exact plan; it never calls the model. Any
 explicit `--base-url` must equal the saved target. Policy is reloaded from
 config/rules.yaml (`--policy` may select another file); a changed policy requires
 a new proposal. Dates and expiry are rechecked before tools run.
-Expected seeded New York result: four records, two matches and two verified receipts.
+Expected seeded New York result: ten records, five matches and five verified receipts.
 Execution reports `model_used: false` because no inference occurred during execution;
 `planning_source` and `planning_model` retain proposal provenance.
 

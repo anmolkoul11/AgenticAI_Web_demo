@@ -82,16 +82,13 @@ def stay(city):
 def test_browser_to_sqlite_and_json(portal, tmp_path):
     origin, credentials = portal
     snapshot = extract_listings(stay("New York"), credentials, base_url=origin)
-    assert len(snapshot.listings) == 4
+    assert len(snapshot.listings) == 10
     assert {row.listing_id for row in snapshot.listings} == {
-        "NYC-001",
-        "NYC-002",
-        "NYC-003",
-        "NYC-004",
+        f"NYC-{index:03}" for index in range(1, 11)
     }
     run_id = save_snapshot(snapshot, tmp_path)
     payload = json.loads(export_snapshot(run_id, tmp_path).read_text())
-    assert payload["record_count"] == 4
+    assert payload["record_count"] == 10
     assert payload["listings"][0]["title"] == "Harbor House"
     assert payload["listings"][0]["price"] == "180"
 
@@ -116,7 +113,7 @@ def test_cli_complete_browser_workflow(portal, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENTIC_DEMO_DATA_DIR", str(tmp_path))
     assert main(["extract", "--base-url", origin, "--city", "Boston"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["record_count"] == 2
+    assert result["record_count"] == 10
     assert credentials.password not in json.dumps(result)
     assert main(["export", "--run-id", result["run_id"]]) == 0
 
@@ -157,14 +154,14 @@ def test_browser_through_rules_to_consumer(portal, request, tmp_path, monkeypatc
         run = json.loads(capsys.readouterr().out)["run_id"]
         assert main(["process", "--run-id", run]) == 0
         result = json.loads(capsys.readouterr().out)
-        assert result["evaluation"]["matched"] == 2
-        assert result["delivery"]["acknowledged"] == 2
+        assert result["evaluation"]["matched"] == 5
+        assert result["delivery"]["acknowledged"] == 5
         assert main(["consume", "--idle-timeout", "0.3"]) == 0
-        assert json.loads(capsys.readouterr().out)["received"] == 2
+        assert json.loads(capsys.readouterr().out)["received"] == 5
         assert main(["events-status", "--run-id", run]) == 0
         state = json.loads(capsys.readouterr().out)
-        assert state["published"] == 2 and state["pending"] == 0
-        assert len(state["receipts"]) == 2
+        assert state["published"] == 5 and state["pending"] == 0
+        assert len(state["receipts"]) == 5
         assert main(["process", "--run-id", run]) == 0
         assert json.loads(capsys.readouterr().out)["delivery"]["acknowledged"] == 0
     finally:
@@ -257,14 +254,14 @@ def test_langgraph_simulated_plan_real_tools(portal, request, tmp_path, monkeypa
     try:
         result = run_scenario("new-york")
         assert result["status"] == "completed"
-        assert result["record_count"] == 4
-        assert result["evaluation"]["matched"] == 2
-        assert result["receipts_verified"] == 2
+        assert result["record_count"] == 10
+        assert result["evaluation"]["matched"] == 5
+        assert result["receipts_verified"] == 5
         assert result["model_used"] is (planner_kind in {"mocked-openai", "crewai-mocked"})
         assert credentials.password not in json.dumps(result)
         result = run_scenario("no-matches")
         assert result["status"] == "completed"
-        assert result["record_count"] == 4
+        assert result["record_count"] == 10
         assert result["evaluation"]["matched"] == 0
         assert "publish:ok" not in result["trace"]
     finally:
@@ -321,9 +318,9 @@ def test_langgraph_live_model_real_tools(
         assert result["plan"]["city"] == "New York"
         assert result["plan"]["check_in"] == start.isoformat()
         assert result["plan"]["check_out"] == end.isoformat()
-        assert result["record_count"] == 4
-        assert result["evaluation"]["matched"] == 2
-        assert result["receipts_verified"] == 2
+        assert result["record_count"] == 10
+        assert result["evaluation"]["matched"] == 5
+        assert result["receipts_verified"] == 5
         assert credentials.password not in json.dumps(result)
     finally:
         asyncio.run(cleanup())

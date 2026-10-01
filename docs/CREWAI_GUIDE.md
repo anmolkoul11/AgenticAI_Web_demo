@@ -55,8 +55,8 @@ you explicitly want all cities.
 uv run --locked agentic-demo crewai execute --plan-id $planId --approve $revision --headed
 ```
 
-Expected: framework `crewai`, status `completed`, four records, two matches and
-two verified receipts. Execution calls no model. Do not execute the same plan twice.
+Expected: framework `crewai`, status `completed`, ten records, five matches and
+five verified receipts. Execution calls no model. Do not execute the same plan twice.
 
 ## Path B: OpenAI model-assisted proposal
 

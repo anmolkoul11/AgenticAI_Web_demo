@@ -16,6 +16,7 @@ def add_command(commands, name="langgraph"):
     command.add_argument("--all-cities", action="store_true")
     command.add_argument("--check-in")
     command.add_argument("--check-out")
+    command.add_argument("--min-price", help="Optional inclusive minimum nightly USD price")
     command.add_argument("--max-price")
     command.add_argument("--min-rating")
     command.add_argument("--adapter", default="demo-hotels")
@@ -58,6 +59,7 @@ def run_command(args, data_dir: Path) -> int:
                 args.city,
                 args.check_in,
                 args.check_out,
+                args.min_price,
                 args.max_price,
                 args.min_rating,
                 args.plan_id,

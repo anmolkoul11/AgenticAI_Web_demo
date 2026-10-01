@@ -191,8 +191,7 @@ def test_unusable_responses_do_not_fallback(mocked_planner, payload, code):
             "needs_input",
         ),
         ({"outcome": "unsupported", "reason": "unsupported_task"}, "unsupported"),
-        ({"max_price": "201"}, "policy_rejected"),
-        ({"min_rating": "3.9"}, "policy_rejected"),
+        ({"min_price": "250", "max_price": "200"}, "needs_input"),
         ({"max_price": "NaN"}, "failed"),
         ({"max_price": "200.001"}, "failed"),
         ({"min_rating": "6"}, "failed"),
@@ -211,7 +210,7 @@ def test_domain_gate_stops_tools(mocked_planner, changes, status):
 
 
 def test_plan_only_is_side_effect_free_and_preserves_policy_identity(mocked_planner):
-    planner, _ = mocked_planner(decision(max_price="190", min_rating="4.5"))
+    planner, _ = mocked_planner(decision(min_price="150", max_price="250", min_rating="3.5"))
     tools = FakeTools()
     result = run_workflow(
         "synthetic",
@@ -225,7 +224,9 @@ def test_plan_only_is_side_effect_free_and_preserves_policy_identity(mocked_plan
     assert tools.calls == []
     assert result["effective_rules"]["rule_id"] == "demo-policy"
     assert result["effective_rules"]["version"] == 3
-    assert result["effective_rules"]["max_price"] == "190"
+    assert result["effective_rules"]["min_price"] == "150"
+    assert result["effective_rules"]["max_price"] == "250"
+    assert result["effective_rules"]["min_rating"] == "3.5"
 
 
 @pytest.mark.parametrize("request_text", ["", "  ", "x" * 2001])

@@ -134,8 +134,8 @@ uv run --locked agentic-demo langgraph --mode live --allow-model-api --request $
 
 This is a **new model call**, not execution of the exact saved preview. There is
 no durable approval/resume mechanism. Inspect the returned executed plan too.
-For this request, acceptance is 4 records, 2 rule matches, 2 published events,
-and 2 verified receipts. A valid no-match request succeeds with zero events.
+For this request, acceptance is 10 records, 5 rule matches, 5 published events,
+and 5 verified receipts. A valid no-match request succeeds with zero events.
 
 Missing/ambiguous information returns `needs_input` and field names. Resubmit the
 **whole request** with explicit values; the process has no previous conversation.
@@ -146,16 +146,18 @@ their meaning. Unsupported amenities, currencies, booking/payment and external
 website requests are rejected by the planner. Semantic interpretation is still
 model-dependent; the live evaluations measure it, rather than guaranteeing it.
 
-## 4. Preferences versus policy
+## 4. User criteria versus site configuration
 
-Live mode loads `config/rules.yaml` as its trusted policy by default. A missing or
+Live mode loads `config/rules.yaml` as trusted site/rule metadata. A missing or
 invalid file stops before model access; use `--policy PATH` for another reviewed
-local policy. A request can tighten but cannot loosen its maximum price or minimum
-rating. Conflict returns `policy_rejected` before tools; no silent clamping.
+local configuration. The file no longer imposes a price ceiling or rating floor.
+The user's inclusive maximum nightly price and minimum rating become the effective
+rules; an optional inclusive minimum price creates a range. For example, USD
+150–250 and rating at least 4.2 are valid criteria. Minimum above maximum is
+rejected before browser tools. Exact stay dates remain required.
 
-For the current policy (maximum USD 200, minimum rating 4): a request for USD 180
-and rating 4.5 is valid; USD 300 or rating 3 is rejected. Policy identity/version
-are preserved in the effective rules. Events use the effective-rule fingerprint.
+Configuration identity/version are preserved in the effective rules. Events use
+the effective-rule fingerprint, including any lower price bound.
 The model never edits policy files. This local file is developer-controlled, not
 a centrally enforced enterprise authorization system.
 
@@ -168,7 +170,7 @@ do not provide a policy; CLI always loads the configured file.
 
 `plan_request -> validate_plan -> extract -> save -> export -> evaluate -> publish -> receive -> verify`
 
-Validation stops missing, unsupported, invalid, or policy-conflicting plans.
+Validation stops missing, unsupported, or invalid plans (including inverted price ranges).
 Preview stops after validation. Zero matches skips publish/receive. Tool errors
 stop subsequent stages; verification checks this run's persisted event IDs and
 receipts, not a global consumer count or just a broker acknowledgment.
@@ -196,7 +198,6 @@ Mocked SDK tests simulate that response and are not real-model evidence.
 | planned | 0 | Validated preview only; no tools ran |
 | needs_input | 2 | Missing/ambiguous fields; resubmit full request |
 | unsupported | 2 | Request outside supported demo scope |
-| policy_rejected | 2 | Request conflicts with trusted policy |
 | failed | 1 | Safe stage/error code; later tools did not execute |
 | delivery_unconfirmed | 1 | Incomplete run-specific delivery evidence |
 

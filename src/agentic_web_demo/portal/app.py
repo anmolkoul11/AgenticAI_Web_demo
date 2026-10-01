@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from agentic_web_demo.portal.seed import LISTINGS
+from agentic_web_demo.portal.seed import CITIES, LISTINGS
 
 SESSION_SECONDS = 3600
 ASSETS = Path(__file__).parent
@@ -172,6 +172,7 @@ def create_app(settings: PortalSettings | None = None) -> FastAPI:
             status_code=400 if error else 200,
             context={
                 "listings": matches,
+                "cities": [name for _, name in CITIES],
                 "city": city[:100],
                 "check_in": check_in,
                 "check_out": check_out,

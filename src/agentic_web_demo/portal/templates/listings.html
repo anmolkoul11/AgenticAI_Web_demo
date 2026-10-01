@@ -7,7 +7,7 @@
 </div>
 <p class="muted">Seeded nightly rates in USD, including demo taxes and fees. Ratings use a 5-point scale.</p>
 <form class="search" action="/listings" method="get">
-  <div><label for="city">City</label><input id="city" name="city" value="{{ city }}" placeholder="New York or Boston" maxlength="100"></div>
+  <div><label for="city">City</label><input id="city" name="city" value="{{ city }}" placeholder="Choose a demo city" list="demo-cities" maxlength="100"><datalist id="demo-cities">{% for name in cities %}<option value="{{ name }}">{% endfor %}</datalist></div>
   <div><label for="check_in">Check-in</label><input id="check_in" name="check_in" type="date" value="{{ check_in }}" required></div>
   <div><label for="check_out">Check-out</label><input id="check_out" name="check_out" type="date" value="{{ check_out }}" required></div>
   <button type="submit">Search stays</button>
@@ -25,7 +25,7 @@
   <p class="small muted" data-field="price_basis">Per night, taxes and fees included</p>
   <p class="small muted">Listing <span data-field="id">{{ listing.id }}</span></p>
 </article>
-{% else %}<section class="empty" data-testid="empty-state"><h2>No listings found</h2><p>Try New York or Boston, or leave the city blank to see all listings.</p></section>{% endfor %}
+{% else %}<section class="empty" data-testid="empty-state"><h2>No listings found</h2><p>Choose a city from the suggestions, or leave the city blank to see all 100 fictional listings.</p></section>{% endfor %}
 </div>
 {% endif %}
 {% endblock %}

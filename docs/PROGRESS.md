@@ -1,5 +1,90 @@
 # Progress
 
+## Chromium and optional credential-flow sign-in: expanded, unverified
+
+Added a visible, isolated Chromium source with manual sign-in or one optional
+credential flow. Automatic mode can discover one visible sign-in entry, handle
+POST/JavaScript buttons and email-first screens, and follow only exact
+operator-approved identity origins. An optional signed-in indicator can confirm
+the result; a submit click alone is never reported as success. Account-scoped
+capture/cancel controls,
+session-expiry cleanup, credential exclusion/redaction, public-network safety
+proxy and explicit resource-origin permissions are implemented. Browser capture
+precedes the model call; approvals still save the captured preview. Offline and
+browser tests were added but not run by the assistant; static lint/format checks
+passed. No external login, credential submission or paid API call was performed.
+Read CUSTOM_WEBSITE_GUIDE.md for validation and limitations, including unsupported
+passwordless/SSO variants, complex login widgets and automated pagination.
+
+## Custom Website checkpoint: implementation complete within bounded scope; validation pending
+
+Added a separate general extraction workspace: optional instructions, dynamic fields,
+explicit range filters without hotel policy limits, evidence-backed previews, approval,
+private SQLite/JSON snapshots, shared exports, and optional rules/NATS summary events.
+Both LangGraph and CrewAI Flow orchestrate the shared services. Public HTML fetching
+has public-IP pinning and robots checks; an authorized pasted-text mode handles content
+the static reader cannot retrieve. No tests or paid calls were run by the assistant.
+Follow CUSTOM_WEBSITE_GUIDE.md for manual validation and precise limitations.
+Automated external login, JS rendering, pagination and custom-event consumer verification
+remain unimplemented. The legacy Hotel demo's policy and receipt workflow are unchanged.
+
+## Result exports: implemented, user verification pending
+
+Added Excel, UTF-8 CSV, JSON and JSON Lines downloads, full-run/filtered selection,
+run-specific filenames, source fields, and Excel metadata/rule-decision sheets.
+Exports read only account-owned saved results and do not call a model. Text is
+written explicitly in Excel; CSV formula-like values are escaped. Added bounded,
+schema-flexible export utilities and offline regression coverage. Tests were not
+run by the assistant. Follow EXPORTS_GUIDE.md to install and verify this checkpoint.
+Custom Website extraction is the next checkpoint and is not implemented here.
+
+## Current: dashboard usability and local account controls — acceptance pending
+
+Implemented a light navy/teal dashboard with separate Search studio, Run history,
+API connection and admin sections; readable proposal review, stage labels, result
+metrics, outcome filtering, policy/clarification feedback, and separate sign-in/
+registration screens. Added optional user-owned OS credential storage, explicit
+first-admin setup, role/status controls, session revocation and secret-free audit
+events. No browser verification, tests or paid calls were run by the assistant.
+
+Use VERIFICATION_CHECKLIST.md for the user-run acceptance sequence. Prior supplied
+live semantic baselines were LangGraph 43/44 and CrewAI 40/44; known failures remain.
+These are historical model results, not verification of the new UI/account changes.
+Current implementation status and remaining work are in PROJECT_PLAN.md. Hosting
+is deferred; the external adapter and final starter-kit handoff remain unfinished.
+
+## Historical entries below
+
+The entries below preserve earlier evidence and scope decisions; statements such
+as "dashboard deferred", session-only-only keys or earlier model counts are not
+the current scope. Do not delete previous failures or infer a new passing result.
+
+## Local accounts and 100-hotel catalogue: user verification pending
+
+Expanded deterministic seed data to 10 major US cities with 10 hotels each,
+preserving original records. Added individual local account registration/login,
+salted password hashing, UUID-scoped data and NATS streams, session-memory API
+keys with no environment fallback, and a global one-job execution limit.
+Existing shared artifacts are preserved and are not automatically assigned to
+new accounts. See LOCAL_ACCOUNTS.md. Tests and paid calls were not run for this change.
+
+## Dashboard MVP: development handoff, user verification pending
+
+Added a separate loopback FastAPI dashboard over shared proposal, revision,
+execution and tool services. Includes structured and paid opt-in model planning,
+both frameworks, explicit review/approval, bounded background jobs, stage polling,
+results/rule decisions, JSON/CSV exports and the latest 100 dashboard jobs.
+
+Login, session expiry/logout, same-origin CSRF checks, bounded request bodies,
+trusted hosts and a server-configured portal target protect the local demo.
+Job restart recovery never replays side effects. CSV exports neutralize formulas.
+Windows setup/launcher scripts start owned local services without storing keys.
+
+No tests, UI/browser sessions, paid API calls or Git commits were run for this
+checkpoint. Python lint/format checks only. User verification and known semantic
+limitations are documented in DASHBOARD_GUIDE.md. External website integration,
+production identity and durable multi-user execution remain out of scope.
+
 ## Current: OpenAI-only migration and prompt v3 (user validation pending)
 
 Both frameworks now use the shared OpenAI Responses adapter for live planning.

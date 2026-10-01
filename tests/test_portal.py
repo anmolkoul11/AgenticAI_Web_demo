@@ -54,7 +54,7 @@ def test_valid_login_and_seeded_listings(client):
     assert "samesite=strict" in response.headers["set-cookie"].lower()
     page = client.get("/listings")
     assert page.status_code == 200
-    assert page.text.count('data-testid="listing"') == 6
+    assert page.text.count('data-testid="listing"') == 100
     assert "Harbor House" in page.text
     assert page.headers["cache-control"] == "no-store"
 
@@ -62,7 +62,7 @@ def test_valid_login_and_seeded_listings(client):
 def test_city_filter_case_insensitive(client):
     login(client)
     page = client.get("/listings", params={"city": "  new york  "})
-    assert page.text.count('data-testid="listing"') == 4
+    assert page.text.count('data-testid="listing"') == 10
     assert "Beacon Court" not in page.text
 
 

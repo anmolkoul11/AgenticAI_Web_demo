@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Agentic Studio Page Capture",
+  "version": "0.1.0",
+  "description": "Review one page and hand it to your signed-in local Agentic Studio.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {"default_popup": "popup.html"}
+}

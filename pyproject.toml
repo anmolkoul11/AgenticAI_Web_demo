@@ -9,6 +9,8 @@ description = "Reusable website-agent demos with shared browser, storage, rules,
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    "xlsxwriter>=3.2,<4",
+    "keyring>=25.7,<26",
     "openai>=2,<3",
     "httpx>=0.28,<1",
     "langgraph>=1.0,<2",
