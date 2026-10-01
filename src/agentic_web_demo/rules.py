@@ -16,16 +16,24 @@ class Rules(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     rule_id: str = Field(default="affordable-quality-stay", pattern=r"^[a-z0-9-]{1,64}$")
     version: int = Field(default=1, ge=1, strict=True)
-    max_price: Decimal = Field(default=Decimal("200"), ge=0, allow_inf_nan=False)
-    min_rating: Decimal = Field(default=Decimal("4"), ge=0, le=5, allow_inf_nan=False)
+    min_price: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_price: Decimal | None = Field(default=Decimal("200"), ge=0, allow_inf_nan=False)
+    min_rating: Decimal | None = Field(default=Decimal("4"), ge=0, le=5, allow_inf_nan=False)
     currency: Literal["USD"] = "USD"
     rating_scale: Literal[5] = 5
     price_basis: Literal["per_night_taxes_included"] = "per_night_taxes_included"
 
     def fingerprint(self) -> str:
         payload = self.model_dump(mode="json")
-        payload["max_price"] = str(self.max_price.normalize())
-        payload["min_rating"] = str(self.min_rating.normalize())
+        payload["min_price"] = (
+            str(self.min_price.normalize()) if self.min_price is not None else None
+        )
+        payload["max_price"] = (
+            str(self.max_price.normalize()) if self.max_price is not None else None
+        )
+        payload["min_rating"] = (
+            str(self.min_rating.normalize()) if self.min_rating is not None else None
+        )
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def reasons(self, listing: Listing) -> list[str]:
@@ -34,9 +42,11 @@ class Rules(BaseModel):
             reasons.append("incompatible_price_basis_or_currency")
         if listing.rating_scale != self.rating_scale:
             reasons.append("incompatible_rating_scale")
-        if listing.price > self.max_price:
+        if self.min_price is not None and listing.price < self.min_price:
+            reasons.append("price_below_minimum")
+        if self.max_price is not None and listing.price > self.max_price:
             reasons.append("price_above_maximum")
-        if listing.rating < self.min_rating:
+        if self.min_rating is not None and listing.rating < self.min_rating:
             reasons.append("rating_below_minimum")
         return reasons
 

@@ -23,8 +23,9 @@ class NoTools:
         ("booking", "unsupported"),
         ("currency", "unsupported"),
         ("amenity", "unsupported"),
-        ("policy-price", "policy_rejected"),
-        ("policy-rating", "policy_rejected"),
+        ("higher-price", "planned"),
+        ("lower-rating", "planned"),
+        ("price-range", "planned"),
         ("invalid-dates", "failed"),
         ("no-matches", "planned"),
         ("all-cities", "planned"),
@@ -47,10 +48,12 @@ def test_real_model_interpretation(live_planner, case, expected, record_property
         prompt = prompt.replace("USD", "EUR")
     elif case == "amenity":
         prompt += " Only include hotels with a swimming pool."
-    elif case == "policy-price":
+    elif case == "higher-price":
         prompt = prompt.replace("200", "300")
-    elif case == "policy-rating":
+    elif case == "lower-rating":
         prompt = prompt.replace("at least 4", "at least 3")
+    elif case == "price-range":
+        prompt = prompt.replace("at most USD 200", "between USD 150 and 250 inclusive")
     elif case == "invalid-dates":
         prompt = f"Find New York hotels from {check_out} to {check_in}, {criteria}."
     elif case == "no-matches":
@@ -74,16 +77,20 @@ def test_real_model_interpretation(live_planner, case, expected, record_property
         assert result["plan"]["city"] == ("" if case == "all-cities" else "New York")
         assert result["plan"]["check_in"] == check_in
         assert result["plan"]["check_out"] == check_out
-        assert Decimal(result["plan"]["max_price"]) == (50 if case == "no-matches" else 200)
-        assert Decimal(result["plan"]["min_rating"]) == 4
+        assert Decimal(result["plan"]["max_price"]) == {
+            "no-matches": 50,
+            "higher-price": 300,
+            "price-range": 250,
+        }.get(case, 200)
+        assert Decimal(result["plan"]["min_rating"]) == (3 if case == "lower-rating" else 4)
+        assert result["plan"]["min_price"] == ("150" if case == "price-range" else None)
     if case == "missing-city":
         assert "city" in result["missing_fields"]
     if case == "invalid-dates":
         assert result["failed_stage"] == "validate_plan"
 
 
-# Keep the original acceptance cases above unchanged. These independent variants
-# measure generalization, rather than modifying prompts to fit observed answers.
+# These independent variants measure model generalization against current criteria.
 VARIANTS = [
     ("nyc-alias", "Find NYC hotels {dates}, {criteria}.", "planned", "New York"),
     ("boston", "Find Boston hotels {dates}, {criteria}.", "planned", "Boston"),
@@ -224,18 +231,25 @@ VARIANTS = [
         None,
     ),
     (
-        "price-policy-cent",
+        "price-above-old-ceiling",
         "Find New York hotels {dates}, at most USD 200.01 per night including taxes, "
         "rated at least 4 out of 5.",
-        "policy_rejected",
+        "planned",
         None,
     ),
     (
-        "rating-policy-decimal",
+        "rating-below-old-floor",
         "Find New York hotels {dates}, at most USD 200 per night including taxes, "
         "rated at least 3.9 out of 5.",
-        "policy_rejected",
+        "planned",
         None,
+    ),
+    (
+        "inclusive-price-range",
+        "Find Boston hotels {dates}, nightly prices including taxes from USD 150 "
+        "to 250 inclusive and ratings at least 4.2 out of 5.",
+        "planned",
+        "Boston",
     ),
     (
         "same-day-checkout",
@@ -332,8 +346,19 @@ def test_real_model_wording_variants(
         assert result["plan"]["city"] == detail, diagnostic
         assert result["plan"]["check_in"] == check_in, diagnostic
         assert result["plan"]["check_out"] == check_out, diagnostic
-        assert Decimal(result["plan"]["max_price"]) == 200, diagnostic
-        assert Decimal(result["plan"]["min_rating"]) == 4, diagnostic
+        expected_max = {
+            "price-above-old-ceiling": Decimal("200.01"),
+            "inclusive-price-range": Decimal("250"),
+        }.get(case, Decimal("200"))
+        expected_rating = {
+            "rating-below-old-floor": Decimal("3.9"),
+            "inclusive-price-range": Decimal("4.2"),
+        }.get(case, Decimal("4"))
+        assert Decimal(result["plan"]["max_price"]) == expected_max, diagnostic
+        assert Decimal(result["plan"]["min_rating"]) == expected_rating, diagnostic
+        assert result["plan"]["min_price"] == (
+            "150" if case == "inclusive-price-range" else None
+        ), diagnostic
         assert result["plan"]["currency"] == "USD", diagnostic
         assert result["plan"]["rating_scale"] == 5, diagnostic
         assert result["plan"]["price_basis"] == "per_night_taxes_included", diagnostic

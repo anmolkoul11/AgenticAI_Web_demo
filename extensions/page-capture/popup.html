@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Agentic Studio Capture</title>
+<link rel="stylesheet" href="popup.css"><script src="capture_dom.js" defer></script><script src="popup.js" defer></script></head>
+<body><h1>Capture this page</h1><p id="status" role="status">Checking the selected tab...</p>
+<button id="capture" hidden>Capture visible content</button>
+<pre id="preview" tabindex="0"></pre>
+<label id="consent-label" hidden><input id="consent" type="checkbox">I reviewed this content and am authorized to transfer it. It contains no secrets.</label>
+<button id="keep" hidden>Keep this capture for transfer</button>
+<button id="send" hidden>Send to displayed dashboard account</button>
+<button id="clear">Discard capture</button>
+<p>Content stays in extension session memory for up to 10 minutes (expiry checked on use). No background collection or model calls. Review sensitive information before transfer. Then switch to your dashboard tab and click this extension again.</p>
+</body></html>

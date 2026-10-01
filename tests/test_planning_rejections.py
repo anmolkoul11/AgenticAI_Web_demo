@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from agentic_web_demo.agents.planning import validate_candidate
 from agentic_web_demo.agents.runners import get_runner
+from agentic_web_demo.rules import Rules
 
 
 @pytest.mark.parametrize("framework", ["langgraph", "crewai"])
@@ -50,3 +51,24 @@ def test_rejection_does_not_mutate_original_candidate():
     result = validate_candidate(candidate, date.today())
     assert result["status"] == "unsupported"
     assert candidate["min_rating"] == "8"
+
+
+def test_hotel_thresholds_follow_user_request_not_legacy_demo_defaults():
+    candidate = {
+        "city": "Boston",
+        "check_in": "2026-10-05",
+        "check_out": "2026-10-07",
+        "min_price": "150",
+        "max_price": "250",
+        "min_rating": "3.5",
+    }
+    result = validate_candidate(candidate, date(2026, 9, 28), Rules())
+    assert result["status"] == "running"
+    assert result["plan"]["min_price"] == "150"
+    assert result["plan"]["max_price"] == "250"
+    assert result["plan"]["min_rating"] == "3.5"
+
+    candidate["min_price"] = "251"
+    result = validate_candidate(candidate, date(2026, 9, 28), Rules())
+    assert result["status"] == "needs_input"
+    assert result["missing_fields"] == ["min_price", "max_price"]

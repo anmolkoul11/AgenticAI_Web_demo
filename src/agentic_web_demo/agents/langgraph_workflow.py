@@ -111,6 +111,7 @@ def build_graph(
         return Rules(
             rule_id=policy.rule_id if policy else "affordable-quality-stay",
             version=policy.version if policy else 1,
+            min_price=plan.min_price,
             max_price=plan.max_price,
             min_rating=plan.min_rating,
             currency=plan.currency,

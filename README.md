@@ -1,11 +1,42 @@
 # AgenticAI_Web_demo
 
+## Custom Website workspace
+
+New bounded path for public HTML pages or authorized pasted page text: optional
+instructions, dynamic fields and range filters (no hotel policy ceiling), readable
+evidence-backed previews, approval, private storage, Excel/CSV/JSON/JSONL downloads,
+and optional rule-based NATS summary events. Both LangGraph and CrewAI Flow are
+available. See [CUSTOM_WEBSITE_GUIDE.md](docs/CUSTOM_WEBSITE_GUIDE.md) for setup,
+user-run validation and limitations, and [EXTERNAL_SITE_ACCEPTANCE.md](docs/EXTERNAL_SITE_ACCEPTANCE.md)
+for the BBC News and Booking.com acceptance scenarios. Chromium rendering, optional single-form HTTPS
+sign-in and human-approved same-site article discovery are implemented, with isolated sessions. Cross-origin SSO,
+complex login adapters, pagination and custom-event consumer receipts remain unimplemented. Runtime validation
+is pending; the assistant did not run tests or paid model calls.
+
+## Local dashboard (new MVP)
+
+Now includes [individual local accounts](docs/LOCAL_ACCOUNTS.md), private workspaces,
+session-only or opt-in OS-stored API keys, administrator roles, and 100 fictional hotels across 10 cities. See [account security and admin setup](docs/ACCOUNTS_SECURITY.md). Restart the
+dashboard and create an account with your own username/password. No registration
+code is required. The launcher password is only for synthetic hotel automation.
+
+See [DASHBOARD_GUIDE.md](docs/DASHBOARD_GUIDE.md) for setup, sales/demo instructions
+and [VERIFICATION_CHECKLIST.md](docs/VERIFICATION_CHECKLIST.md) for current acceptance
+steps. Start with `scripts/Setup-Demo.ps1`, then
+`scripts/Start-Demo.ps1`. The dashboard adds guided/model-assisted planning,
+explicit review and approval, background stage progress, results and exports,
+and recent job history for both frameworks. These hotel-demo instructions describe
+the local hotel adapter; use Custom Website for the new general path above.
+This MVP awaits user tests and visual verification; earlier test
+results below do not validate the new UI.
+
 **OpenAI-only migration ready for user testing:** see [OPENAI_SETUP.md](docs/OPENAI_SETUP.md).
-Prompt v3 addresses strict-comparison classification; both frameworks now share
+Prompt v4 adds optional minimum price and removes fixed hotel price/rating thresholds;
+both frameworks now share
 the OpenAI transport. Live semantic acceptance is still pending. Historical
 staging/provider results below are not verification of this migration.
 
-**CrewAI checkpoint:** see
+**Historical CrewAI checkpoint results (not current acceptance):** see
 [CREWAI_GUIDE.md](docs/CREWAI_GUIDE.md) for structured/model-assisted planning and
 approved execution using an independent CrewAI Flow. User-run staging tests:
 222 passed / 39 skipped; CrewAI live interpretation: 21 passed / 17 failed.
@@ -16,10 +47,10 @@ A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
 rules, and event publishing.
 
-**Current scope: bounded LangGraph demo; broad language reliability remains pending.**
+**Current scope: bounded LangGraph and CrewAI demos; broad language reliability remains pending.**
 LangGraph coordinates the real browser, validation, SQLite/JSON, rules and NATS
 tools. Planning supports offline scripted scenarios and an opt-in OpenAI adapter
-with structured output, policy checks, and plan-only preview. Both frameworks
+with structured output, deterministic criteria checks, and plan-only preview. Both frameworks
 also support structured proposals without a model. Historical local-model
 results are retained in PROGRESS.md, not current acceptance evidence.
 Use [reviewed plan execution](docs/PLAN_EXECUTION_GUIDE.md) for the new bounded path.
@@ -120,6 +151,10 @@ Git commit. No automatic commits, remote pushes, or external-site automation.
 The landscape document is the separate research deliverable; this repository
 will contain the implementations and the two step-by-step developer guides.
 # Reviewed LangGraph demo
+
+For external pages in your normal Chrome/Edge session, see
+[Browser capture setup and partial-result review](docs/BROWSER_CAPTURE_GUIDE.md).
+This user-assisted path complements automated Chromium; runtime verification is pending.
 
 Start with [the plan/review/execute guide](docs/PLAN_EXECUTION_GUIDE.md) for the
 recommended two-path interface: explicit inputs or model-assisted proposals,

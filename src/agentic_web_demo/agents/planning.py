@@ -9,7 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from agentic_web_demo.listings import Stay
 from agentic_web_demo.rules import Rules
 
-ClarificationField = Literal["city", "check_in", "check_out", "max_price", "min_rating", "request"]
+ClarificationField = Literal[
+    "city", "check_in", "check_out", "min_price", "max_price", "min_rating", "request"
+]
 Reason = Literal[
     "none",
     "unsupported_task",
@@ -24,6 +26,7 @@ class Plan(BaseModel):
     city: str | None = Field(default=None, max_length=100)
     check_in: date | None = None
     check_out: date | None = None
+    min_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     max_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     min_rating: Decimal | None = Field(default=None, ge=0, le=5)
     currency: Literal["USD"] = "USD"
@@ -82,7 +85,9 @@ def validate_candidate(candidate: dict, today: date, policy: Rules | None = None
     if candidate.get("outcome") == "unsupported":
         validation_input = {
             **candidate,
-            **dict.fromkeys(("city", "check_in", "check_out", "max_price", "min_rating")),
+            **dict.fromkeys(
+                ("city", "check_in", "check_out", "min_price", "max_price", "min_rating")
+            ),
         }
     parsed = Candidate.model_validate(validation_input)
     if parsed.outcome == "unsupported":
@@ -105,17 +110,16 @@ def validate_candidate(candidate: dict, today: date, policy: Rules | None = None
     plan = Plan.model_validate(
         parsed.model_dump(exclude={"outcome", "clarification_fields", "reason"})
     )
+    if plan.min_price is not None and plan.min_price > plan.max_price:
+        return {
+            "status": "needs_input",
+            "missing_fields": ["min_price", "max_price"],
+            "guidance": "Minimum nightly price exceeds maximum nightly price. "
+            "Correct the range and resubmit; no tools ran.",
+        }
     stay = Stay(city=plan.city, check_in=plan.check_in, check_out=plan.check_out)
     if stay.check_in < today:
         raise ValueError("Past stay")
-    if policy and (plan.max_price > policy.max_price or plan.min_rating < policy.min_rating):
-        return {
-            "status": "policy_rejected",
-            "policy": policy.model_dump(mode="json"),
-            "guidance": "Requested thresholds conflict with configured policy. "
-            "Use a price at or below the policy maximum and rating at or above its minimum. "
-            "The request was not silently changed; no tools ran.",
-        }
     return {"plan": plan.model_dump(mode="json"), "status": "running"}
 
 
@@ -167,5 +171,6 @@ class SimulatedPlanner:
             "check_in": (today + timedelta(days=7)).isoformat(),
             "check_out": (today + timedelta(days=9)).isoformat(),
             "max_price": "50" if scenario == "no-matches" else "200",
+            "min_price": None,
             "min_rating": "4",
         }

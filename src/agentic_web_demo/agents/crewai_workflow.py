@@ -73,6 +73,7 @@ def run_workflow(
                     result["effective_rules"] = Rules(
                         rule_id=policy.rule_id,
                         version=policy.version,
+                        min_price=plan.min_price,
                         max_price=plan.max_price,
                         min_rating=plan.min_rating,
                     ).model_dump(mode="json")

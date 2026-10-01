@@ -58,7 +58,7 @@ Change ports with `--base-url http://127.0.0.1:8001`. Use only the local demo si
 ## Expected output
 
 The CLI prints a unique `run_id`, a `record_count`, and absolute database/export
-paths. New York returns 4 records; Boston returns 2. No city returns all 6.
+paths. Each of the 10 supported cities returns 10 records. No city returns all 100.
 
 - Database: `data/listings.sqlite3`.
 - JSON: `data/exports/<run_id>.json`.
@@ -90,8 +90,8 @@ Re-export replaces only that run's derived JSON file; SQLite remains the source.
 
 ## Review checklist
 
-1. New York extraction reports 4, and JSON contains the four NYC IDs.
-2. Boston reports 2; blank city reports 6.
+1. New York extraction reports 10, with IDs NYC-001 through NYC-010.
+2. Boston reports 10; blank city reports 100.
 3. `--city "No Such City"` succeeds with 0 and a saved empty snapshot.
 4. A wrong password fails without creating a run or writing records.
 5. Invalid/reversed/past dates fail without launching Chromium or saving data.

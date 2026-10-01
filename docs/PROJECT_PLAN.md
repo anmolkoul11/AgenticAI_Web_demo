@@ -1,34 +1,39 @@
 # Project plan
 
-Current provider update: OpenAI only for live planning in both frameworks;
-Ollama support is retired. Prompt v3 and the CrewAI OpenAI bridge await user-run
-verification. Earlier checkpoint notes below are historical. See OPENAI_SETUP.md.
+## New checkpoint: bounded Custom Website extraction
 
-## Current checkpoint: CrewAI developer review
+Implemented, awaiting user verification: dynamic public-page/pasted-text extraction,
+optional instructions/filters, preview approval, per-account storage, exports and
+optional business-rule summary events through both orchestration frameworks.
+See [CUSTOM_WEBSITE_GUIDE.md](CUSTOM_WEBSITE_GUIDE.md).
 
-CrewAI plan/review/execute is implemented with its own Flow and local planning
-Agent/Task/Crew. See CREWAI_GUIDE.md. It shares adapters/contracts/services, not
-LangGraph orchestration. Both LangGraph reviewed paths were manually verified;
-CrewAI actual-repository checks and manual approval-path acceptance are pending.
-Language baselines remain explicit: LangGraph 20/38 and CrewAI 21/38; neither
-is accepted for unrestricted natural-language execution. Checkpoint 7 follows
-review/merge and covers clean-checkout reproducibility and developer handoff.
+Remaining: runtime acceptance, semantic evaluations, external authenticated browser
+adapters, JS/pagination support, custom-event consumer receipt verification, and
+enterprise deployment/identity/secrets hardening. Do not claim universal website support.
+The older checkpoint notes below describe the separate synthetic Hotel demo.
 
-## Current bounded handoff scope
+## Current checkpoint: local dashboard and account-system acceptance
 
-The reference use case is local hotel extraction, not an arbitrary-site scraper.
-LangGraph now supports explicit structured inputs or experimental model-assisted
-proposals, followed by review and exact saved-plan execution. See
-PLAN_EXECUTION_GUIDE.md. CrewAI should reuse schemas, tools and proposal contracts
-through its own runner, not wrap the LangGraph graph. Website/domain onboarding
-requires explicit adapters, definitions and tests. A dashboard and generic adapter
-registry are deferred. Historical checkpoint notes below remain as context.
+LangGraph and CrewAI are implemented as independent runners with shared browser,
+storage, rule and event services. Both support structured or OpenAI-assisted
+proposals followed by explicit review and approval. The dashboard, 100-hotel
+catalogue, local accounts, administrator controls and optional OS-stored keys are
+implemented. The latest UI/security changes await user-run acceptance; no tests
+or paid model calls were run by the assistant for them.
 
-Acceptance is split: reproducible bounded workflow versus general language
-interpretation. The user demonstrated local Ollama plus the complete real-tool
-workflow; the language baseline is 20/38 passing and remains an open limitation.
-Human review is a mitigation, not proof that interpretation is correct. Do not
-claim all original semantic evaluations pass or enterprise production readiness.
+Follow [VERIFICATION_CHECKLIST.md](VERIFICATION_CHECKLIST.md) for offline tests,
+both frameworks' end-to-end demos and paid opt-in semantic checks. Previous
+supplied language baselines: LangGraph 43/44, CrewAI 40/44. Do not treat these as
+verification of new changes or unrestricted language reliability.
+
+Remaining priorities: verify this checkpoint, fix semantic failures, integrate
+an approved external website, reproduce a clean-checkout starter kit, and align
+the landscape/handoff documentation. Hosting is deferred. Cross-platform OS
+credential storage is implemented but must be verified on each supported OS.
+
+The reference adapter is still local demo hotels, not an arbitrary-site scraper.
+Admin roles and a desktop keyring do not constitute enterprise production readiness.
+See ACCOUNTS_SECURITY.md for limitations and migration requirements.
 
 ## Objective and requirements
 
@@ -97,7 +102,7 @@ Every checkpoint: implement -> automated checks -> user review in VS Code ->
 approved commit. Do not proceed beyond the agreed checkpoint without review.
 Do not automatically commit, push, delete existing work, or choose a paid service.
 
-### Checkpoint 5 interim split
+### Historical checkpoint 5 interim split (superseded by current status above)
 
 Model access is pending organizational approval. Checkpoint 5a builds and tests
 the real LangGraph tool workflow with explicitly simulated planning. This does

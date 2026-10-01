@@ -30,9 +30,9 @@ If uv works only through `$uvExecutable` in your terminal, substitute
 
 1. Open `/listings` in a private browser window: it redirects to login.
 2. Enter an incorrect password: an error appears and no listings are disclosed.
-3. Sign in correctly: six fictional listings appear.
-4. Search for **New York** with a valid future stay: four listings appear.
-5. Search for **Boston**: two listings appear.
+3. Sign in correctly: 100 fictional listings across 10 cities appear.
+4. Search for **New York** with a valid future stay: ten listings appear.
+5. Search for **Boston**: ten listings appear.
 6. Search for an unknown city: an empty state appears, not an application error.
 7. Choose a check-out before check-in: validation appears.
 8. Sign out, then visit `/listings`: login is required again.

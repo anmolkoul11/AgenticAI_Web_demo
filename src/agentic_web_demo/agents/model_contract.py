@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agentic_web_demo.agents.planning import ClarificationField, Reason
 
-PROMPT_VERSION = "hotel-planner-v3"
+PROMPT_VERSION = "hotel-planner-v4"
 INSTRUCTIONS = """You interpret synthetic local hotel-demo search requests, not execute actions.
 The selected adapter is demo-hotels: ONLY the local synthetic hotel portal is available.
 First classify whether the entire request is supported, before extracting search fields.
@@ -23,24 +23,30 @@ Classification priority: (1) genuinely unsupported source/task/currency/scale/fi
 unsupported; (2) otherwise-supported requests with strict comparisons or missing/ambiguous
 criteria -> needs_input; (3) complete supported inclusive criteria -> ready.
 For a genuinely unsupported requirement, return outcome=unsupported, the appropriate reason,
-clarification_fields=[], and ALL five nullable search fields=null. This takes precedence
+clarification_fields=[], and ALL six nullable search fields=null. This takes precedence
 over extracting dates, thresholds or missing fields. Do not partially fulfill the request.
-Only extract city, check-in/out dates, inclusive maximum nightly tax-inclusive USD price,
-and inclusive minimum rating on a 0-5 scale. No defaults for missing criteria.
+Only extract city, check-in/out dates, optional inclusive minimum and required inclusive
+maximum nightly tax-inclusive USD price, and inclusive minimum rating on a 0-5 scale.
+There is no fixed price ceiling or rating floor: the supplied criteria become the rules.
+"From 150 to 250 USD inclusive" means min_price="150", max_price="250".
+Never drop the lower bound of a requested range. No defaults for missing criteria.
 Use null for unspecified fields and needs_input with their clarification_fields.
 An explicit request for all cities uses city=""; a missing city uses null.
 Normalize NYC to New York. Other city names are allowed (possibly no listings).
 Use the supplied local reference date for exact relative dates, e.g. seven days from today.
 Ambiguous dates such as 'next weekend', or dates without an unambiguous year, need clarification;
 do not guess. Dates must use YYYY-MM-DD. Preserve explicit dates even if invalid or in the past:
-application code validates them. Preserve explicit thresholds even if they violate policy.
+application code validates them. Preserve explicit thresholds even if a range is inverted;
+application code will reject that range for correction.
 Numeric prices and ratings are decimal strings, without symbols. Bare '$' means USD here.
 If strict comparisons ('strictly less than', 'under', 'above') are requested, ask for explicit
-inclusive max_price/min_rating rather than silently changing boundary semantics.
+inclusive min_price/max_price/min_rating rather than silently changing boundary semantics.
 Specifically: 'less than USD 200' and 'strictly under USD 200' -> outcome=needs_input,
 reason=ambiguous_request, max_price=null, clarification_fields=["max_price"].
 'Strictly above 4 out of 5' -> outcome=needs_input, reason=ambiguous_request,
 min_rating=null, clarification_fields=["min_rating"]. Preserve the other supported fields.
+"Strictly above USD 150" -> needs_input, min_price=null,
+clarification_fields=["min_price"]. Preserve other supported fields.
 If both thresholds are strict, null both and ask for both fields. Do not subtract a cent,
 round a rating, or classify these comparisons as unsupported_filter.
 Do not invent supported equivalents for unsupported filters (amenities, sorting, etc.).
@@ -61,6 +67,7 @@ class ModelDecision(BaseModel):
     city: str | None
     check_in: str | None
     check_out: str | None
+    min_price: str | None
     max_price: str | None
     min_rating: str | None
     clarification_fields: list[ClarificationField]
