@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -20,43 +21,8 @@ class ArticleSelection(BaseModel):
     selected_ids: list[int] = Field(max_length=5)
 
 
-LINK_SNAPSHOT = """() => {
-    const excluded = /login|log.?out|sign.?in|subscribe|account|payment|checkout|book|delete/i;
-    const seen = new Set(), result = [];
-    const roots = [];
-    const visit = root => {
-        roots.push(root);
-        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot);
-    };
-    visit(document);
-    const anchors = [
-        ...roots.flatMap(root => [...root.querySelectorAll('nav a[href], header a[href]')]).slice(0, 20),
-        ...roots.flatMap(root => [...root.querySelectorAll('main a[href], article a[href]')]),
-        ...roots.flatMap(root => [...root.querySelectorAll('a[href]')])
-    ];
-    for (const a of anchors) {
-        if (result.length >= 100) break;
-        if (!a.getClientRects().length || getComputedStyle(a).visibility === 'hidden') continue;
-        let url;
-        try { url = new URL(a.href, location.href); } catch (_) { continue; }
-        if (url.protocol !== 'https:' || url.origin !== location.origin ||
-            (url.pathname === location.pathname && url.search === location.search) ||
-            seen.has(url.href) ||
-            excluded.test(url.pathname)) continue;
-        const card = a.closest('article,li,[class*="card"],[class*="story"]');
-        const heading = card?.querySelector('h1,h2,h3,h4');
-        const image = a.querySelector('img[alt]');
-        const title = (a.innerText || a.getAttribute('aria-label') || image?.alt ||
-            heading?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
-        const context = (card?.querySelector('p')?.innerText || '')
-            .replace(/\\s+/g, ' ').trim().slice(0, 240);
-        if (title.length < 4 || excluded.test(title)) continue;
-        seen.add(url.href);
-        result.push({id: result.length, title, context, url: url.href,
-            navigation: !!a.closest('nav,[role="navigation"]')});
-    }
-    return result;
-}"""
+INVENTORY_SCRIPT = Path(__file__).parent / "dashboard" / "static" / "capture_dom.js"
+LINK_SNAPSHOT = "() => (" + INVENTORY_SCRIPT.read_text(encoding="utf-8") + ")({mode: 'links'})"
 
 
 LINK_INSTRUCTIONS = """Select up to five content links relevant to the user's request.
@@ -96,7 +62,7 @@ def link_role_hint(url, *, navigation=False):
         "tag",
         "tags",
     }
-    if parts and parts[0] in section_roots and len(parts) <= 3:
+    if parts and parts[0] in section_roots:
         return "section"
     if navigation:
         return "section"
@@ -132,7 +98,9 @@ def inspect_links(page, expected_origin):
                     continue
                 if any(
                     re.search(
-                        r"token|auth|session|key|code|sig|state|redirect|return|next|email", key, re.I
+                        r"token|auth|session|key|code|sig|state|redirect|return|next|email",
+                        key,
+                        re.I,
                     )
                     for key, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)
                 ):
@@ -152,6 +120,7 @@ def inspect_links(page, expected_origin):
                         "url": url,
                         "display_url": safe_display_url(url),
                         "role_hint": link_role_hint(url, navigation=raw.get("navigation") is True),
+                        "labels": [str(label)[:180] for label in raw.get("labels", [])[:6]],
                     }
                 )
             except (KeyError, TypeError, WebsiteError):

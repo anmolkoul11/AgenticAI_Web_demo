@@ -4,13 +4,14 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+from test_dashboard import SETTINGS
+
 from agentic_web_demo.agents.openai_planner import ModelSettings
 from agentic_web_demo.dashboard.accounts import Accounts
 from agentic_web_demo.dashboard.app import create_app
 from agentic_web_demo.dashboard.credential_store import CredentialStore, CredentialUnavailable
 from agentic_web_demo.dashboard.service import DashboardService
-from fastapi.testclient import TestClient
-from test_dashboard import SETTINGS
 
 PASSWORD = "test-password-not-a-real-secret"
 

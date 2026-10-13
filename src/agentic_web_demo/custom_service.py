@@ -27,11 +27,48 @@ from agentic_web_demo.custom_extract import (
 )
 from agentic_web_demo.custom_fetch import WebsiteError, read_pages
 from agentic_web_demo.custom_workflow import run_steps
+from agentic_web_demo.enrichment import evidence_block_ids, reconcile_records
 from agentic_web_demo.messaging import Broker, connect
 
 
 def now():
     return datetime.now(UTC).isoformat()
+
+
+def output_field_statuses(rows, columns, model_columns, field_issues):
+    """Explain nulls without claiming the original website lacks a value."""
+    reports = []
+    for row in rows:
+        issues = {
+            issue["field"]: issue["reason"]
+            for item in field_issues
+            if item["record_id"] == row["listing_id"]
+            for issue in item["issues"]
+        }
+        fields = {}
+        for column in columns:
+            name = column.name
+            populated = row.get(name) not in (None, "")
+            status = (
+                "source_verified"
+                if populated
+                else "validation_failed"
+                if name in issues
+                else ("model_not_returned" if name not in model_columns else "not_extracted")
+            )
+            fields[name] = {
+                "status": status,
+                "reason": issues.get(
+                    name,
+                    (
+                        "No value extracted; source availability is unconfirmed."
+                        if not populated
+                        else ""
+                    ),
+                ),
+            }
+        reports.append({"record_id": row["listing_id"], "fields": fields})
+    return reports
 
 
 def digest(value):
@@ -67,6 +104,13 @@ def browser_diagnostics(control):
             "section_hops",
             "browser_mode",
             "browser_channel",
+            "content_preparation",
+            "link_coverage",
+            "browser_error",
+            "navigation_result",
+            "navigation_history",
+            "authentication",
+            "agent_report",
         )
     }
 
@@ -81,7 +125,34 @@ def capture_summary(pages):
             "paragraph_blocks": sum(
                 block.get("kind") == "paragraph" for block in page.get("blocks", [])
             ),
+            **(
+                {
+                    "headline_blocks": sum(
+                        block.get("kind") == "heading"
+                        and (
+                            block.get("heading_level") == 1
+                            or block.get("content_role") == "headline"
+                        )
+                        for block in page.get("blocks", [])
+                    ),
+                    "body_paragraph_blocks": sum(
+                        block.get("kind") == "paragraph" and block.get("content_role") == "body"
+                        for block in page.get("blocks", [])
+                    ),
+                }
+                if any(block.get("content_role") is not None for block in page.get("blocks", []))
+                else {}
+            ),
             "truncated": bool(page.get("truncated")),
+            **({"coverage": page["coverage"]} if page.get("coverage") else {}),
+            **({"source_kind": page["source_kind"]} if page.get("source_kind") else {}),
+            **({"parent_url": page["parent_url"]} if page.get("parent_url") else {}),
+            **({"requested_url": page["requested_url"]} if page.get("requested_url") else {}),
+            **(
+                {"browser_task_context": page["browser_task_context"]}
+                if page.get("browser_task_context")
+                else {}
+            ),
         }
         for page in pages
     ]
@@ -96,6 +167,10 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
         context = {}
 
         def inspect():
+            if control:
+                control.on_agent_diagnostics = lambda diagnostics: (
+                    service.remember_agent_diagnostics(job_id, diagnostics)
+                )
             context["pages"] = (
                 read_browser(values, control, model_settings)
                 if control
@@ -104,13 +179,28 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     if values.source == "capture"
                     else read_pages(values.urls)
                     if values.source == "public"
-                    else [{"url": values.urls[0], "text": values.page_text, "truncated": False}]
+                    else [
+                        {
+                            "url": values.urls[0],
+                            "text": values.page_text,
+                            "truncated": False,
+                        }
+                    ]
                 )
             )
             context["captured_at"] = (
                 values.capture.captured_at.isoformat() if values.capture else now()
             )
             context["captured_pages"] = capture_summary(context["pages"])
+            context["source_fingerprint"] = digest(
+                [
+                    {
+                        key: page.get(key)
+                        for key in ("url", "text", "blocks", "source_kind", "browser_task_context")
+                    }
+                    for page in context["pages"]
+                ]
+            )
             context["browser_diagnostics"] = browser_diagnostics(control)
             if any(access_challenge(page["text"]) for page in context["pages"]):
                 raise WebsiteError(
@@ -130,7 +220,11 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     "Model call failed. Check account access, quota and model settings. "
                     "No automatic retry; the provider may have incurred usage."
                 ) from None
-            context.update(candidate=candidate, model=metadata)
+            context.update(
+                candidate=candidate,
+                model=metadata,
+                model_columns={column.name for column in candidate.columns},
+            )
 
         def review():
             candidate = context["candidate"]
@@ -144,10 +238,13 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 }
             rejected = []
             field_issues = []
+            field_repairs = []
+            review_counts = {}
             schema_issues = {}
             candidate, effective, repairs = prepare_extraction(
                 candidate, values, schema_issues=schema_issues
             )
+            linked = any(page.get("source_kind") == "index" for page in context["pages"])
             rows, excluded = validate_extraction(
                 candidate,
                 effective,
@@ -155,20 +252,118 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 rejected=rejected,
                 schema_issues=schema_issues,
                 field_issues=field_issues,
+                apply_filters=not linked,
+                enforce_limit=not linked,
+                preserve_sources=linked,
+                review_counts=review_counts,
+                field_repairs=field_repairs,
             )
-            if rejected and not rows:
+            enrichment = None
+            if linked:
+                rows, enrichment = reconcile_records(
+                    rows,
+                    context["pages"],
+                    candidate.columns,
+                    control.snapshot()["link_coverage"] if control else {},
+                    protected_fields={c.field for c in candidate.filters + effective.business_rules}
+                    | {c.field for rule in candidate.query_rules for c in rule.conditions},
+                )
+                for link in enrichment["links"]:
+                    relevant_issues = [
+                        issue
+                        for record in rejected
+                        if record["source_url"] in {link["url"], link.get("source_url")}
+                        for issue in record["issues"]
+                    ]
+                    if relevant_issues:
+                        link["validation_issues"] = relevant_issues
+                        if link.get("record_status") == "no_verified_record":
+                            link["record_status"] = "validation_failed"
+                accepted = [
+                    row
+                    for row in rows
+                    if all(matches(row, condition) for condition in candidate.filters)
+                ]
+                excluded += len(rows) - len(accepted)
+                review_counts["filtered_out"] += len(rows) - len(accepted)
+                rows = accepted
+                enrichment["excluded_after_enrichment"] = excluded
+                enrichment["preview_records"] = len(rows)
+                enrichment["truncated_captures"] = sum(
+                    bool(page.get("truncated")) for page in context["pages"]
+                )
+                context["enrichment"] = enrichment
+                if len(rows) > values.record_limit:
+                    raise WebsiteError(
+                        f"{len(rows)} merged matching records exceed your preview limit of "
+                        f"{values.record_limit}. Nothing was truncated or saved. "
+                        "Narrow the query or increase Maximum records for a new paid run."
+                    )
+            review_counts["matched"] = len(rows)
+            review_counts["linked_sources_merged"] = linked
+            if not rows:
+                topic = candidate.semantic_selection.topic if candidate.semantic_selection else None
+                attention = review_counts["invalid"] or review_counts["uncertain"]
+                if attention:
+                    guidance = (
+                        "No records are ready for review: "
+                        f"{review_counts['invalid']} failed source/required-field checks and "
+                        f"{review_counts['uncertain']} have uncertain topic relevance. "
+                        "Unrelated records are counted separately. Review the issues below; "
+                        "this does not prove the website has no matching content. No results saved."
+                    )
+                else:
+                    guidance = (
+                        f"No {topic} matches found in the captured content. "
+                        if topic
+                        else "No records match the requested filters in the captured content. "
+                        if review_counts["filtered_out"]
+                        else "No records were extracted from the captured content. "
+                    ) + (
+                        "This is limited to the submitted pages, "
+                        "not a search of the whole website. "
+                        "Start a new browser session and use 'Find relevant links' to review "
+                        "relevant pages before extracting. No results saved."
+                    )
                 return {
                     "status": "needs_input",
+                    "review_outcome": "needs_attention" if attention else "no_matches",
+                    "review_counts": review_counts,
+                    "request": values.instructions,
+                    "columns": [c.model_dump() for c in candidate.columns],
+                    "filters": [c.model_dump() for c in candidate.filters],
+                    "semantic_selection": candidate.semantic_selection.model_dump()
+                    if candidate.semantic_selection
+                    else None,
+                    "source_urls": [safe_display_url(page["url"]) for page in context["pages"]],
+                    "next_step": "open_browser_for_links",
                     "rejected_records": rejected,
                     "field_issues": field_issues,
+                    "field_repairs": field_repairs,
                     "model": context["model"],
                     "captured_pages": context.get("captured_pages", []),
                     "browser_diagnostics": context.get("browser_diagnostics"),
-                    "guidance": "No source-verified records remain after validation and filters. "
-                    "Review rejected fields or capture more relevant content. No results saved.",
+                    **({"enrichment": enrichment} if enrichment else {}),
+                    "guidance": guidance,
                 }
             rows = apply_query_rules(rows, candidate.query_rules)
             warnings = list(candidate.warnings) + repairs
+            if enrichment:
+                warnings.append(
+                    "Starting-page records retained and reconciled with verified detail records. "
+                    "Each filled field keeps its source URL; unopened details remain incomplete."
+                )
+                if enrichment["conflicting_records"]:
+                    warnings.append(
+                        f"{enrichment['conflicting_records']} records have index/detail conflicts. "
+                        "Starting-page values were retained, not silently overwritten. "
+                        "Review the alternative values and quotes before accepting partial results."
+                    )
+                if enrichment["model_coverage_gap"]:
+                    warnings.append(
+                        "Some captured sources have no safely matched verified record. "
+                        "Review linked-page coverage; missing model rows were not invented."
+                    )
             if len(candidate.rows) > values.record_limit:
                 warnings.append(
                     f"The model proposed {len(candidate.rows)} candidate records; "
@@ -179,20 +374,40 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 bool(row.get("article_url") and row["article_url"] != row["source_url"])
                 for row in rows
             )
-            index_preview = len(context["pages"]) == 1 and (
-                unopened_article_links
-                or (candidate.content_type.lower().startswith("article") and len(rows) > 1)
+            index_preview = (
+                not linked
+                and len(context["pages"]) == 1
+                and (
+                    unopened_article_links
+                    or (candidate.content_type.lower().startswith("article") and len(rows) > 1)
+                )
             )
             if index_preview:
                 warnings.append(
-                    "Current-page capture only: linked article pages were not opened. "
-                    "Article-body context cannot be verified from their URLs. "
+                    "Current-page capture only: linked pages were not opened. "
+                    "Detail-page content cannot be verified from URLs alone. "
                     "Use 'Find relevant links' in Chromium to open detail pages."
                 )
             source_failures = control.snapshot()["capture_failures"] if control else []
+            agent_report = control.snapshot().get("agent_report") if control else None
+            agent_partial = bool(agent_report and agent_report["status"] != "ready")
+            if agent_report:
+                warnings.append(
+                    "Browser-agent source collection is bounded and AI-directed; "
+                    "it does not prove every requested website criterion was applied. "
+                    "Review its action evidence and the extracted source fields."
+                )
+            if agent_partial:
+                warnings.append(
+                    "The agent paused before completing its task. Only retained captures "
+                    "are included; partial-result approval is required."
+                )
             for failure in source_failures:
                 warnings.append(
-                    "Approved linked page not captured: " + failure["url"] + " - " + failure["reason"]
+                    "Approved linked page not captured: "
+                    + failure["url"]
+                    + " - "
+                    + failure["reason"]
                 )
             if candidate.query_rules:
                 warnings.append(
@@ -214,10 +429,38 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     f"Partial fields: {len(field_issues)} records had unsupported optional "
                     "values replaced with null. Review each affected field before approval."
                 )
+            if field_repairs:
+                warnings.append(
+                    f"Source-backed field corrections: {len(field_repairs)} records. "
+                    "Unique captured headlines or display-only quote wrappers were corrected; "
+                    "review the old and corrected values. No title was inferred from a URL."
+                )
             if any(page["truncated"] for page in context["pages"]):
                 warnings.append(
-                    "Source text was capped at 24,000 characters per page; coverage is partial."
+                    "Source collection reached a text, block or scan limit; coverage is partial."
                 )
+            for page in context["pages"]:
+                coverage = page.get("coverage")
+                if not coverage:
+                    continue
+                omitted = coverage.get("omitted_text_chars", 0)
+                if omitted:
+                    warnings.append(
+                        f"{omitted} visible content characters were omitted by capture limits."
+                    )
+                if coverage.get("candidate_limit_reached"):
+                    warnings.append("The source inventory exceeds the 100-link discovery window.")
+                if coverage.get("frames_excluded"):
+                    warnings.append(
+                        "Embedded frame content was not included in this page's text capture."
+                    )
+                if not coverage.get("content_settled"):
+                    warnings.append("Page content stability was not confirmed before capture.")
+                if not coverage.get("at_page_end"):
+                    warnings.append(
+                        "The collection did not reach the page end; "
+                        "additional lazy-loaded content may remain."
+                    )
             if candidate.more_records_available:
                 warnings.append("The model reports additional records beyond this preview.")
             if candidate.semantic_selection is not None:
@@ -238,7 +481,9 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "source": values.source,
                 "urls": [page["url"] for page in context["pages"]] if control else values.urls,
                 "request": values.instructions,
+                "output_fields": values.output_fields,
                 "captured_at": context["captured_at"],
+                "source_fingerprint": context.get("source_fingerprint"),
                 "created_at": now(),
                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
                 "interpretation": candidate.interpretation,
@@ -281,25 +526,32 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "query_rules": [r.model_dump() for r in candidate.query_rules],
                 "publish_event": values.publish_event,
                 "records": rows,
+                "review_counts": review_counts,
                 "rejected_records": rejected,
                 "field_issues": field_issues,
-                "partial": bool(rejected or field_issues or source_failures),
+                "field_repairs": field_repairs,
+                "field_statuses": output_field_statuses(
+                    rows,
+                    candidate.columns,
+                    context.get("model_columns", set()),
+                    field_issues,
+                ),
+                "partial": bool(
+                    rejected
+                    or field_issues
+                    or field_repairs
+                    or source_failures
+                    or agent_partial
+                    or enrichment
+                    and (
+                        enrichment["conflicting_records"]
+                        or enrichment["model_coverage_gap"]
+                        or enrichment["truncated_captures"]
+                    )
+                ),
+                **({"enrichment": enrichment} if enrichment else {}),
                 "source_blocks": [page.get("blocks", []) for page in context["pages"]],
-                "evidence_block_ids": {
-                    row["listing_id"]: {
-                        field: [
-                            block["id"]
-                            for page in context["pages"]
-                            if page["url"] == row["source_url"]
-                            for block in page.get("blocks", [])
-                            if quote
-                            and " ".join(quote.split())
-                            in " ".join((block["text"] + " " + (block.get("href") or "")).split())
-                        ]
-                        for field, quote in row["evidence"].items()
-                    }
-                    for row in rows
-                },
+                "evidence_block_ids": evidence_block_ids(rows, context["pages"]),
                 "excluded_by_filters": excluded,
                 "record_limit": values.record_limit,
                 "warnings": warnings,
@@ -309,7 +561,10 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "navigation_model": control.snapshot()["navigation_model"] if control else None,
                 "discovery_model": control.snapshot()["link_model"] if control else None,
             }
-            write_json(service.data_dir / "website-plans" / f"{proposal['plan_id']}.json", proposal)
+            write_json(
+                service.data_dir / "website-plans" / f"{proposal['plan_id']}.json",
+                proposal,
+            )
             return {
                 "status": "awaiting_review",
                 "proposal": proposal,
@@ -337,6 +592,7 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "captured_pages": context.get("captured_pages", []),
                 "browser_diagnostics": context.get("browser_diagnostics")
                 or browser_diagnostics(control),
+                **({"enrichment": context["enrichment"]} if context.get("enrichment") else {}),
             }
         except APIError:
             return {
@@ -346,6 +602,7 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
             }
         finally:
             if control:
+                control.on_agent_diagnostics = None
                 control.update("closed", "Browser session ended.")
                 with service.lock:
                     service.browser_controls.pop(job_id, None)
@@ -445,6 +702,16 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 "run_id": context["run_id"],
                 "columns": ["listing_id"]
                 + [c["name"] for c in proposal["columns"]]
+                + (
+                    [
+                        "record_url",
+                        "detail_status",
+                        "evidence_sources",
+                        "enrichment_conflicts",
+                    ]
+                    if proposal.get("enrichment")
+                    else []
+                )
                 + ["source_url", "extracted_at", "evidence"],
                 "source": proposal["source"],
                 "records": rows,
@@ -452,9 +719,20 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 "filters": proposal["filters"],
                 "semantic_selection": proposal.get("semantic_selection"),
                 "warnings": proposal["warnings"],
+                **({"enrichment": proposal["enrichment"]} if proposal.get("enrichment") else {}),
+                **(
+                    {"captured_pages": proposal["captured_pages"]}
+                    if proposal.get("enrichment")
+                    else {}
+                ),
                 "partial": proposal.get("partial", False),
                 "rejected_count": len(proposal.get("rejected_records", [])),
                 "field_issues": proposal.get("field_issues", []),
+                "field_repairs": proposal.get("field_repairs", []),
+                "field_statuses": proposal.get("field_statuses", []),
+                "output_fields": proposal.get("output_fields", []),
+                "source_fingerprint": proposal.get("source_fingerprint"),
+                "review_counts": proposal.get("review_counts"),
                 "query_rules": proposal.get("query_rules", []),
                 "business_rules": proposal["business_rules"],
             }
@@ -544,7 +822,12 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 try:
                     delivery = asyncio.run(publish_summary(service, event))
                     write_json(
-                        event_path, {"status": "acknowledged", "event": event, "delivery": delivery}
+                        event_path,
+                        {
+                            "status": "acknowledged",
+                            "event": event,
+                            "delivery": delivery,
+                        },
                     )
                 except Exception:
                     return {
@@ -575,7 +858,11 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 progress,
             )
         except WebsiteError as exc:
-            return {"status": "failed", "guidance": str(exc), "run_id": context.get("run_id")}
+            return {
+                "status": "failed",
+                "guidance": str(exc),
+                "run_id": context.get("run_id"),
+            }
         except Exception:
             return {
                 "status": "failed",

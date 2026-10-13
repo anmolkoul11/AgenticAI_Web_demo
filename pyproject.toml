@@ -31,7 +31,7 @@ dependencies = [
 agentic-demo = "agentic_web_demo.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1", "httpx>=0.28,<1"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentic_web_demo"]

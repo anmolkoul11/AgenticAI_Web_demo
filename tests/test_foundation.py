@@ -33,17 +33,25 @@ def test_invalid_log_level_is_rejected():
         Settings.from_env({"AGENTIC_DEMO_LOG_LEVEL": "everything"})
 
 
-def test_status_is_explicit_about_pending_live_verification(monkeypatch, capsys):
+def test_status_lists_capabilities_without_claiming_runtime_verification(monkeypatch, capsys):
     monkeypatch.setenv("AGENTIC_DEMO_DATA_DIR", "./data")
     monkeypatch.setenv("AGENTIC_DEMO_LOG_LEVEL", "INFO")
     assert main(["status"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["checkpoint"] == "6-crewai-review-pending"
     assert result["frameworks_implemented"] == ["langgraph", "crewai"]
-    assert result["crewai_language_evaluation_baseline"] == {"passed": 21, "failed": 17}
+    assert result["autonomous_browser_frameworks"] == ["langgraph"]
+    assert result["source_methods"] == ["browser", "capture", "public", "paste"]
     assert result["reviewed_plan_execution_implemented"] is True
     assert result["workflow_implemented"] is True
-    assert result["live_model_verified"] is False
+    assert result["model_used"] is False
+    assert result["health_checks_performed"] is False
+    assert "no runtime health checks" in result["verification"]
+    assert not {
+        "checkpoint",
+        "language_evaluation_baseline",
+        "crewai_language_evaluation_baseline",
+        "live_model_verified",
+    }.intersection(result)
 
 
 def test_cli_reports_invalid_configuration(monkeypatch, capsys):

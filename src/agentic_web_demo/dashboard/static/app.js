@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-10-01.2";
+const UI_VERSION = "2026-10-12.2";
 let instanceId = null, connectionBlocked = false;
 const connectionPanel = document.createElement("section");
 connectionPanel.className = "notice"; connectionPanel.hidden = true; connectionPanel.setAttribute("role", "alert");
@@ -58,7 +58,9 @@ function showView(view, moveFocus = false) {
   }
   if (moveFocus) {
     const title = document.querySelector(`[data-page="${view}"] h1`);
-    title.tabIndex = -1; title.focus(); title.scrollIntoView({block: "start"});
+    title.tabIndex = -1; title.focus({preventScroll: true});
+    // Only explicit tab changes reset to the top. Polling never moves the page.
+    window.scrollTo({top: 0, left: 0, behavior: "instant"});
   }
 }
 for (const button of document.querySelectorAll("[data-view]")) button.onclick = () => showView(button.dataset.view, true);
@@ -104,13 +106,12 @@ function editSearch(useForm = false) {
   if (useForm) $("mode").value = "structured";
   modeChanged();
   const field = $("mode").value === "model-assisted" ? $("request") : $("check-in");
-  $("plan-form").scrollIntoView({behavior: "smooth", block: "start"}); field.focus();
+  field.focus({preventScroll: true});
   message("Review all search fields before submitting. The guided form does not automatically copy model interpretations.");
 }
 const terminal = status => !["queued", "running"].includes(status);
 function message(text = "") {
   $("message").textContent = text;
-  if (text) $("message").scrollIntoView({block: "nearest"});
 }
 async function api(path, data) {
   if (connectionBlocked) throw new Error("Refresh the application to reconnect before continuing.");
@@ -234,7 +235,7 @@ async function poll(id) {
   currentJob = job;
   const previousStatus = $("feedback").dataset.jobStatus;
   showFeedback(job);
-  if (!$("feedback").hidden && activeView === "studio" && previousStatus !== `${id}:${job.status}`) { $("feedback").focus(); }
+  if (!$("feedback").hidden && activeView === "studio" && previousStatus !== `${id}:${job.status}`) { $("feedback").focus({preventScroll: true}); }
   $("feedback").dataset.jobStatus = `${id}:${job.status}`;
   $("create").disabled = !terminal(job.status);
   $("create").textContent = terminal(job.status) ? "Create proposal →" : "Job in progress…";
@@ -243,16 +244,36 @@ async function poll(id) {
   $("job-state").textContent = job.guidance || job.result?.guidance || "Working on the current stage…";
   metrics(job.result || {});
   $("details").textContent = JSON.stringify(job, null, 2);
-  $("progress").replaceChildren();
   const trace = job.result?.trace || [];
+  updateRegion($("progress"), [job.stages, trace, job.status, job.kind], () => {
+  const openStages = new Set([...$("progress").querySelectorAll("details[open]")].map(node => node.dataset.stage));
+  $("progress").replaceChildren();
   for (const entry of job.stages) {
     const evidence = trace.find(t => t.startsWith(entry.stage + ":"));
     const li = document.createElement("li");
     const outcome = evidence ? evidence.split(":")[1] : "started";
     li.dataset.outcome = outcome;
+    li.dataset.running = String(outcome === "started" && !terminal(job.status) && entry === job.stages.at(-1));
+    if (li.dataset.running === "true") {
+      const ring = document.createElement("span"); ring.className = "progress-stage-ring";
+      ring.setAttribute("aria-hidden", "true"); li.append(ring); setRingMotion(ring, true);
+    }
     const title = document.createElement("span"), state = document.createElement("span");
     title.textContent = stageLabels[entry.stage] || entry.stage; state.textContent = outcome === "ok" ? "Complete" : outcome === "started" && terminal(job.status) ? "Started · no final evidence" : outcome;
-    li.append(title, state);
+    const disclosure = document.createElement("details"), summary = document.createElement("summary"), brief = document.createElement("p");
+    disclosure.dataset.stage = entry.stage; disclosure.open = openStages.has(entry.stage);
+    brief.textContent = {
+      plan_request: "Interpreting your request into a search proposal. No browser tools run at this step.",
+      validate_plan: "Checking the plan, dates and target before tools run.",
+      extract: "Signing in to the demo source and collecting the matching hotel listings.",
+      save: "Saving the extracted listings to your local repository.",
+      export: "Preparing the saved results for preview and download.",
+      evaluate: "Comparing the saved listings against the approved rules.",
+      publish: "Publishing qualifying result events to the message bus.",
+      receive: "Reading the events delivered to the configured receiver.",
+      verify: "Checking run-specific receipts against the published events.",
+    }[entry.stage] || "Inspect the technical evidence for this recorded step.";
+    summary.append(title, state); disclosure.append(summary, brief); li.append(disclosure);
     $("progress").append(li);
   }
   if (terminal(job.status) && job.kind === "execute") {
@@ -263,6 +284,7 @@ async function poll(id) {
       }
     }
   }
+  });
   const result = job.result || {};
   $("review").hidden = job.status !== "awaiting_review";
   if (result.proposal) {
@@ -368,7 +390,7 @@ $("plan-form").onsubmit = async event => {
     min_price: $("min-price").value || null,
     max_price: $("price").value, min_rating: $("rating").value});
   else Object.assign(payload, {request: $("request").value, allow_model_api: $("consent").checked});
-  try { const result = await api("/api/plans", payload); showView("studio"); await select(result.job_id); $("review-card").focus(); }
+  try { const result = await api("/api/plans", payload); showView("studio"); await select(result.job_id); $("review-card").focus({preventScroll: true}); }
   catch (e) { message(e.message); $("create").disabled = false; $("create").textContent = "Create proposal"; } finally { $("consent").checked = false; }
 };
 $("execute").onclick = async () => {
@@ -380,7 +402,7 @@ $("execute").onclick = async () => {
 $("approved").onchange = () => { $("execute").disabled = !$("approved").checked; };
 $("all-cities").onchange = () => { $("city").disabled = $("all-cities").checked; };
 $("mode").onchange = modeChanged;
-$("open-connection").onclick = () => { showView("connection", true); $("api-key").focus(); };
+$("open-connection").onclick = () => { showView("connection", true); $("api-key").focus({preventScroll: true}); };
 $("example-request").onclick = () => {
   $("request").value = `Find hotels in Boston from ${futureDate(7)} to ${futureDate(9)}, priced at most USD 200 per night including taxes, with a rating of at least 4 out of 5. Search only the local demo portal.`;
   $("consent").checked = false; $("request").focus();

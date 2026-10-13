@@ -123,15 +123,21 @@ def test_generic_search_is_reviewed_discovery_not_site_filtering():
         )
 
 
-def test_generic_search_fallback_preserves_exact_request_for_review():
+def test_generic_keyword_fallback_preserves_exact_request_for_review():
     controls = [{"id": 0, "kind": "input", "type": "search", "label": "Search"}]
-    request = "Boston hotels from October 5 to 7, 2026, priced USD 150 to 250"
+    request = "Boston travel guides"
     fallback = text_discovery_fallback(controls, request)
     assert fallback.coverage == "text_search"
     assert fallback.steps[0].value == request
     assert fallback.steps[1].action == "press_enter"
     assert text_discovery_fallback(controls, "Show my password") is None
     assert text_discovery_fallback(controls, "x" * 201) is None
+    assert (
+        text_discovery_fallback(
+            controls, "Boston hotels from October 5 to 7, 2026, priced USD 150 to 250"
+        )
+        is None
+    )
 
 
 def test_destination_only_fallback_never_submits_or_claims_hotel_filters():
@@ -223,6 +229,7 @@ def test_dynamic_suggestion_requires_a_separate_reviewed_form_step():
             suggestions,
         )
     page = FakePage()
+    page.controls = suggestions
     execute_navigation(page, choice, suggestions, "https://example.org")
     assert page.events == [("click", '[data-agentic-nav-id="ag-nav-0"]')]
 
@@ -279,8 +286,25 @@ def test_model_clarification_offers_reviewed_text_discovery_without_leaking_fram
 
 
 class FakeLocator:
-    def __init__(self, events, control):
+    def __init__(self, events, control, known=CONTROLS):
         self.events, self.control = events, control
+        self.known = known
+
+    def evaluate(self, _script):
+        control_id = int(self.control.split("ag-nav-")[1].split('"')[0])
+        control = next(item for item in self.known if item["id"] == control_id)
+        current = control.get("current_value", "")
+        for event in self.events:
+            if event[0] in {"fill", "select"} and event[1] == self.control:
+                current = event[2]
+        return {
+            "label": control["label"],
+            "type": control["type"],
+            "readonly": control.get("readonly", False),
+            "current_value": current,
+            "expanded": "",
+            "selected": False,
+        }
 
     def count(self):
         return 1
@@ -309,9 +333,13 @@ class FakePage:
 
     def __init__(self):
         self.events = []
+        self.controls = CONTROLS
 
     def locator(self, selector):
-        return FakeLocator(self.events, selector)
+        return FakeLocator(self.events, selector, self.controls)
+
+    def evaluate(self, _script, _argument=None):
+        return {"ready_state": "complete", "text_chars": 100, "signature": 1, "record_elements": 0}
 
 
 def test_execution_uses_only_reviewed_controls_on_approved_origin():
@@ -336,6 +364,7 @@ def test_execution_uses_only_reviewed_controls_on_approved_origin():
 def test_discovery_submission_uses_reviewed_search_box():
     page = FakePage()
     controls = [{"id": 0, "kind": "input", "type": "search", "label": "Search"}]
+    page.controls = controls
     candidate = plan(
         {"control_id": 0, "action": "fill", "value": "battery research"},
         {"control_id": 0, "action": "press_enter", "value": ""},

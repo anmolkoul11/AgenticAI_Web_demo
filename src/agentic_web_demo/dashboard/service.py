@@ -134,12 +134,24 @@ class DashboardService:
                 raise ValueError("Oversized job")
             return json.loads(path.read_text(encoding="utf-8"))
 
-    def write(self, job):
+    def write(self, job, *, preserve_agent_diagnostics=True):
         with self.lock:
             path = self.directory / f"{UUID(job['job_id'])}.json"
+            # Worker progress/final writes use an older in-memory job dictionary.
+            # Keep decision-only diagnostics written during the live browser session.
+            if path.exists() and preserve_agent_diagnostics:
+                saved = self.read(job["job_id"])
+                if "browser_agent_diagnostics" in saved:
+                    job["browser_agent_diagnostics"] = saved["browser_agent_diagnostics"]
             temporary = path.with_suffix(".tmp")
             temporary.write_text(json.dumps(job, indent=2), encoding="utf-8")
             temporary.replace(path)
+
+    def remember_agent_diagnostics(self, job_id, diagnostics):
+        with self.lock:
+            job = self.read(job_id)
+            job["browser_agent_diagnostics"] = diagnostics
+            self.write(job, preserve_agent_diagnostics=False)
 
     def history(self):
         paths = sorted(

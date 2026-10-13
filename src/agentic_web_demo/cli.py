@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     add_commands(commands)
     add_agent_command(commands)
     add_agent_command(commands, "crewai")
-    commands.add_parser("status", help="Show implemented checkpoint, not service health")
+    commands.add_parser("status", help="List implemented capabilities; no health checks or tests")
     extract = commands.add_parser("extract", help="Log in, extract, validate, save and export")
     extract.add_argument("--city", default="")
     extract.add_argument("--check-in", default=(date.today() + timedelta(days=1)).isoformat())
@@ -44,16 +44,17 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "project": "AgenticAI_Web_demo",
-                    "checkpoint": "6-crewai-review-pending",
                     "frameworks_implemented": ["langgraph", "crewai"],
-                    "crewai_language_evaluation_baseline": {"passed": 21, "failed": 17},
+                    "autonomous_browser_frameworks": ["langgraph"],
+                    "source_methods": ["browser", "capture", "public", "paste"],
                     "reviewed_plan_execution_implemented": True,
-                    "language_evaluation_baseline": {"passed": 20, "failed": 18},
                     "model_used": False,
                     "data_dir": str(settings.data_dir),
                     "log_level": settings.log_level,
                     "workflow_implemented": True,
-                    "live_model_verified": False,
+                    "health_checks_performed": False,
+                    "verification": "Implementation inventory only; no runtime health checks "
+                    "or test-result discovery. See docs/PROGRESS.md for dated evidence.",
                 },
                 indent=2,
             )
