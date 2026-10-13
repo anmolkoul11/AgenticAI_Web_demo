@@ -1,5 +1,6 @@
 """Visible browser with default restricted or explicitly selected normal networking."""
 
+import copy
 import os
 import threading
 import time
@@ -7,16 +8,21 @@ from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
+from uuid import uuid4
 
 from openai import APIError
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 from pydantic import ValidationError
 
+from agentic_web_demo.authentication import assess_authentication, authentication_expired
+from agentic_web_demo.browser_agent import BrowserAgent, DOMBrowserTools, OpenAIBrowserDecider
 from agentic_web_demo.browser_links import approved_links, inspect_links, propose_links
 from agentic_web_demo.browser_navigation import (
     execute_navigation,
     inspect_search_controls,
+    observe_navigation_result,
     propose_navigation,
 )
 from agentic_web_demo.browser_proxy import GuardedProxy
@@ -27,6 +33,11 @@ from agentic_web_demo.custom_fetch import (
     fetch,
     origin,
     public_url,
+)
+from agentic_web_demo.hotel_search import (
+    HotelSearchDriver,
+    prepare_hotel_search,
+    run_hotel_search,
 )
 
 
@@ -60,6 +71,24 @@ class BrowserControl:
         self.page_health = {}
         self.browser_mode = "restricted"
         self.browser_channel = "chromium"
+        self.content_preparation = {}
+        self.link_coverage = {}
+        self.browser_error = None
+        self.navigation_result = None
+        self.navigation_history = []
+        self.authentication = {"status": "not_requested", "verified": False}
+        self.resume_login_requested = threading.Event()
+        self.hotel_requested = threading.Event()
+        self.hotel_approved = threading.Event()
+        self.hotel_plan = None
+        self.hotel_page_url = None
+        self.hotel_capture_after = False
+        self.hotel_revision = None
+        self.agent_requested = threading.Event()
+        self.agent_report = None
+        self.on_agent_diagnostics = None
+        self.agent_visual_enabled = False
+        self.startup_timing = {}
 
     def update(self, state, message):
         with self.lock:
@@ -86,12 +115,36 @@ class BrowserControl:
                 "navigation_controls": [
                     {
                         key: item[key]
-                        for key in ("id", "kind", "type", "label", "options", "frame_index")
+                        for key in (
+                            "id",
+                            "kind",
+                            "type",
+                            "label",
+                            "options",
+                            "frame_index",
+                            "current_value",
+                            "date_value",
+                            "readonly",
+                            "name",
+                            "placeholder",
+                            "purpose",
+                            "form_kind",
+                            "date_values",
+                        )
                         if key in item
                     }
                     for item in self.navigation_controls
                 ],
                 "navigation_model": self.navigation_model,
+                "hotel_plan": self.hotel_plan.model_dump() if self.hotel_plan else None,
+                "hotel_capture_after": self.hotel_capture_after,
+                "hotel_revision": self.hotel_revision,
+                "agent_report": copy.deepcopy(self.agent_report),
+                "startup_timing": dict(self.startup_timing),
+                "navigation_result": copy.deepcopy(self.navigation_result),
+                "navigation_history": copy.deepcopy(self.navigation_history),
+                "browser_error": dict(self.browser_error) if self.browser_error else None,
+                "authentication": dict(self.authentication),
                 "link_selection": (
                     self.link_selection.model_dump() if self.link_selection else None
                 ),
@@ -110,11 +163,113 @@ class BrowserControl:
                 "page_health": dict(self.page_health),
                 "browser_mode": self.browser_mode,
                 "browser_channel": self.browser_channel,
+                "content_preparation": dict(self.content_preparation),
+                "link_coverage": (
+                    {
+                        **self.link_coverage,
+                        "links": [dict(item) for item in self.link_coverage.get("links", [])],
+                    }
+                    if self.link_coverage
+                    else {}
+                ),
             }
 
     def set_page_health(self, health):
         with self.lock:
             self.page_health = health
+
+    def require_authentication(self, message, *, expired=False):
+        with self.lock:
+            self.authentication.update(
+                status="reauthentication_required" if expired else "awaiting_user",
+                verified=False,
+                verification=None,
+            )
+            self.capture.clear()
+            self.navigation_requested.clear()
+            self.navigation_approved.clear()
+            self.link_requested.clear()
+            self.link_approved.clear()
+            self.navigation_plan = None
+            self.hotel_requested.clear()
+            self.hotel_approved.clear()
+            self.hotel_plan = None
+            self.hotel_page_url = None
+            self.hotel_capture_after = False
+            self.hotel_revision = None
+            self.agent_requested.clear()
+            self.link_selection = None
+            self.state, self.message = "authentication_pending", message
+
+    def set_navigation_result(self, result):
+        with self.lock:
+            self.navigation_result = copy.deepcopy(result)
+            if (
+                result.get("execution_id")
+                and self.navigation_history
+                and self.navigation_history[-1].get("execution_id") == result["execution_id"]
+            ):
+                self.navigation_history[-1] = copy.deepcopy(result)
+            else:
+                self.navigation_history.append(copy.deepcopy(result))
+            self.navigation_history = self.navigation_history[-20:]
+
+    def set_agent_report(self, report):
+        with self.lock:
+            self.agent_report = copy.deepcopy(report)
+            self.state = "agent_paused" if report["status"] == "paused" else "agent_running"
+            self.message = report["guidance"]
+            callback = self.on_agent_diagnostics
+            diagnostics = {
+                key: copy.deepcopy(report.get(key))
+                for key in (
+                    "run_id",
+                    "prompt_version",
+                    "status",
+                    "calls",
+                    "decision_diagnostics",
+                    "failure",
+                )
+            }
+            if report.get("counter_diagnostics"):
+                diagnostics["counter_diagnostics"] = copy.deepcopy(report["counter_diagnostics"])
+
+            def counts(values, keys):
+                return {
+                    key: values[key]
+                    for key in keys
+                    if isinstance(values.get(key), (int, float))
+                    and not isinstance(values[key], bool)
+                    and 0 <= values[key] <= 100_000_000
+                }
+
+            if report.get("usage"):
+                diagnostics["usage"] = counts(
+                    report["usage"],
+                    ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"),
+                )
+            performance = report.get("performance") or {}
+            if performance:
+                phases = ("observe", "context", "screenshot", "model", "action", "capture")
+                diagnostics["performance"] = {
+                    key: counts(performance.get(key) or {}, phases)
+                    for key in ("phase_seconds", "phase_calls")
+                }
+                diagnostics["performance"]["navigation_context"] = [
+                    {
+                        **counts(item, ("call", "text_chars")),
+                        "screenshot_sent": item.get("screenshot_sent") is True,
+                        "section_chars": counts(
+                            item.get("section_chars") or {},
+                            ("observation", "task_checklist", "recent_actions"),
+                        ),
+                    }
+                    for item in (performance.get("navigation_context") or [])[-30:]
+                    if isinstance(item, dict)
+                ]
+        # Never acquire the service lock while holding the browser-control lock.
+        if callback:
+            callback(diagnostics)
 
     def blocked(self, remote, kind="other"):
         with self.lock:
@@ -152,13 +307,97 @@ class BrowserControl:
             self.state = "link_review"
             self.message = "Review the proposed content links. No link has been opened."
 
-    def command(self, action, selected_ids=None):
+    def set_hotel_plan(self, plan, page_url):
+        with self.lock:
+            self.hotel_plan, self.hotel_page_url = plan, page_url
+            self.hotel_capture_after = False
+            self.hotel_revision = uuid4().hex
+            self.state = "hotel_review"
+            self.message = (
+                "Review the complete hotel search targets. Approval permits bounded "
+                "form interactions and one Search submission, never a reservation or payment. "
+                "Preparation used no model calls."
+            )
+
+    def command(
+        self,
+        action,
+        selected_ids=None,
+        *,
+        hotel_revision=None,
+        hotel_confirmed=False,
+        agent_confirmed=False,
+        agent_visual_confirmed=False,
+    ):
         with self.lock:
             if action == "cancel":
                 self.cancel.set()
+            elif action == "resume_login" and self.state == "authentication_pending":
+                self.state = "checking_authentication"
+                self.resume_login_requested.set()
             elif action == "capture" and self.state == "waiting":
                 self.state = "capturing"
                 self.capture.set()
+            elif action in {"agent_start", "agent_resume"} and self.state in {
+                "waiting",
+                "agent_paused",
+            }:
+                if not agent_confirmed:
+                    raise WebsiteError("Authorize the paid browser-agent loop before running it.")
+                if action == "agent_start" and self.agent_report is not None:
+                    raise WebsiteError(
+                        "This session already has an agent run. Resume it or start a new session."
+                    )
+                if action == "agent_resume" and self.agent_report is None:
+                    raise WebsiteError("Start the browser agent before resuming it.")
+                self.agent_visual_enabled = bool(agent_visual_confirmed)
+                self.state = "agent_running"
+                self.message = (
+                    "Starting the observe, decide, act and verify loop. "
+                    "Paid API calls are authorized."
+                )
+                self.agent_requested.set()
+            elif action == "agent_collect" and self.state == "agent_paused":
+                if not agent_confirmed:
+                    raise WebsiteError("Authorize extraction of the agent's captured pages first.")
+                if not self.agent_report or not self.agent_report.get("captured_pages"):
+                    raise WebsiteError("No agent captures are available yet.")
+                self.state = "agent_collecting"
+                self.agent_requested.set()
+            elif action == "agent_manual" and self.state == "agent_paused":
+                self.state = "waiting"
+                self.message = (
+                    "Agent paused. Continue manually or use the other collection options."
+                )
+            elif action == "hotel_plan" and self.state == "waiting":
+                self.hotel_plan = None
+                self.hotel_capture_after = False
+                self.hotel_revision = None
+                self.state = "hotel_preparing"
+                self.message = (
+                    "Reading the hotel request for a complete search review. No model call."
+                )
+                self.hotel_requested.set()
+            elif action in {"hotel_approve", "hotel_extract"} and self.state == "hotel_review":
+                if self.hotel_plan is None:
+                    raise WebsiteError("Prepare a hotel search review first.")
+                if (
+                    not hotel_confirmed
+                    or not hotel_revision
+                    or hotel_revision != self.hotel_revision
+                ):
+                    raise WebsiteError("Confirm the current hotel search review before running it.")
+                self.hotel_capture_after = action == "hotel_extract"
+                self.state = "hotel_running"
+                self.message = "Running the reviewed hotel form workflow. No extra planning calls."
+                self.hotel_approved.set()
+            elif action == "hotel_dismiss" and self.state == "hotel_review":
+                self.hotel_plan = None
+                self.hotel_page_url = None
+                self.hotel_capture_after = False
+                self.hotel_revision = None
+                self.state = "waiting"
+                self.message = "Hotel search review dismissed. No actions ran."
             elif action == "plan" and self.state == "waiting":
                 self.state = "planning_navigation"
                 self.message = "Inspecting visible search controls for one paid planning call."
@@ -427,6 +666,15 @@ def automatic_login(page, login, expected_origin, permitted=lambda: True, *, nor
 
     check_page()
     user = find_username()
+    if login.method == "email_verification":
+        if not valid_field(user, "username"):
+            raise WebsiteError("No unique email field is visible. Finish sign-in manually.")
+        user.fill(login.username.get_secret_value())
+        if not user.evaluate("(el) => el.checkValidity()"):
+            raise WebsiteError("The website rejected the email format. Check it before sign-in.")
+        submit_step(user)
+        # Exactly one email request. Codes/links are completed only by the account holder.
+        return False
     password = visible_one(login.password_selector)
     if user is None or not valid_field(user, "username"):
         raise WebsiteError("No unique username/email field is visible. Finish sign-in manually.")
@@ -526,23 +774,137 @@ def refresh_page_health(page, control, main_status):
     )
 
 
-def capture_rendered_page(page, approved, redactions, main_status):
+CONTENT_METRICS = """() => {
+    const text = document.body?.innerText || '';
+    const sample = text.slice(0, 6000) + text.slice(-6000);
+    let signature = 0;
+    for (let i = 0; i < sample.length; i++) signature = ((signature * 31) +
+        sample.charCodeAt(i)) >>> 0;
+    return {ready: document.readyState, chars: Math.min(text.length, 1000000),
+        links: Math.min(document.querySelectorAll('a[href]').length, 10000), signature,
+        height: Math.min(document.documentElement.scrollHeight, 10000000),
+        at_end: scrollY + innerHeight >= document.documentElement.scrollHeight - 4};
+}"""
+
+
+def wait_for_initial_content(page):
+    """Wait for useful DOM, not ads/media or a full load/network-idle event.
+
+    This only gates initial operator handoff. Capture retains its separate
+    bounded stability/scrolling checks, and the agent re-observes dynamic widgets.
+    """
+    try:
+        page.wait_for_function(
+            """() => ['interactive','complete'].includes(document.readyState) &&
+            !!document.body && ((document.body.innerText || '').trim().length >= 80 ||
+              [...document.querySelectorAll('input,button,[role="button"]')].some(e =>
+                !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden'))""",
+            timeout=1500,
+        )
+        return "useful_dom_visible"
+    except PlaywrightTimeout:
+        return "readiness_pending"
+
+
+def prepare_browser_content(page, control, scroll_steps=3):
+    """Bounded stability sampling and scrolling, without clicks or model calls.
+
+    This does not assert full app readiness. Virtualized/infinite content and
+    closed shadow/iframe content may remain outside the final DOM snapshot.
+    """
+    original_url = page.url
+    if page.locator('input[type="password"]:visible').count():
+        raise WebsiteError("A password form is still visible. Finish login before collection.")
+    position = page.evaluate("() => ({x: scrollX, y: scrollY})")
+
+    def check():
+        if control.cancel.is_set() or not control.alive():
+            raise WebsiteError("Content collection cancelled before any model call.")
+        if page.url != original_url:
+            raise WebsiteError(
+                "The page changed while preparing content. Review it before retrying."
+            )
+
+    def settle(samples):
+        previous, stable, metrics = None, 0, {}
+        for _ in range(samples):
+            check()
+            metrics = page.evaluate(CONTENT_METRICS)
+            fingerprint = (
+                metrics["chars"],
+                metrics["links"],
+                metrics["height"],
+                metrics["signature"],
+            )
+            stable = stable + 1 if fingerprint == previous else 0
+            previous = fingerprint
+            if stable >= 2 and metrics["ready"] == "complete" and metrics["chars"] >= 80:
+                return True, metrics
+            page.wait_for_timeout(250)
+        return False, metrics
+
+    completed = 0
+    try:
+        settled, metrics = settle(12)
+        if scroll_steps:
+            check()
+            page.evaluate("() => window.scrollTo(0, 0)")
+            settled, metrics = settle(4)
+        for _ in range(scroll_steps):
+            if metrics.get("at_end"):
+                break
+            check()
+            page.evaluate("() => window.scrollBy(0, Math.max(200, innerHeight * 0.85))")
+            completed += 1
+            settled, metrics = settle(4)
+        at_end = bool(metrics.get("at_end"))
+    finally:
+        if not page.is_closed() and page.url == original_url:
+            page.evaluate("p => window.scrollTo(p.x, p.y)", position)
+    settled, _ = settle(4)
+    result = {
+        "scroll_steps": completed,
+        "at_page_end": at_end,
+        "content_settled": settled,
+        "preparation": "bounded_browser",
+    }
+    with control.lock:
+        control.content_preparation = result
+    return result
+
+
+def capture_rendered_page(page, approved, redactions, main_status, *, preparation=None):
     """Capture one current page after access checks; preserve per-page provenance."""
     current = capture_url(page.url, approved)
-    if main_status[0] in {403, 429}:
+    if main_status[0] in {401, 403, 429}:
         raise WebsiteError(VERIFICATION_GUIDANCE)
     if page.locator('input[type="password"]:visible').count():
         raise WebsiteError("A password form is still visible. Finish login before capture.")
+    if page.locator(
+        'input[autocomplete="one-time-code"]:visible, input[name*="otp" i]:visible, '
+        'input[name*="verification" i]:visible, input[name="code" i]:visible, '
+        'input[id*="otp" i]:visible'
+    ).count():
+        raise WebsiteError(
+            "A verification-code form is still visible. Finish sign-in "
+            "in the original browser before capture."
+        )
     script = (Path(__file__).parent / "dashboard" / "static" / "capture_dom.js").read_text(
         encoding="utf-8"
     )
-    capture = page.evaluate("(" + script + ")")
+    capture = page.evaluate("(" + script + ")", {})
+    if preparation and capture.get("coverage"):
+        capture["coverage"].update(preparation)
     for secret in redactions:
         if secret:
             for block in capture["blocks"]:
                 block["text"] = block["text"].replace(secret, "[redacted]")
                 if block.get("href"):
                     block["href"] = block["href"].replace(secret, "redacted")
+    if capture.get("coverage"):
+        capture["coverage"]["captured_text_chars"] = sum(
+            len(block["text"]) for block in capture["blocks"]
+        )
     captured = Capture.model_validate(capture).page()
     if len(captured["text"].strip()) < 80:
         raise WebsiteError("Too little text. Navigate to content before capture.")
@@ -550,6 +912,90 @@ def capture_rendered_page(page, approved, redactions, main_status):
         raise WebsiteError(VERIFICATION_GUIDANCE)
     check_robots(current)
     return captured
+
+
+def collect_approved_details(
+    page, control, selected, approved, redactions, main_status, scroll_steps=3
+):
+    """Retain the index before visiting reviewed links; disclose every attempt.
+
+    Does not call a model. Cancellation aborts the entire collection. A failed
+    detail does not delete the starting-page evidence or other successful pages.
+    """
+    if not selected or len(selected) > 5:
+        raise WebsiteError("Select one to five reviewed detail links before collection.")
+    preparation = prepare_browser_content(page, control, scroll_steps)
+    index = capture_rendered_page(page, approved, redactions, main_status, preparation=preparation)
+    index["source_kind"] = "index"
+    pages, failures = [index], []
+    links = [
+        {"url": safe_source_url(item["url"]), "title": item["title"], "status": "pending"}
+        for item in selected
+    ]
+
+    def publish_coverage():
+        with control.lock:
+            control.capture_failures = list(failures)
+            control.link_coverage = {
+                "index_url": index["url"],
+                "index_retained": True,
+                "approved": len(selected),
+                "captured": len(pages) - 1,
+                "failed": len(failures),
+                "links": [dict(item) for item in links],
+            }
+
+    publish_coverage()
+    for offset, item in enumerate(selected):
+        if control.cancel.is_set() or not control.alive():
+            raise WebsiteError("Linked-page collection cancelled. No extraction call was made.")
+        url = item["url"]
+        links[offset]["status"] = "opening"
+        control.update(
+            "opening_links",
+            f"Starting page retained. Opening approved detail {offset + 1} of {len(selected)}.",
+        )
+        publish_coverage()
+        try:
+            check_robots(url)
+            main_status[0] = None
+            response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if response is None or response.status >= 400:
+                raise WebsiteError("Linked page denied access or did not load successfully.")
+            main_status[0] = response.status
+            try:
+                page.wait_for_load_state("load", timeout=8000)
+            except PlaywrightError:
+                pass  # Report actual coverage rather than claiming full app readiness.
+            preparation = prepare_browser_content(page, control, scroll_steps)
+            detail = capture_rendered_page(
+                page, approved, redactions, main_status, preparation=preparation
+            )
+            if any(previous["url"] == detail["url"] for previous in pages):
+                raise WebsiteError(
+                    "The detail link returned an already captured page. No duplicate capture kept."
+                )
+            detail.update(
+                source_kind="detail",
+                parent_url=index["url"],
+                requested_url=safe_source_url(url),
+            )
+            pages.append(detail)
+            links[offset].update(status="captured", source_url=detail["url"])
+        except (WebsiteError, PlaywrightError, ValidationError) as exc:
+            if control.cancel.is_set() or not control.alive():
+                raise WebsiteError(
+                    "Linked-page collection cancelled. No extraction call was made."
+                ) from None
+            reason = (
+                str(exc) if isinstance(exc, WebsiteError) else "Detail navigation/capture failed."
+            )
+            failures.append({"url": safe_source_url(url), "reason": reason})
+            links[offset].update(status="failed", reason=reason)
+        publish_coverage()
+    if control.cancel.is_set() or not control.alive():
+        raise WebsiteError("Linked-page collection cancelled. No extraction call was made.")
+    return pages
 
 
 def browser_launch_options(values, proxy=None):
@@ -591,6 +1037,41 @@ def install_browser_guards(context, page, route, browser_mode):
     page.on("dialog", lambda dialog: dialog.dismiss())
 
 
+def browser_error_message(control, error, stage):
+    """Classify driver errors without exposing raw URLs, DOM, or credentials."""
+    text = str(error).lower()
+    code = (
+        "timeout"
+        if isinstance(error, PlaywrightTimeout)
+        else "closed"
+        if "closed" in text or "crash" in text
+        else "page_changed"
+        if "execution context" in text or "detached" in text
+        else "collector_script"
+        if "evaluate" in text
+        else "browser_operation"
+    )
+    with control.lock:
+        control.browser_error = {"stage": stage, "code": code}
+    if stage == "launch":
+        return (
+            "Browser launch failed. Check the selected browser installation and desktop access. "
+            "No automatic engine fallback."
+        )
+    if code == "closed":
+        return "The browser or tab closed during " + stage + ". Start a new session."
+    if stage in {"capture", "linked_capture"}:
+        return (
+            "Page capture failed after the browser opened (" + code + "). "
+            "Review the original tab and retry capture when the page is stable. "
+            "No extraction model call ran for this capture."
+        )
+    return (
+        "Browser operation failed during " + stage + " (" + code + "). "
+        "Review the browser and start a new session if needed. No automatic retry."
+    )
+
+
 def read_browser(values, control, model_settings=None):
     target = values.urls[0]
     approved = origin(target)
@@ -604,11 +1085,25 @@ def read_browser(values, control, model_settings=None):
         control.browser_mode = values.browser_mode
         control.browser_channel = values.browser_channel
     redactions = (
-        [login.username.get_secret_value(), login.password.get_secret_value()] if login else []
+        [
+            login.username.get_secret_value(),
+            login.password.get_secret_value() if login.password else "",
+        ]
+        if login
+        else []
     )
+    auth_requested = login is not None
+    auth_success_selector = login.success_selector if login else ""
+    auth_method = login.method if login else ""
+    agent = None  # Lives only in this browser worker; never serialized or shared between users.
+    if auth_requested:
+        with control.lock:
+            control.authentication.update(status="signing_in", method=auth_method)
     # Inherited Playwright debugging can log fill() values. Disable it before driver startup.
     os.environ.pop("DEBUG", None)
     os.environ.pop("PWDEBUG", None)
+    session_stage = "launch"
+    startup_started = time.monotonic()
     try:
         if control.cancel.is_set() or not control.alive():
             raise WebsiteError("Browser session cancelled before opening. No model call.")
@@ -621,6 +1116,11 @@ def read_browser(values, control, model_settings=None):
             sync_playwright() as pw,
         ):
             browser = pw.chromium.launch(**browser_launch_options(values, proxy))
+            with control.lock:
+                control.startup_timing["launch_seconds"] = round(
+                    time.monotonic() - startup_started, 3
+                )
+            session_stage = "session_setup"
             try:
                 context = browser.new_context(**browser_context_options(values))
                 context.set_default_timeout(10000)
@@ -635,6 +1135,7 @@ def read_browser(values, control, model_settings=None):
                         if (
                             request.method == "GET"
                             and len(redactions) > 1
+                            and bool(redactions[1])
                             and redactions[1] in unquote(request.url)
                         ):
                             request_route.abort()
@@ -687,14 +1188,19 @@ def read_browser(values, control, model_settings=None):
 
                 page.on("requestfailed", record_failure)
                 start_url = login.url if login else target
+                session_stage = "navigation"
                 try:
+                    navigation_started = time.monotonic()
                     response = page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
-                    try:
-                        page.wait_for_load_state("load", timeout=8000)
-                    except PlaywrightError:
-                        # Some sites keep loading ads/analytics; the operator can
-                        # inspect the page and request planning when it settles.
-                        pass
+                    navigation_seconds = time.monotonic() - navigation_started
+                    readiness_started = time.monotonic()
+                    readiness = wait_for_initial_content(page)
+                    with control.lock:
+                        control.startup_timing.update(
+                            navigation_seconds=round(navigation_seconds, 3),
+                            readiness_seconds=round(time.monotonic() - readiness_started, 3),
+                            readiness=readiness,
+                        )
                     if response is not None and response.status in {401, 403, 429}:
                         notice = VERIFICATION_GUIDANCE
                     else:
@@ -724,6 +1230,8 @@ def read_browser(values, control, model_settings=None):
                             lambda: not control.cancel.is_set() and control.alive(),
                             normal_network=normal_network,
                         )
+                        with control.lock:
+                            control.authentication["automatic_step_completed"] = True
                         notice = (
                             "Configured signed-in indicator appeared. Navigate to content "
                             "and review before capture."
@@ -731,6 +1239,11 @@ def read_browser(values, control, model_settings=None):
                             else "One credential flow submitted. Verify sign-in in Chromium; "
                             "complete MFA manually, navigate to content, then capture."
                         )
+                        if auth_method == "email_verification":
+                            notice = (
+                                "One email step submitted. Check your inbox and complete the "
+                                "code or login link in this original browser. No automatic resend."
+                            )
                     except WebsiteError as exc:
                         notice = f"Automatic sign-in stopped: {exc} No retry was attempted."
                     except PlaywrightError:
@@ -748,6 +1261,50 @@ def read_browser(values, control, model_settings=None):
                     else "Restricted browser networking. "
                 ) + notice
                 control.update("waiting", notice)
+                if auth_requested:
+                    control.require_authentication(
+                        notice + " Complete the emailed code/link or any further verification "
+                        "in the original browser. Return to the selected website, then click "
+                        "'I completed sign-in — continue'. No inbox access or code storage."
+                    )
+                session_stage = "session"
+
+                def agent_sources():
+                    pages = agent.captured_sources() if agent else []
+                    index = next((p for p in pages if p.get("source_kind") == "index"), None)
+                    details = [p for p in pages if p.get("source_kind") == "detail"]
+                    failed = [
+                        {
+                            "url": item["source_url"],
+                            "reason": item.get("guidance", "Capture failed."),
+                        }
+                        for item in (agent.history if agent else [])
+                        if item["action"] == "capture"
+                        and item["status"] in {"not_completed", "outcome_unknown"}
+                    ]
+                    with control.lock:
+                        control.capture_failures = failed
+                        if index:
+                            control.link_coverage = {
+                                "index_url": index["url"],
+                                "index_retained": True,
+                                "approved": len(details) + len(failed),
+                                "captured": len(details),
+                                "failed": len(failed),
+                                "collection_method": "browser_agent",
+                                "links": [
+                                    {
+                                        "url": p["url"],
+                                        "title": safe_source_url(p["url"]),
+                                        "status": "captured",
+                                        "source_url": p["url"],
+                                    }
+                                    for p in details
+                                ]
+                                + [dict(f, status="failed") for f in failed],
+                            }
+                    return pages
+
                 deadline = time.monotonic() + 600
                 next_inspection = 0
                 while time.monotonic() < deadline:
@@ -759,6 +1316,143 @@ def read_browser(values, control, model_settings=None):
                         raise WebsiteError(
                             "Browser closed or network budget reached. No model call."
                         )
+                    if control.resume_login_requested.is_set():
+                        control.resume_login_requested.clear()
+                        try:
+                            result = assess_authentication(page, approved, auth_success_selector)
+                            if control.cancel.is_set() or not control.alive():
+                                raise WebsiteError("Sign-in confirmation cancelled.")
+                            with control.lock:
+                                control.authentication.update(result)
+                            control.update(
+                                "waiting",
+                                "Signed-in indicator verified. Continue with search or capture."
+                                if result["verified"]
+                                else "You confirmed sign-in; the app has no independent signed-in "
+                                "indicator. Review the account and content before capture.",
+                            )
+                        except (WebsiteError, PlaywrightError) as exc:
+                            control.require_authentication(
+                                str(exc)
+                                if isinstance(exc, WebsiteError)
+                                else "Could not inspect authentication. "
+                                "Review the tab and confirm again."
+                            )
+                    if auth_requested:
+                        status = control.snapshot()["authentication"]["status"]
+                        if status in {"authenticated", "operator_confirmed"}:
+                            try:
+                                expired = main_status[0] == 401 or authentication_expired(
+                                    page, approved
+                                )
+                            except (PlaywrightError, WebsiteError):
+                                expired = True
+                            if expired:
+                                control.require_authentication(
+                                    "Sign-in may have expired or the page is still verifying. "
+                                    "Complete it manually and confirm again. No automatic resend.",
+                                    expired=True,
+                                )
+                        if control.snapshot()["state"] in {
+                            "authentication_pending",
+                            "checking_authentication",
+                        }:
+                            try:
+                                refresh_page_health(page, control, main_status)
+                            except PlaywrightError:
+                                pass
+                            page.wait_for_timeout(250)
+                            continue  # No navigation/discovery/capture/model calls during handoff.
+                    if control.agent_requested.is_set():
+                        control.agent_requested.clear()
+                        try:
+                            if values.framework != "langgraph":
+                                raise WebsiteError(
+                                    "Browser-agent execution is implemented for LangGraph first. "
+                                    "Use a new LangGraph session."
+                                )
+                            if model_settings is None or not values.instructions.strip():
+                                raise WebsiteError(
+                                    "Add the complete task and configure "
+                                    "your account API key first."
+                                )
+                            if control.snapshot()["state"] == "agent_collecting":
+                                pages = agent_sources()
+                                if not pages:
+                                    raise WebsiteError(
+                                        "No source pages captured. "
+                                        "Resume or use current-page extraction."
+                                    )
+                                control.update(
+                                    "captured",
+                                    "Using the agent's captured pages for the approved "
+                                    "extraction. Chromium is closing.",
+                                )
+                                return pages
+                            if agent is None:
+
+                                def agent_capture():
+                                    preparation = prepare_browser_content(
+                                        page, control, values.browser_scroll_steps
+                                    )
+                                    return capture_rendered_page(
+                                        page,
+                                        None if normal_network else approved,
+                                        redactions,
+                                        main_status,
+                                        preparation=preparation,
+                                    )
+
+                                tools = DOMBrowserTools(
+                                    page,
+                                    origin(page.url),
+                                    agent_capture,
+                                    permitted=lambda: (
+                                        not control.cancel.is_set() and control.alive()
+                                    ),
+                                    restricted=lambda: (
+                                        main_status[0] in {401, 403, 429}
+                                        or access_challenge(
+                                            page.evaluate(EXTRACT_TEXT, 3000)["text"]
+                                        )
+                                    ),
+                                    secrets=redactions,
+                                    visual_enabled=control.agent_visual_enabled,
+                                )
+                                agent = BrowserAgent(
+                                    tools,
+                                    OpenAIBrowserDecider(model_settings),
+                                    values.instructions,
+                                    progress=control.set_agent_report,
+                                )
+                            agent.tools.visual_enabled = control.agent_visual_enabled
+                            report = agent.run()
+                            if control.cancel.is_set() or not control.alive():
+                                raise WebsiteError(
+                                    "Browser agent cancelled. No extraction request sent."
+                                )
+                            if report["status"] == "ready":
+                                pages = agent_sources()
+                                if not pages:
+                                    raise WebsiteError(
+                                        "Agent finished without source captures. "
+                                        "Review the browser."
+                                    )
+                                control.update(
+                                    "captured",
+                                    "Agent collected source content. Chromium is closing; "
+                                    "extraction and validation follow.",
+                                )
+                                return pages
+                            control.update("agent_paused", report["guidance"])
+                        except (WebsiteError, PlaywrightError) as exc:
+                            control.update(
+                                "agent_paused",
+                                str(exc)
+                                if isinstance(exc, WebsiteError)
+                                else "Browser interaction failed. Inspect the tab before "
+                                "resuming; no automatic retry.",
+                            )
                     if control.navigation_requested.is_set():
                         control.navigation_requested.clear()
                         try:
@@ -798,6 +1492,97 @@ def read_browser(values, control, model_settings=None):
                                 "No actions ran; the model request may have incurred usage."
                             )
                             control.update("waiting", detail)
+                    if control.hotel_requested.is_set():
+                        control.hotel_requested.clear()
+                        try:
+                            if main_status[0] in {403, 429} or access_challenge(
+                                page.evaluate(EXTRACT_TEXT, 3000)["text"]
+                            ):
+                                raise WebsiteError(
+                                    "Resolve the website access restriction "
+                                    "before preparing a hotel search."
+                                )
+                            recipe = prepare_hotel_search(values.instructions)
+                            control.set_hotel_plan(recipe, page.url)
+                        except (WebsiteError, PlaywrightError) as exc:
+                            control.update(
+                                "waiting",
+                                str(exc)
+                                if isinstance(exc, WebsiteError)
+                                else "Could not inspect the hotel form. "
+                                "No actions or model calls ran.",
+                            )
+                    if control.hotel_approved.is_set():
+                        control.hotel_approved.clear()
+                        with control.lock:
+                            recipe, planned_url = control.hotel_plan, control.hotel_page_url
+                            capture_after = control.hotel_capture_after
+                        try:
+                            if recipe is None or page.url != planned_url:
+                                raise WebsiteError(
+                                    "The page changed after the hotel review. "
+                                    "Prepare a fresh review; no actions ran."
+                                )
+                            if capture_after and model_settings is None:
+                                raise WebsiteError(
+                                    "Configure the API connection before approving "
+                                    "search and extraction."
+                                )
+
+                            def hotel_progress(report):
+                                control.set_navigation_result(report)
+                                control.update(
+                                    "hotel_running",
+                                    "Hotel search: "
+                                    + report["stage"].replace("_", " ")
+                                    + ". "
+                                    + (
+                                        "Search submitted; waiting for listing results."
+                                        if report["submitted"]
+                                        else "Applying reviewed fields; "
+                                        "search is not yet completed."
+                                    ),
+                                )
+
+                            driver = HotelSearchDriver(
+                                page,
+                                origin(planned_url),
+                                permitted=lambda: not control.cancel.is_set() and control.alive(),
+                                restricted=lambda: (
+                                    main_status[0] in {403, 429}
+                                    or access_challenge(page.evaluate(EXTRACT_TEXT, 3000)["text"])
+                                ),
+                            )
+                            run_hotel_search(driver, recipe, on_progress=hotel_progress)
+                            control.update(
+                                "waiting",
+                                "Hotel search submitted and listing elements appeared. "
+                                "Price/rating filters remain for source-based extraction; "
+                                "actual result criteria still need review.",
+                            )
+                            if capture_after:
+                                control.capture.set()
+                                control.update(
+                                    "capturing",
+                                    "Reviewed hotel search completed. Capturing listing results "
+                                    "for the paid extraction you approved.",
+                                )
+                        except (WebsiteError, PlaywrightError) as exc:
+                            if hasattr(exc, "navigation_result"):
+                                control.set_navigation_result(exc.navigation_result)
+                            control.update(
+                                "waiting",
+                                str(exc)
+                                if isinstance(exc, WebsiteError)
+                                else "Hotel browser interaction failed. Inspect the tab; "
+                                "no automatic retry or extraction.",
+                            )
+                        finally:
+                            with control.lock:
+                                control.hotel_plan = None
+                                control.hotel_page_url = None
+                                control.hotel_capture_after = False
+                                control.hotel_revision = None
                     if control.link_requested.is_set():
                         control.link_requested.clear()
                         try:
@@ -811,6 +1596,7 @@ def read_browser(values, control, model_settings=None):
                                 raise WebsiteError(
                                     "The site is restricting access. No discovery call was made."
                                 )
+                            prepare_browser_content(page, control, values.browser_scroll_steps)
                             candidates = inspect_links(
                                 page, origin(page.url) if normal_network else approved
                             )
@@ -842,19 +1628,30 @@ def read_browser(values, control, model_settings=None):
                                     "The page changed since planning. No actions ran; "
                                     "request a new plan."
                                 )
-                            execute_navigation(
+                            navigation_result = execute_navigation(
                                 page,
                                 plan,
                                 controls,
                                 origin(planned_url) if normal_network else approved,
                                 permitted=lambda: not control.cancel.is_set() and control.alive(),
                                 allow_origin_redirects=normal_network,
+                                instructions=values.instructions,
+                            )
+                            control.set_navigation_result(
+                                {
+                                    key: value
+                                    for key, value in navigation_result.items()
+                                    if key != "before_page"
+                                }
                             )
                             try:
                                 page.wait_for_load_state("load", timeout=8000)
                             except PlaywrightError:
                                 pass
                             page.wait_for_timeout(1000)
+                            control.set_navigation_result(
+                                observe_navigation_result(page, navigation_result)
+                            )
                             capture_url(page.url, None if normal_network else approved)
                             try:
                                 refresh_page_health(page, control, main_status)
@@ -867,17 +1664,38 @@ def read_browser(values, control, model_settings=None):
                                 else (
                                     " These were intermediate form actions, not a completed "
                                     "search. Inspect newly visible controls and request another "
-                                    "reviewed plan."
+                                    "reviewed plan in this same browser session."
                                     if plan.coverage == "partial_form"
                                     else ""
                                 )
                             )
+                            pending = navigation_result.get("pending_fields", [])
+                            if pending:
+                                coverage_note += (
+                                    " Still pending: "
+                                    + ", ".join(field.replace("_", " ") for field in pending)
+                                    + "."
+                                )
+                            if plan.missing_fields:
+                                coverage_note += (
+                                    " Add missing values to the request, cancel this browser "
+                                    "and start a new session. "
+                                    "This session retains its original request. Missing: "
+                                    + ", ".join(
+                                        field.replace("_", " ") for field in plan.missing_fields
+                                    )
+                                    + "."
+                                )
                             control.update(
                                 "waiting",
-                                "Approved search actions ran. Wait for visible results and "
-                                "inspect the page before capture." + coverage_note,
+                                "Reviewed actions ran; entered values were read back where "
+                                "possible. Result filters are not yet verified. Inspect the "
+                                "navigation evidence and rendered results before capture."
+                                + coverage_note,
                             )
                         except (WebsiteError, PlaywrightError) as exc:
+                            if hasattr(exc, "navigation_result"):
+                                control.set_navigation_result(exc.navigation_result)
                             detail = (
                                 str(exc)
                                 if isinstance(exc, WebsiteError)
@@ -897,11 +1715,10 @@ def read_browser(values, control, model_settings=None):
                             candidates = list(control.link_candidates)
                             selected_ids = list(control.link_selected_ids)
                             planned_url = control.link_page_url
-                        pages, failures = [], []
                         try:
                             if page.url != planned_url:
                                 raise WebsiteError(
-                                    "The page changed since article discovery. "
+                                    "The page changed since link discovery. "
                                     "No linked pages opened; request a new proposal."
                                 )
                             selected = approved_links(selected_ids, selection, candidates)
@@ -939,66 +1756,32 @@ def read_browser(values, control, model_settings=None):
                                     "then suggest relevant links again. No extraction ran.",
                                 )
                                 continue
-                            for item in selected:
-                                if control.cancel.is_set() or not control.alive():
-                                    raise WebsiteError(
-                                        "Linked-page capture cancelled. "
-                                        "No extraction call was made."
-                                    )
-                                url = item["url"]
-                                try:
-                                    check_robots(url)
-                                    main_status[0] = None
-                                    response = page.goto(
-                                        url, wait_until="domcontentloaded", timeout=30000
-                                    )
-                                    if response is None or response.status in {401, 403, 429}:
-                                        raise WebsiteError(
-                                            "Linked page denied access or did not load."
-                                        )
-                                    try:
-                                        page.wait_for_load_state("load", timeout=8000)
-                                    except PlaywrightError:
-                                        # Some sites keep analytics or media requests open.
-                                        # Capture the currently rendered page and disclose
-                                        # its coverage instead of claiming a full load.
-                                        pass
-                                    page.wait_for_timeout(600)
-                                    pages.append(
-                                        capture_rendered_page(
-                                            page,
-                                            None if normal_network else approved,
-                                            redactions,
-                                            main_status,
-                                        )
-                                    )
-                                except (WebsiteError, PlaywrightError, ValidationError) as exc:
-                                    failures.append(
-                                        {
-                                            "url": safe_source_url(url),
-                                            "reason": (
-                                                str(exc)
-                                                if isinstance(exc, WebsiteError)
-                                                else "Article navigation or capture failed."
-                                            ),
-                                        }
-                                    )
-                            if pages:
-                                with control.lock:
-                                    control.capture_failures = failures
-                                control.update(
-                                    "captured",
-                                    f"Captured {len(pages)} approved pages; "
-                                    f"{len(failures)} failed. Chromium is closing.",
-                                )
-                                return pages
-                            control.update(
-                                "waiting",
-                                "No approved linked pages could be captured. "
-                                "Inspect the browser or choose another source.",
+                            pages = collect_approved_details(
+                                page,
+                                control,
+                                selected,
+                                None if normal_network else approved,
+                                redactions,
+                                main_status,
+                                values.browser_scroll_steps,
                             )
+                            coverage = control.snapshot()["link_coverage"]
+                            control.update(
+                                "captured",
+                                f"Starting page retained; {coverage['captured']} detail pages "
+                                f"captured, {coverage['failed']} failed. Chromium is closing.",
+                            )
+                            return pages
                         except WebsiteError as exc:
                             control.update("waiting", str(exc))
+                        except (PlaywrightError, ValidationError) as exc:
+                            detail = (
+                                browser_error_message(control, exc, "linked_capture")
+                                if isinstance(exc, PlaywrightError)
+                                else "Captured page structure was invalid. "
+                                "Review the page and retry."
+                            )
+                            control.update("waiting", detail)
                         finally:
                             with control.lock:
                                 control.link_selection = None
@@ -1025,11 +1808,15 @@ def read_browser(values, control, model_settings=None):
                     if control.capture.is_set():
                         control.capture.clear()
                         try:
+                            preparation = prepare_browser_content(
+                                page, control, values.browser_scroll_steps
+                            )
                             captured = capture_rendered_page(
                                 page,
                                 None if normal_network else approved,
                                 redactions,
                                 main_status,
+                                preparation=preparation,
                             )
                             control.update(
                                 "captured",
@@ -1038,22 +1825,34 @@ def read_browser(values, control, model_settings=None):
                             return [captured]
                         except WebsiteError as exc:
                             control.update("waiting", str(exc))
+                        except (PlaywrightError, ValidationError) as exc:
+                            detail = (
+                                browser_error_message(control, exc, "capture")
+                                if isinstance(exc, PlaywrightError)
+                                else "Captured page structure was invalid. "
+                                "Review the page and retry."
+                            )
+                            control.update("waiting", detail)
                     page.wait_for_timeout(250)
-                raise WebsiteError(
-                    "The ten-minute browser session expired. No model call was made."
+                report = control.snapshot().get("agent_report") or {}
+                detail = (
+                    "The agent was paused: " + report["guidance"][:400]
+                    if report.get("status") == "paused" and report.get("guidance")
+                    else "Check action evidence for any model calls already attempted."
                 )
+                raise WebsiteError("The ten-minute browser session expired. " + detail)
             finally:
-                browser.close()
-    except PlaywrightError:
-        engine = {
-            "chromium": "Bundled Chromium",
-            "chrome": "Google Chrome",
-            "msedge": "Microsoft Edge",
-        }[values.browser_channel]
-        raise WebsiteError(
-            f"{engine} could not complete this session. Check that the selected browser "
-            "is installed and desktop access is available. No automatic retry or engine fallback."
-        ) from None
+                try:
+                    browser.close()
+                except PlaywrightError:
+                    pass  # Cleanup must not hide a completed capture or the original failure.
+    except PlaywrightError as exc:
+        raise WebsiteError(browser_error_message(control, exc, session_stage)) from None
     finally:
+        if agent is not None:
+            try:
+                agent.decider.close()
+            except Exception:
+                pass  # Client cleanup must not hide captured data or the original failure.
         values.login = None
         redactions.clear()

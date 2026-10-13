@@ -30,6 +30,7 @@ def test_dashboard_markup_and_script_contract():
     assert all(count == 1 for count in Counter(page.ids).values())
     script = (ASSETS / "app.js").read_text(encoding="utf-8")
     script += (ASSETS / "custom.js").read_text(encoding="utf-8")
+    script += (ASSETS / "ui_updates.js").read_text(encoding="utf-8")
     references = set(re.findall(r'\$\("([^"\n]+)"\)', script))
     assert references <= set(page.ids), references - set(page.ids)
     assert page.views == page.pages == {"custom", "studio", "history", "connection", "admin"}
@@ -54,8 +55,12 @@ def test_dashboard_markup_and_script_contract():
         "web-normal-confirm-label",
         "web-normal-confirm",
     } <= set(page.ids)
-    assert 'value="restricted" selected' in (ASSETS / "index.html").read_text(encoding="utf-8")
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+    assert 'value="normal" selected' in html
+    assert 'value="restricted" selected' not in html
+    assert 'value="restricted"' in html
     assert "values.normal_browser_confirmed" in script
+    assert '$("web-normal-confirm").required = browser && normal;' in script
     assert 'noLoginOption.value = "none"' in script
     assert 'loginChoice.id = "web-login-choice"' in script
     assert "article discovery" not in script
@@ -73,3 +78,36 @@ def test_dashboard_assets_are_local_and_reduced_motion_is_supported():
     assert "Website Studio" in html
     assert "article" not in html.split('<section data-page="studio"', maxsplit=1)[0]
     assert "@media(max-width:650px)" in custom_css
+
+
+def test_record_preview_back_actions_and_live_activity_contract():
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+    script = (ASSETS / "custom.js").read_text(encoding="utf-8")
+    css = (ASSETS / "custom.css").read_text(encoding="utf-8")
+    assert '<dialog id="web-record-preview"' in html
+    assert 'aria-labelledby="web-preview-title"' in html
+    for label in (
+        "Back to results",
+        "Back to review",
+        "Back to source setup",
+        "Previous record",
+        "Next record",
+    ):
+        assert label in html
+    assert "previewDialog.showModal()" in script and "previewDialog.close()" in script
+    assert "previewReturnFocus?.isConnected" in script
+    # These actions only move focus/scroll or open an already-cached record.
+    for action in (
+        "web-back-review",
+        "web-back-source",
+        "web-preview-back",
+        "web-preview-next",
+        "web-preview-previous",
+    ):
+        handler = script.split(f'$("{action}").onclick = ', 1)[1].split(";\n", 1)[0]
+        assert "api(" not in handler and "customSelect(" not in handler
+    assert "setFlowActivity(running" in script and "Waiting for you" in script
+    assert '"authentication_pending"' in script and '"link_review"' in script
+    assert "backend state is unknown" in script
+    assert "source-backed corrections" in script
+    assert "prefers-reduced-motion:reduce" in css and "animation:none" in css

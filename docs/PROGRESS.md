@@ -1,5 +1,382 @@
 # Progress
 
+## Native submit visibility regression - 2026-10-13, rerun pending
+
+User verification reported 382 passes and one failure: the smaller form context
+removed a native submit labelled Continue before the model could choose it. The
+injected test model raised while finding the missing control, leaving no recorded
+action. Revision v16.1 retains native submit/image controls irrespective of label;
+it does not treat Continue as a ready Search candidate or relax date/guest checks.
+Added focused projection regressions. Static checks only; user rerun remains pending.
+
+## Autocomplete state and navigation input size - 2026-10-13, verification pending
+
+The latest live trace confirms v15 was deployed, but no destination fill/option
+selection ran. Dates/occupancy verified; repeated destination opener clicks consumed
+14 decisions and 56,081 navigation input tokens without a Search or retained source.
+The UI-only trace does not establish the raw input value or why suggestions were
+missing. Inspection found a genuine misleading state: uncommitted autocomplete
+always said select_option, including empty fields; compaction hid empty values.
+
+Revision v16 distinguishes fill, open, wait and fresh-option selection; explicit
+empty values remain visible, unknown values remain unknown. A known literal value
+in a fresh editable native form can be filled locally with read-back; ambiguous
+suggestion choices remain agent/model-led. Foreground widgets, stale values,
+readonly/disabled/unknown fields, MFA and cancellation do not authorize that fill.
+The existing verified Search/result handoff remains; no hardcoded city/website recipe.
+
+Recognizable form phases target 6,500 JSON text characters with a 3,500-character
+observation. Required values, fresh controls, associated ambiguity choices and
+calendar/counter confirmation evidence must fit; otherwise retain the original
+14,000/8,000 ceilings or stop explicitly. General browsing keeps its rich context.
+Shorter instructions/control hints, geometry only when an image is actually sent,
+and local-only packing diagnostics further reduce navigation input. Character
+budgets are not token counts. Actual input/cached-input/output usage stays reported;
+no live token-saving percentage or acceptance is claimed. Full extraction sources,
+original requests, model, strict schema, consent and budgets are unchanged.
+
+Static checks only; regression tests and live verification are left to the user.
+OpenAI Docs informed context filtering and fewer redundant calls:
+[Latency optimization](https://developers.openai.com/api/docs/guides/latency-optimization).
+
+## Prepared-search handoff - 2026-10-13, user verification pending
+
+The v14 trace completed the requested form in eight actions. Action nine opened
+the "New York hotels" catalogue link instead of submitting the form. The new
+document reset the fields: 25 model decisions used 99,050 input tokens and retained
+no agent pages. A later manual capture was the city catalogue, not stay-specific
+results; extraction correctly reported unavailable price/availability evidence.
+
+Revision v15 identifies the actual native Search button through DOM form ownership
+and fresh read-back of every requested form value. For literal hotel-listing searches,
+the ready-form submit and rendered-results handoff are local runtime actions, not
+extra model calls. Unfamiliar widgets remain agent-driven; explicit linked-detail
+requests keep their model-led collection path. A bounded passive loading wait never
+resubmits Search. Busy, ambiguous, changed, interrupted or unconfirmed results stop
+for attention. Structural result hints do not prove availability, price or completeness.
+
+Search candidates and collection phases take priority in the existing compact model
+context. Full source capture, original instructions, source validation, review-before-
+save, model and paid-call limits remain unchanged. No frontend-version bump needed.
+Added scoped-form, eight-paid-step handoff, interruption and negative regressions;
+only static checks performed. Tests and live acceptance remain with the user.
+
+OpenAI Docs informed moving already-known terminal operations into runtime code:
+[Function calling](https://developers.openai.com/api/docs/guides/function-calling).
+
+## Model decision waste and value bindings — 2026-10-13, user verification pending
+
+The v13 trace used 30 calls (122,257 input tokens; 6,070 output tokens), no retained
+pages and no Search submission. Thirteen decisions failed redundant request-quote
+validation; four tried native `select` on custom options/comboboxes. Canonical
+destination/date checks were also poisoned by optional bindings to action targets.
+The observed roughly 4,075 input tokens per call reflect the prior context reduction,
+not proof that the complete workflow is efficient or successful.
+
+Revision v14 reuses original grounding for unchanged known fields, makes declaration
+updates atomic, and ignores invalid optional bindings that would replace actual
+value fields. New/changed criteria remain checked. Current control capabilities
+and widget-focus hints clarify the next useful action; brief read-only autocomplete
+settling avoids paying immediately for stale suggestions. Three consecutive invalid
+declarations stop further waste. Model, call/time/output budgets and source capture
+remain unchanged. No frontend-version bump; server/frontend IDs stay synchronized.
+
+Added a ten-decision offline hotel workflow fixture and focused grounding/binding/
+capability/suggestion regressions, not run by the author. Static checks only;
+live completion and fewer than fifteen decisions still need user verification.
+The supplied two-night/October 29–30 prompt was internally inconsistent; the next
+verification example uses October 29–30 as one night, as allowed by the user.
+
+OpenAI Docs informed the contract simplification:
+[Function calling](https://developers.openai.com/api/docs/guides/function-calling).
+
+## Navigation cost and completed-search fixes — 2026-10-12, user verification pending
+
+Revision v13 fixes a proven v12 false rejection: after the correct city suggestion
+was clicked, its fuller canonical city/country label did not equal the short user
+value. Verification now accepts that actually selected option's exact words/order,
+with punctuation differences only. Untyped/unselected, wrong-city, airport/AI,
+retyped, reopened and stale-document choices remain unverified. Internally blocked
+Search attempts are no longer reported as clicks that happened on the website.
+
+Navigation model requests now use a separate task-focused projection: at most
+14,000 JSON text characters, including an 8,000-character observation, three short
+recent outcomes and compact field readiness. Original instructions and requested
+values are kept exactly; fresh required field/date IDs cannot be silently dropped.
+Relevant visible links/options are prioritized, with explicit coverage omissions.
+Full live observations, tool references, captured sources and saved evidence are
+unchanged. This is a self-contained request, not a delta stream requiring hidden
+conversation memory. The previous duplicate history-compaction helper was removed.
+
+Consented screenshots are adaptive, not generated/sent for every DOM-sufficient
+step; unchanged layout images are suppressed. Model decision descriptions and
+requirement declarations are shorter, without increasing the output budget or
+changing the configured model. Timing, payload-character and actual input/output/
+cached-input diagnostics support comparing the next run. Cached input is a subset
+of the input count, not additional usage or a promise of free tokens.
+
+OpenAI Docs informed context filtering, concise output and selective images:
+[Latency optimization](https://developers.openai.com/api/docs/guides/latency-optimization)
+and [Images and vision](https://developers.openai.com/api/docs/guides/images-vision).
+No tests, browser sessions or paid calls were run by the implementation author.
+Live search → capture → extraction → review still requires user verification;
+no measured speedup, savings percentage or universal-site support is claimed.
+
+## Destination commitment and decision overhead — 2026-10-12, user verification pending
+
+The user reported that v11 entered dates/occupancy but typed the destination without
+selecting its suggestion. Code inspection confirmed both destination read-back paths
+could prematurely verify matching text. Revision v12 observes scoped autocomplete
+choices and keeps the destination pending until a matching choice is committed.
+Retyping/cross-document changes invalidate selection proof; plain fields/native
+selects remain supported. No arbitrary first match or site-only identifier is added.
+
+Shared v11 diagnostics also showed that popup-bound adults/rooms lost verification
+after Done, despite a committed 3-adult/2-room header, blocking Search before click.
+The revised checker can use fresh same-document/frame summary evidence when those
+controls disappear. Conflicting/absent summaries and changed documents are not
+accepted. The logged 42.2 active seconds preceded a pause; the later ten-minute
+session expiry was not ten minutes of active model execution. Expiry guidance now
+retains that last pause reason instead of masking it with only a generic deadline.
+
+Reuses a per-browser-session HTTP client and strict schema, with per-request timeout
+bounds, no retries and explicit close on worker exit. Reduces model-only action
+history to bounded summaries while preserving full action/source evidence. Numeric
+input-size diagnostics support comparing future runs without retaining request text.
+Model/network/image/call budgets unchanged. Added mocked/local regressions and guide.
+
+Static checks only; no tests, browsers or paid calls run by the implementation author.
+Actual dropdown behavior, successful extraction and live latency improvements still
+need user verification. This is not universal website or production acceptance.
+
+## Results-to-extraction handoff — 2026-10-12, user verification pending
+
+The user's v10 trace verified all five requested hotel form fields, including
+3 adults and 2 rooms, and observed Search results. It then paused before capture:
+the model chose `finish` with a non-complete redundant flag, and an earlier finish
+rejection contributed to the pause. All 28 model decisions were valid; API-call
+time alone was 87.624 seconds. This did not establish end-to-end extraction.
+
+Revision v11 removes that extra completion flag. `finish` captures source content
+after actual form/Search checks, then uses existing extraction/filtering/review.
+Rejected-finish streaks reset with real form/submission progress or explicit Resume;
+call/time limits remain. Added focused mocked/local regression cases and updated
+manual handoff instructions. No model/budget/network change or automatic provider
+retry. Broader loop/context/screenshot performance work remains separate.
+
+Static checks only; no tests, browsers or paid calls run by the implementation
+author. Live listings, rule correctness and exports still need user verification.
+
+## Semantic numeric controls — 2026-10-12, user verification pending
+
+The v9 user run still had no usable occupancy actuators and incorrectly labelled
+hotel-card review counts as steppers. Tightened unknown-icon recognition to isolated
+quantity regions and added native number/ARIA spinbutton support with bounded,
+read-back-verified keyboard steps. Physically rendered recognized counters can be
+operated despite accessibility-only `aria-hidden`; hidden/inert/credential controls
+remain excluded. Native numeric displays can supply read-back for sibling actuators.
+
+Added visible tag/role/type and child-button evidence plus persisted structure-only
+diagnostics, without raw DOM, labels, actual values or images. Diagnostic probes do
+not consume compact control context. Added local/mocked regression cases and updated
+the manual guide. Static checks only: no tests, browsers or paid calls run by the
+implementation author. The exact live widget structure and successful end-to-end
+search remain pending the user's verification, not established by these changes.
+
+## Counter observation and screenshot flicker — 2026-10-11, user verification pending
+
+The v8 run correctly retained destination, dates and requested occupancy, but its
+inventory exposed no usable steppers. Revised generic detection to preserve leaf
+buttons inside clickable wrappers, read quantity text inside those rows and resolve
+same-document SVG reference metadata. Unknown icon direction is explicitly reported;
+only a model-selected fresh actuator may be tried, with each numeric step checked.
+No arbitrary counter retargeting or fixed adults/rooms value was introduced.
+
+Removed live-page screenshot ID overlays; CSS-scale screenshots retain accompanying
+DOM rectangles, consent, masks and in-memory handling. Added nested-widget/generic-
+quantity/icon/read-back regressions and manual varied-count scenarios. Static checks
+only; no pytest, browsers or paid calls run by the implementation author. The live
+widget's exact DOM was not captured, so actual site success still needs verification.
+
+## Observation continuation — 2026-10-11, user verification pending
+
+The inspected v7 run rejected two final messages on its first decision, then
+paused on a valid second decision merely to request another observation. Revision
+v8 selects a unique independently validated decision across final messages,
+deduplicates identical decisions and still rejects conflicts or invalid JSON-like
+alternatives. Observation-only pauses become read-only inspection and normal
+budgeted continuation, bounded against repeated unchanged refreshes. Actual human
+handoffs remain. Explicit resume supplies the last safe decision-failure metadata.
+
+Added offline multi-message/continuation/handoff/budget regressions and updated
+the diagnostic guide. Static checks only; no pytest, browsers or paid model calls
+run by the implementation author. Live date/occupancy completion is not yet proven.
+
+## Decision message parsing — 2026-10-11, user verification pending
+
+The user-run v6 scenario completed its model responses below the token budget,
+but rejected decision JSON. Exact field errors were not retained. Revision v7
+now selects an explicit final-answer message instead of parsing concatenated
+commentary/final text, and reports bounded schema-field paths/error codes without
+raw values or output text. Multiple possible decisions are not guessed between.
+Added message-phase/validation and opt-in UI regressions. No tests, browsers or
+paid model calls were run by the implementation author. Whether message mixing
+caused the inspected run remains unconfirmed until the next user-run attempt.
+
+## Browser-agent decision diagnostics — 2026-10-11, user verification pending
+
+Removed the hidden 30-second inference cap; the configured timeout is bounded
+by the remaining active budget. Strict responses are checked for completion and
+refusal before action JSON parsing. Failed calls preserve reported usage and get
+specific failure codes rather than one generic browser/model message. Safe
+per-decision metadata is shown in the dashboard and retained in job history while
+the session is live, including through progress/final writes and restarts.
+
+No model, output-token budget or automatic retry was added. The original third-
+decision failure cannot be proven from the older generic log; a fresh run is
+needed. Added offline transport/graph/persistence and opt-in UI regression cases,
+plus [BROWSER_DECISION_DIAGNOSTICS.md](BROWSER_DECISION_DIAGNOSTICS.md). No pytest,
+browser or paid model call was run by the implementation author.
+
+## Cleanup A — 2026-10-11, user verification pending
+
+Removed the unused destination regex and duplicate dev-only `httpx` declaration;
+runtime `httpx` remains. Extraction/enrichment now share source-text normalization,
+and the browser task reuses runtime control flattening without changing behavior.
+CLI status lists implemented capabilities instead of historical checkpoint/test
+scores. Updated current guides, retaining older evidence as historical context.
+The dashboard DOM collector is canonical; the extension keeps a generated copy
+with a read-only drift check and explicit `--write` synchronization command.
+
+Added cleanup regressions and [CLEANUP_GUIDE.md](CLEANUP_GUIDE.md). No tests,
+live browsers or paid model calls were run for this checkpoint. Existing prompts,
+budgets, navigation paths, networking modes and policy behavior were not changed.
+The browser-agent decision failure and larger shared-browser/session/frontend
+refactors remain pending. Current-year resolution and opt-in screenshots are
+implemented in the dynamic browser revision; earlier DOM-only entries below
+describe their implementation at that earlier date, not the present feature set.
+
+Historical baselines removed from runtime status: LangGraph 20/38 passing and
+CrewAI 21/38 passing. These are dated earlier observations, not current acceptance.
+
+## LangGraph dynamic browser agent — 2026-10-09, user validation pending
+
+Added a native LangGraph observe/decide/act loop with typed model decisions and
+generic visible-control tools. The agent can adapt after each browser action,
+retain source pages, pause for user input and resume without resetting its used
+budget. Dashboard controls expose paid consent, live activity and action/read-back
+evidence. Existing extraction/source validation, preview approval, exports and
+optional rule/event handling remain downstream. Normal/restricted networking and
+existing sign-in flows are unchanged.
+
+Navigation uses the user's configured OpenAI model with no provider retry/fallback.
+Limits: 30 attempted decisions, 300 active seconds, at most six retained source
+pages. Partial captures collected after a pause require partial-preview approval.
+This implementation observes DOM/text, not screenshots; it is not universal site
+automation or a production-readiness claim. CrewAI browser-agent parity is pending.
+
+Added offline/mocked and opt-in local browser/UI regressions plus
+[BROWSER_AGENT_GUIDE.md](BROWSER_AGENT_GUIDE.md). No tests, external browsers,
+paid model calls, commits or pushes were run during implementation. Historical
+test totals below do not validate this new checkpoint.
+
+## UI stability and checkpoint activity — 2026-10-05, user validation pending
+
+Replaced the browser-less/intermediate custom poll render with one coherent update.
+Unchanged source/navigation/result regions retain their DOM nodes and disclosures;
+stale selection responses are ignored. Removed automatic checkpoint expansion.
+Added rotating decorative rings for the actual running step, stationary status glyphs,
+and short clickable stage explanations. Waiting/review and reduced-motion states are
+explicitly static. Hotel-demo stage updates also retain opened details and avoid
+feedback-induced scrolling. Cards expose all output fields, filled/missing counts and
+known field-check reasons; blanks no longer claim source absence. Source diagnostics
+are collapsible. The larger guided-layout design awaits user preference; unresolved
+acquisition gaps require a fresh expected-field/job example, not a cosmetic patch.
+No tests, browsers or model calls run by the assistant. Added offline contracts and
+opt-in isolated UI/browser fixtures. Follow [UI_USABILITY_GUIDE.md](UI_USABILITY_GUIDE.md).
+
+## Source quality and preview — 2026-10-05, user validation pending
+
+Inspected the reported saved sports proposal and its source blocks. Missing detail
+headlines, inline-link paragraph splitting, display-quote value mismatches and
+substring-only title validation explain the wrong titles and missing excerpts.
+Current-page and detail enrichment share the collector but cover different content.
+The collector now retains content headers, heading/body roles and intact inline text.
+Source-backed corrections require unambiguous captured headings/URL bindings or
+literal wrapper removal; corrections and per-link rejection reasons are reviewable.
+Both frameworks share these changes. Added generic cards/table previews, a focused
+record/evidence dialog with back/previous/next navigation, and server-state-driven
+activity indicators that distinguish running from waiting. Existing models, consent,
+network modes and credentials are unchanged. Added regression fixtures; no tests,
+live browser sessions or paid model calls run by the assistant. Follow
+[SOURCE_QUALITY_GUIDE.md](SOURCE_QUALITY_GUIDE.md) for user-run acceptance checks.
+
+## Topic review correction — 2026-10-05, user validation pending
+
+Unrelated topic candidates are excluded before optional cell validation; uncertain
+topic candidates are shown separately from invalid source records. Verified relevant
+records retain blank optional fields instead of invented classifications. Shared
+identity selection supports title/name aliases independently of column order; missing
+or unsupported identities and filter/rule values still reject a record. The dashboard
+shows review counts and distinguishes no matches in captured content from validation
+failures. No-match jobs save no proposal or export; a setup button copies source/query
+for a new, explicitly consented browser/link-discovery session without launching it.
+Counts are retained in approved snapshots. Both frameworks use the shared correction.
+Regression fixtures include the 20-unrelated-record case, partial Soccer previews,
+uncertain/missing relevance, protected fields, identity aliases and hotel price ranges.
+No tests, live browsers or paid model calls were run by the assistant. Follow
+[TOPIC_REVIEW_GUIDE.md](TOPIC_REVIEW_GUIDE.md).
+
+## Checkpoint 4A: human-completed email verification — user validation pending
+
+Added email-code/login-link sign-in without a password. One email entry/continue
+attempt hands off to the account holder in the original browser. Navigation and
+capture pause until explicit confirmation; visible-indicator verification remains
+distinct from operator attestation. Obvious reauthentication clears pending actions.
+Fox News is the selected live acceptance target; no Fox-specific DOM selectors or
+successful integration are claimed. No inbox access, OTP submission, session-cookie
+persistence, tests, live browser runs or paid calls were performed by the assistant.
+Follow [EXTERNAL_LOGIN_GUIDE.md](EXTERNAL_LOGIN_GUIDE.md). 4B/4C remain pending.
+
+## Checkpoint 3: reviewed search navigation — user verification pending
+
+Corrected null options in the shared collector and added sanitized, stage-specific
+browser/capture diagnostics. Added search/calendar opening actions, fully dated
+calendar choices, accessible-name discovery, stale-control rejection, fill/select
+read-back, declared site-requirement checks before submission, and navigation
+evidence/history in the dashboard and saved diagnostics. Opened controls require
+another separately consented and reviewed planning step. Result observations never
+claim that the site's filters or returned records satisfy the request. Both browser
+network modes and model/credentials are unchanged. No tests, live browser sessions
+or paid API calls were run by the assistant. Follow
+[SEARCH_NAVIGATION_GUIDE.md](SEARCH_NAVIGATION_GUIDE.md). The three legacy
+rule/event fixture failures were intentionally left unchanged at the user's request.
+
+## Checkpoint 2: starting-page retention and detail enrichment — validation pending
+
+Implemented retained index capture plus up to five approved detail captures in
+one extraction call. Page-specific evidence is validated before URL-based
+reconciliation. Missing fields keep detail-source provenance; starting records,
+unmatched details and conflicting filter/rule source variants are preserved.
+User filters and the preview limit run after reconciliation. Live per-link
+coverage, result status, source/conflict evidence and export metadata were added.
+Both frameworks share the implementation. No tests, browser runs or paid calls
+were performed by the assistant. Follow
+[DETAIL_ENRICHMENT_GUIDE.md](DETAIL_ENRICHMENT_GUIDE.md) for user validation.
+Checkpoint 3 is now implemented within the bounded scope described above.
+
+## Checkpoint 1: shared source inventory — manual validation pending
+
+Implemented one collector for browser capture, link discovery and extension
+handoff. Removed the short-main-content early exit, merged repeated URL labels
+with their linked headings, distinguished neighbouring record groups, and added
+bounded loading/scrolling with visible coverage. Optional mis-associated metadata
+is blanked with evidence issues; identity/filter failures still reject records.
+Both browser network modes are unchanged. Added offline and opt-in local DOM
+fixtures; the assistant did not run tests, browsers, sign-ins or paid API calls.
+Follow [SOURCE_INVENTORY_GUIDE.md](SOURCE_INVENTORY_GUIDE.md) for verification.
+Detail enrichment and verified dynamic search actions remain the next checkpoints.
+
 ## Chromium and optional credential-flow sign-in: expanded, unverified
 
 Added a visible, isolated Chromium source with manual sign-in or one optional

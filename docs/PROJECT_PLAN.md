@@ -1,5 +1,64 @@
 # Project plan
 
+## Current browser-agent revision and cleanup — 2026-10-11
+
+The generic website path is moving from reviewed one-step form recipes to an
+actual LangGraph observe/decide/act/verify agent. It uses visible DOM controls and
+text, shared browser sessions, source capture and existing preview/save/export
+services. Viewport screenshots are available only with separate consent; they do
+not prove source accuracy. Universal site compatibility is not claimed. See
+[DYNAMIC_BROWSER_AGENT_GUIDE.md](DYNAMIC_BROWSER_AGENT_GUIDE.md).
+
+1. LangGraph browser loop + dashboard controls — implemented; user-run tests and
+   external hotel/news acceptance pending. No tests/live model calls run by the agent.
+2. Complete [Cleanup A](CLEANUP_GUIDE.md), then diagnose the observed browser/model
+   decision failure with safe error-category evidence. Keep the no-API hotel driver
+   and reviewed one-step navigation as alternatives; larger refactors stay separate.
+3. Add equivalent CrewAI browser-agent execution after LangGraph acceptance. Existing
+   CrewAI planners/Flows remain, but are not an autonomous browser-agent implementation.
+
+The historical status below describes earlier checkpoints, not completion of this
+new autonomous-navigation requirement.
+
+## Improvement checkpoints after the browser-mode baseline
+
+1. **Shared source inventory and capture coverage** — implemented; user-run
+   verification pending. Shared collector, headline/link merging, record grouping,
+   bounded loading/scrolling and visible collection coverage. See
+   [SOURCE_INVENTORY_GUIDE.md](SOURCE_INVENTORY_GUIDE.md).
+2. **Discovery and detail enrichment** — implemented; user-run verification
+   pending. Retain the starting capture, reconcile verified URL counterparts,
+   preserve per-field sources, disclose conflicts/failed pages, and apply final
+   filters/limits after reconciliation. See
+   [DETAIL_ENRICHMENT_GUIDE.md](DETAIL_ENRICHMENT_GUIDE.md).
+3. **Verified dynamic search navigation** — implemented within bounded scope;
+   user-run verification pending. Search/calendar opening controls, fully dated
+   options, exact field read-back, pre-submit declared-requirement checks and
+   actionable navigation evidence. Result-page semantics still require source
+   validation/manual review. See [SEARCH_NAVIGATION_GUIDE.md](SEARCH_NAVIGATION_GUIDE.md).
+4. **Validation and handoff** — pending. Actionable diagnostics, framework parity,
+   reproducible manual acceptance and a clean-checkout developer/sales guide.
+
+### Revised external authenticated scraping acceptance
+
+Browser scraping remains mandatory; an API is supplementary, not a replacement.
+The user completes MFA/email verification steps in the original browser.
+Fox News is the first selected target for an email-first code/link login flow.
+
+- **4A: Authentication lifecycle** — implemented; user-run verification pending.
+  Email-only first step, human code/link handoff, explicit resume, visible-indicator
+  versus operator-confirmed evidence, and reauthentication handling. No live Fox
+  sign-in has been performed. See [EXTERNAL_LOGIN_GUIDE.md](EXTERNAL_LOGIN_GUIDE.md).
+- **4B: External connector and acceptance** — pending. Inspect the actual Fox login
+  controls/account indicator, then demonstrate authenticated search/detail scraping
+  with both frameworks. Email-only sign-in must not be mislabeled as true MFA.
+- **4C: Validation and handoff** — pending. Export/rule/event parity, reproducible
+  clean setup, sales walkthrough and explicit supported/unsupported capabilities.
+
+These checkpoints apply to news, listings, products and other authorized sources.
+Restricted and normal networking remain operator-selectable. No tests or model
+calls were run by the assistant for Checkpoint 1. Older entries below are historical.
+
 ## New checkpoint: bounded Custom Website extraction
 
 Implemented, awaiting user verification: dynamic public-page/pasted-text extraction,
@@ -8,11 +67,11 @@ optional business-rule summary events through both orchestration frameworks.
 See [CUSTOM_WEBSITE_GUIDE.md](CUSTOM_WEBSITE_GUIDE.md).
 
 Remaining: runtime acceptance, semantic evaluations, external authenticated browser
-adapters, JS/pagination support, custom-event consumer receipt verification, and
+compatibility, further dynamic-control/pagination support, custom-event consumer receipt verification, and
 enterprise deployment/identity/secrets hardening. Do not claim universal website support.
 The older checkpoint notes below describe the separate synthetic Hotel demo.
 
-## Current checkpoint: local dashboard and account-system acceptance
+## Earlier checkpoint: local dashboard and account-system acceptance
 
 LangGraph and CrewAI are implemented as independent runners with shared browser,
 storage, rule and event services. Both support structured or OpenAI-assisted
@@ -69,8 +128,10 @@ iterate. Model fine-tuning is outside the initial scope.
 
 The LLM interprets the request into a structured plan. LangGraph coordinates
 approved tools; code reports evidence-backed results and handles credentials,
-validation, exact rule evaluation, storage, and events. Autonomous tool selection
-is not required for this bounded demo. OpenAI is the implemented live provider
+validation, exact rule evaluation, storage, and events. Autonomous browser tool
+selection is now part of the LangGraph path; CrewAI browser-agent parity remains
+pending. The original deterministic hotel workflow remains a reference path.
+OpenAI is the implemented live provider
 for both frameworks. Structured proposals need no paid model. The Ollama adapter
 has been retired; earlier checkpoint entries describe historical implementation.
 MCP is optional future agent-to-tool integration, not a replacement for NATS.
@@ -103,6 +164,9 @@ approved commit. Do not proceed beyond the agreed checkpoint without review.
 Do not automatically commit, push, delete existing work, or choose a paid service.
 
 ### Historical checkpoint 5 interim split (superseded by current status above)
+
+The following is retained historical context, not current model-access or provider
+instructions. OpenAI access is now configured per user and Ollama has been retired.
 
 Model access is pending organizational approval. Checkpoint 5a builds and tests
 the real LangGraph tool workflow with explicitly simulated planning. This does

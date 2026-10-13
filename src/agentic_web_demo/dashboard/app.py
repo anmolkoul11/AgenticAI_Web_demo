@@ -31,7 +31,7 @@ from agentic_web_demo.exports import CONTENT_TYPES, ExportError, build_export
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-10-01.2"
+UI_VERSION = "2026-10-12.2"
 
 
 class CustomApproval(BaseModel):
@@ -43,6 +43,10 @@ class CustomApproval(BaseModel):
 class BrowserAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selected_ids: list[int] = Field(default_factory=list, max_length=5)
+    hotel_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    hotel_confirmed: bool = False
+    agent_confirmed: bool = False
+    agent_visual_confirmed: bool = False
 
 
 class Login(BaseModel):
@@ -164,7 +168,7 @@ def create_app(settings=None, service=None):
         if request.method == "POST":
             body = bytearray()
             limit = (
-                160000
+                320000
                 if request.url.path in {"/api/custom/plans", "/api/custom/captures"}
                 else 16000
             )
@@ -205,6 +209,7 @@ def create_app(settings=None, service=None):
                     "source URL and 80-24,000 characters; instructions are optional. "
                     "Automatic sign-in needs website credentials; the HTTPS login URL is optional. "
                     "Normal browser mode requires its separate confirmation checkbox. "
+                    "Browser loading scroll steps must be between 0 and 8. "
                     "Business-rule fields use lowercase snake_case and require a value."
                 },
                 status_code=422,
@@ -482,6 +487,15 @@ def create_app(settings=None, service=None):
             "discover",
             "approve_links",
             "dismiss_links",
+            "resume_login",
+            "hotel_plan",
+            "hotel_approve",
+            "hotel_extract",
+            "hotel_dismiss",
+            "agent_start",
+            "agent_resume",
+            "agent_collect",
+            "agent_manual",
         ],
         values: BrowserAction,
     ):
@@ -491,12 +505,23 @@ def create_app(settings=None, service=None):
         if control is None:
             raise HTTPException(404, "No active browser for this account and job.")
         try:
-            control.command(action, values.selected_ids)
+            control.command(
+                action,
+                values.selected_ids,
+                hotel_revision=values.hotel_revision,
+                hotel_confirmed=values.hotel_confirmed,
+                agent_confirmed=values.agent_confirmed,
+                agent_visual_confirmed=values.agent_visual_confirmed,
+            )
         except ValueError:
             raise HTTPException(409, "Browser is not ready. Refresh its status.") from None
         return {"status": "requested"}
 
-    @app.post("/api/custom/plans/{plan_id}/execute", dependencies=[Depends(guard)], status_code=202)
+    @app.post(
+        "/api/custom/plans/{plan_id}/execute",
+        dependencies=[Depends(guard)],
+        status_code=202,
+    )
     def custom_execute(request: Request, plan_id: str, values: CustomApproval):
         try:
             return {

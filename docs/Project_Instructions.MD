@@ -59,7 +59,7 @@ Use this first to verify the complete local workflow.
 6. Review the criteria and target.
 7. Check the approval box and select Approve & execute.
 The workflow logs into the synthetic portal, extracts listings, saves them, evaluates rules, publishes matching events and verifies receipts.
-The Hotel demo retains its configured policy restrictions. The catalogue contains 100 synthetic listings across 10 cities, but one city search does not return all 100.
+The configured Hotel demo policy has no fixed price ceiling or rating floor: your approved criteria become the run rules. Dates, maximum price and minimum rating remain required for the guided workflow; minimum price is optional. The catalogue contains 100 synthetic listings across 10 cities, but one city search does not return all 100.
 
 Path B: Hotel demo with natural language
 1. Select Hotel demo → natural-language/model-assisted mode.
@@ -110,6 +110,12 @@ Path D: Open the website through Chromium
 6. Confirm permissions and start inspection.
 7. In Chromium, navigate to the desired content.
 8. Select Capture current page & extract in the dashboard.
+For autonomous navigation, select LangGraph and use the browser-agent controls
+with explicit paid consent; optional screenshots require separate consent.
+CrewAI currently supports extraction/save orchestration, not that autonomous browser loop.
+Alternatively use reviewed search actions, the complete hotel search, or linked-page discovery.
+Normal networking is the default. Restricted-mode resource origins apply only when
+you deliberately choose restricted networking.
 Trusted resource/verification origins are advanced settings, not a guarantee of access. If the site denies access, stop that session. This browser does not reuse your normal Chrome cookies.
 
 

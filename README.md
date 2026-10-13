@@ -2,18 +2,23 @@
 
 ## Custom Website workspace
 
-New bounded path for public HTML pages or authorized pasted page text: optional
-instructions, dynamic fields and range filters (no hotel policy ceiling), readable
-evidence-backed previews, approval, private storage, Excel/CSV/JSON/JSONL downloads,
+Collect content through an interactive browser, the Chrome/Edge capture extension,
+static public HTML or authorized pasted text. Optional instructions determine fields
+and filters; reviewed snapshots support private storage, Excel/CSV/JSON/JSONL exports
 and optional rule-based NATS summary events. Both LangGraph and CrewAI Flow are
-available. See [CUSTOM_WEBSITE_GUIDE.md](docs/CUSTOM_WEBSITE_GUIDE.md) for setup,
-user-run validation and limitations, and [EXTERNAL_SITE_ACCEPTANCE.md](docs/EXTERNAL_SITE_ACCEPTANCE.md)
-for the BBC News and Booking.com acceptance scenarios. Chromium rendering, optional single-form HTTPS
-sign-in and human-approved same-site article discovery are implemented, with isolated sessions. Cross-origin SSO,
-complex login adapters, pagination and custom-event consumer receipts remain unimplemented. Runtime validation
-is pending; the assistant did not run tests or paid model calls.
+available for extraction/save orchestration. Autonomous observe/decide/act browser
+execution is currently **LangGraph only**; it supports DOM observations and separately
+consented viewport screenshots. See [the dynamic agent guide](docs/DYNAMIC_BROWSER_AGENT_GUIDE.md).
 
-## Local dashboard (new MVP)
+Browser sessions support normal networking by default, an optional restricted mode,
+optional sign-in and human-completed email verification/MFA. Generic login is not a
+universal SSO connector. Search, reviewed link discovery and detail capture are bounded;
+site compatibility, extraction completeness and end-to-end acceptance require user
+verification. Custom events currently prove broker acknowledgement, not consumer receipt.
+See [CUSTOM_WEBSITE_GUIDE.md](docs/CUSTOM_WEBSITE_GUIDE.md) and
+[EXTERNAL_SITE_ACCEPTANCE.md](docs/EXTERNAL_SITE_ACCEPTANCE.md).
+
+## Local dashboard
 
 Now includes [individual local accounts](docs/LOCAL_ACCOUNTS.md), private workspaces,
 session-only or opt-in OS-stored API keys, administrator roles, and 100 fictional hotels across 10 cities. See [account security and admin setup](docs/ACCOUNTS_SECURITY.md). Restart the
@@ -27,21 +32,15 @@ steps. Start with `scripts/Setup-Demo.ps1`, then
 explicit review and approval, background stage progress, results and exports,
 and recent job history for both frameworks. These hotel-demo instructions describe
 the local hotel adapter; use Custom Website for the new general path above.
-This MVP awaits user tests and visual verification; earlier test
-results below do not validate the new UI.
+The latest changes await user-run verification; historical results in the progress
+log do not validate a newer UI or browser-agent revision.
 
-**OpenAI-only migration ready for user testing:** see [OPENAI_SETUP.md](docs/OPENAI_SETUP.md).
-Prompt v4 adds optional minimum price and removes fixed hotel price/rating thresholds;
-both frameworks now share
-the OpenAI transport. Live semantic acceptance is still pending. Historical
-staging/provider results below are not verification of this migration.
-
-**Historical CrewAI checkpoint results (not current acceptance):** see
-[CREWAI_GUIDE.md](docs/CREWAI_GUIDE.md) for structured/model-assisted planning and
-approved execution using an independent CrewAI Flow. User-run staging tests:
-222 passed / 39 skipped; CrewAI live interpretation: 21 passed / 17 failed.
-Actual-repository checks and manual CrewAI acceptance remain pending. The
-LangGraph implementation and its known language limitations are preserved.
+OpenAI is the implemented live provider; users supply their own account credentials.
+See [OPENAI_SETUP.md](docs/OPENAI_SETUP.md). The configured hotel policy has no fixed
+price ceiling or rating floor; the user's approved criteria become the effective
+run rules. Legacy `Rules()` defaults still exist for callers omitting configuration.
+Ollama is retired. See [PROGRESS.md](docs/PROGRESS.md) for dated historical evaluations
+and [CREWAI_GUIDE.md](docs/CREWAI_GUIDE.md) for the independent CrewAI workflow.
 
 A reusable developer starter kit for two website-agent demos: **LangGraph** and
 **CrewAI**, sharing browser automation, data validation, local storage, business
@@ -101,9 +100,9 @@ non-secret business configuration. Pending events and receipts stay under ignore
 Follow [the LangGraph guide](docs/LANGGRAPH_GUIDE.md) for the single-command
 offline demo, approved live-model setup, graph structure, policy and acceptance tests.
 
-The status command reports `5b-langgraph-live-verification-pending`,
-`workflow_implemented: true` and `live_model_verified: false`. These describe the
-implementation milestone, not service health or automatic discovery of test results.
+The status command lists implemented frameworks/source methods and reports
+`health_checks_performed: false`. It does not publish a historical checkpoint or
+test score as current status. Dated acceptance evidence belongs in `docs/PROGRESS.md`.
 Ordinary tests never call a live model. Live tests require `--run-model` and
 explicit provider configuration. OpenAI tests additionally require the paid-use
 permission variable. See the guides before enabling them.
@@ -140,14 +139,16 @@ tools. We first test those tools without an agent, then add agent orchestration.
 - `docs/PROJECT_PLAN.md`: scope, stack, checkpoints, and acceptance criteria.
 - `docs/PROGRESS.md`: verification evidence, pending decisions, and next step.
 
-Docker Desktop will be required for the NATS checkpoint; it is not required for
-the foundation tests. Agent framework dependencies and the model provider will
-be added at their checkpoints, not preinstalled as unused placeholders.
+Docker Desktop is used by the full demo launcher to start NATS; ordinary unit tests
+do not require it. LangGraph, CrewAI and the OpenAI SDK are already runtime dependencies.
+See [CLEANUP_GUIDE.md](docs/CLEANUP_GUIDE.md) for the current housekeeping checkpoint
+and canonical capture-script maintenance.
 
 ## Review workflow
 
 Work in small checkpoints. Inspect changes in VS Code, run tests, then approve a
-Git commit. No automatic commits, remote pushes, or external-site automation.
+Git commit. No automatic commits or remote pushes. Live website/model checks are
+user-initiated and separate from ordinary offline verification.
 The landscape document is the separate research deliverable; this repository
 will contain the implementations and the two step-by-step developer guides.
 # Reviewed LangGraph demo
@@ -160,4 +161,5 @@ Start with [the plan/review/execute guide](docs/PLAN_EXECUTION_GUIDE.md) for the
 recommended two-path interface: explicit inputs or model-assisted proposals,
 then execution of the exact reviewed revision without replanning. The local hotel
 adapter is the reference implementation, not a universal website scraper.
-Natural-language interpretation remains experimental (baseline 20/38 passing).
+Natural-language interpretation remains experimental. Historical evaluation totals
+are in the progress log, not a current quality guarantee.

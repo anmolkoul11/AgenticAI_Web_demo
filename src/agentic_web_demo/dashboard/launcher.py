@@ -1,7 +1,7 @@
 """Start only owned local services; never stop an existing process by port."""
 
-import os
 import argparse
+import os
 import secrets
 import socket
 import subprocess

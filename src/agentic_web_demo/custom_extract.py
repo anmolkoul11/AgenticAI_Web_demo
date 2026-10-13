@@ -3,17 +3,33 @@
 import json
 import logging
 import re
-import unicodedata
+from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 import httpx
 from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    model_validator,
+)
 
 from agentic_web_demo.capture import Capture
 from agentic_web_demo.custom_fetch import WebsiteError, origin, public_url
+from agentic_web_demo.record_identity import identity_field
+from agentic_web_demo.source_fields import (
+    excerpt_issue,
+    headline_issue,
+    is_headline_field,
+    linked_headline,
+    normalized,
+    primary_headline,
+)
 
 
 class Strict(BaseModel):
@@ -40,7 +56,7 @@ class Cell(Strict):
 
 
 class ExtractedRow(Strict):
-    page_index: int = Field(ge=0, le=4)
+    page_index: int = Field(ge=0, le=5)
     cells: list[Cell] = Field(max_length=16)
     relevance: Literal["relevant", "not_relevant", "uncertain"] | None = None
     relevance_reason: str = Field(default="", max_length=300)
@@ -61,23 +77,28 @@ class QueryRule(Strict):
 
 
 class Extraction(Strict):
+    _contract_added_fields: set[str] = PrivateAttr(default_factory=set)
     outcome: Literal["ready", "needs_input", "unsupported"]
     guidance: str = Field(max_length=1000)
     content_type: str = Field(max_length=80)
     interpretation: str = Field(max_length=1500)
+    requested_fields: list[str] = Field(default_factory=list, max_length=16)
     columns: list[Column] = Field(min_length=1, max_length=16)
     filters: list[Condition] = Field(max_length=24)
     semantic_selection: SemanticSelection | None = None
     query_rules: list[QueryRule] = Field(default_factory=list, max_length=5)
-    rows: list[ExtractedRow] = Field(max_length=50)
+    # Allow up to five detail counterparts alongside a maximum 50-row index.
+    # The final approved preview still obeys WebsiteInput.record_limit (<=50).
+    rows: list[ExtractedRow] = Field(max_length=55)
     warnings: list[str] = Field(max_length=10)
     more_records_available: bool
 
 
 class BrowserLogin(Strict):
+    method: Literal["password", "email_verification"] = "password"
     url: str = Field(default="", max_length=2048)
     username: SecretStr = Field(min_length=1, max_length=256, repr=False)
-    password: SecretStr = Field(min_length=1, max_length=1024, repr=False)
+    password: SecretStr | None = Field(default=None, min_length=1, max_length=1024, repr=False)
     auth_origins: list[str] = Field(default_factory=list, max_length=4)
     username_selector: str = Field(
         default='input[autocomplete="username"], input[type="email"], '
@@ -90,6 +111,17 @@ class BrowserLogin(Strict):
     )
     success_selector: str = Field(default="", max_length=250)
 
+    @model_validator(mode="after")
+    def credential_method(self):
+        if self.method == "password" and self.password is None:
+            raise ValueError("Password login requires a password")
+        if self.method == "email_verification":
+            if self.password is not None:
+                raise ValueError("Email verification must not include a password")
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", self.username.get_secret_value()):
+                raise ValueError("Email verification requires a valid email address")
+        return self
+
 
 class WebsiteInput(Strict):
     framework: Literal["langgraph", "crewai"] = "langgraph"
@@ -98,12 +130,14 @@ class WebsiteInput(Strict):
     browser_mode: Literal["restricted", "normal"] = "restricted"
     browser_channel: Literal["chromium", "chrome", "msedge"] = "chromium"
     normal_browser_confirmed: bool = False
+    browser_scroll_steps: int = Field(default=3, ge=0, le=8)
     login_mode: Literal["none", "manual", "automatic"] = "manual"
     login: BrowserLogin | None = Field(default=None, exclude=True, repr=False)
     resource_origins: list[str] = Field(default_factory=list, max_length=8)
     verification_origins: list[str] = Field(default_factory=list, max_length=4)
     urls: list[str] = Field(min_length=1, max_length=3)
     instructions: str = Field(default="", max_length=2000)
+    output_fields: list[str] = Field(default_factory=list, max_length=16)
     page_text: str = Field(default="", max_length=24000)
     record_limit: int = Field(default=25, ge=1, le=50)
     business_rules: list[Condition] = Field(default_factory=list, max_length=5)
@@ -113,6 +147,13 @@ class WebsiteInput(Strict):
 
     @model_validator(mode="after")
     def validate_source(self):
+        if len(set(self.output_fields)) != len(self.output_fields) or any(
+            not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", name)
+            or name in RESERVED
+            or name.startswith("rule_")
+            for name in self.output_fields
+        ):
+            raise ValueError("Output fields must be unique source field names in snake_case")
         self.urls = list(dict.fromkeys(public_url(url) for url in self.urls))
         if self.source == "capture":
             if self.capture is None or self.page_text or self.urls != [self.capture.url]:
@@ -165,6 +206,7 @@ class WebsiteInput(Strict):
             or self.browser_mode != "restricted"
             or self.browser_channel != "chromium"
             or self.normal_browser_confirmed
+            or self.browser_scroll_steps != 3
             or self.login_mode != "manual"
             or self.resource_origins
             or self.verification_origins
@@ -219,14 +261,52 @@ Pages may include structured blocks with IDs, kinds, text and href links. These 
 capture, not extra records. Quote source text or an explicitly supplied href, never block IDs.
 Blocks with the same group_id came from one visible article/listing container; keep all
 fields in a row within that group when it is present. Do not combine different groups.
+When a source_kind=index page and source_kind=detail pages are supplied, preserve matching
+index records even if their detail pages were not opened or failed. Emit a separate row
+for each page's main record; NEVER mix cells/quotes across pages in one row. Deterministic
+code will reconcile verified index/detail counterparts. Detail pages describe their main
+record, not their related-content sidebars. Use null for fields absent on that page.
+Use one shared column schema across all supplied pages. Include exact source detail URLs
+when available, and substantive excerpts only from a captured detail body. Do not omit
+index rows just because details are available. The record_limit is the final merged and
+filtered preview limit, not a reason to discard index counterparts before reconciliation.
 Represent ALL user filters explicitly; price 150-250 means gte 150 AND lte 250. Do not drop
 minimum prices, currencies, price basis, rating scale, location, dates, or other requirements.
 Do not convert currencies/scales or assume tax/nightly basis. Use needs_input if a constraint
 cannot be represented or verified from supplied text (including stay availability).
+Browser pages may include browser_task_context added by the application, separately
+from source blocks. status=form_verified_search_submitted means literal form values
+were read back and a Search page transition was observed for this captured document.
+You may use its verified requirements to describe the dataset's submitted search scope
+(destination, stay dates, adults/rooms), even when the collector excludes form text.
+Do NOT turn this context into source cells, quotes, filters on invented record fields,
+or proof of per-hotel availability. Explain that availability remains unverified unless
+the listing itself supplies evidence. Still verify actual prices, currency, price basis,
+ratings and all record-level filters from source blocks. Never apply this context to
+another page or to a manually pasted/extension capture, and never invent absent prices.
 Use unsupported for non-extraction actions. Login, CAPTCHA, error pages and JS shells are NOT
 successful content: return needs_input and explain that page text/access is needed.
+The user's output_fields are a mandatory output contract, not filters. Enumerate every
+explicitly requested field in requested_fields (snake_case), even when no value is visible.
+Keep requested fields in columns and put null with empty evidence when unavailable.
+Do not replace a requested field with a differently named field. Do not pretend a missing
+value was captured. Without explicit requested fields, for news/articles include article_title,
+article_url, article_excerpt, article_snippet, author, published_time and section where the
+column limit allows. article_snippet is substantive index teaser text, not a category,
+promotional kicker, read-time label or a repeated headline. article_excerpt is detail body
+text only. Other website types should retain useful inferred fields and any requested fields.
 Pick <=16 distinct snake_case source columns. Prefer article_title for headlines. On
-an opened article page, source_url is attached automatically. Include article_url only
+structured captures, article_title is the full actual headline, not a kicker, body quotation,
+URL slug or summary. A heading_level=1/content_role=headline block identifies the detail
+headline. On a detail page, if it is absent, use null and explain; do not substitute a body
+paragraph. On an index page use its captured record heading or full headline link label
+bound to that record URL; it may be an H2/H3 and does NOT require an H1. Prefer that heading
+over a short promotional kicker for the same URL. Do not manufacture a headline from a slug.
+article_excerpt belongs to a paragraph from the detail body (content_role=body), not its
+headline, an unrelated video description, navigation or a homepage teaser. Preserve inline
+names and wording. Do not wrap cell VALUES in extra quotation marks; display wrappers are
+allowed only for evidence. Account for every supplied detail page with a row or warning.
+On an opened article page, source_url is attached automatically. Include article_url only
 when the article's exact URL is supplied in a source href or is the captured page URL;
 in the latter case use that exact URL as both value and evidence. Do not invent URLs.
 Do not output internal metadata or rule_ prefixed columns.
@@ -281,6 +361,7 @@ def interpret(values, pages, settings):
                         {
                             "today": date.today().isoformat(),
                             "instructions": values.instructions,
+                            "output_fields": values.output_fields,
                             "record_limit": values.record_limit,
                             "pages": model_pages,
                         }
@@ -296,13 +377,9 @@ def interpret(values, pages, settings):
         return Extraction.model_validate(response.output_parsed), {
             "provider": "openai",
             "model": settings.model,
-            "prompt_version": "website-extractor-v6",
+            "prompt_version": "website-extractor-v10",
             "usage": response.usage.model_dump() if response.usage else {},
         }
-
-
-def normalized(value):
-    return " ".join(unicodedata.normalize("NFC", str(value)).split())
 
 
 QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’"}
@@ -385,14 +462,99 @@ RESERVED = {
     "evidence",
     "topic_relevance",
     "relevance_reason",
+    "record_url",
+    "detail_status",
+    "evidence_sources",
+    "enrichment_conflicts",
 }
+
+
+def complete_output_contract(candidate, values):
+    """Preserve requested slots, not invented facts; one contract for both browser modes."""
+    requested = list(dict.fromkeys(values.output_fields + candidate.requested_fields))
+    projection_notes = []
+    if values.output_fields:
+        # A pinned user contract is stable across calls. Keep rule/filter dependencies
+        # too, and disclose them; never remove a requested constraint to fit a schema.
+        dependencies = [condition.field for condition in candidate.filters + values.business_rules]
+        dependencies += [
+            condition.field for rule in candidate.query_rules for condition in rule.conditions
+        ]
+        requested = list(dict.fromkeys(values.output_fields + dependencies))
+        dropped = {column.name for column in candidate.columns} - set(requested)
+        if dropped:
+            candidate.columns = [column for column in candidate.columns if column.name in requested]
+            for row in candidate.rows:
+                row.cells = [cell for cell in row.cells if cell.field in requested]
+            projection_notes.append(
+                "Only pinned output fields and constraint dependencies are displayed; "
+                "other inferred fields were excluded."
+            )
+        extra = set(requested) - set(values.output_fields)
+        if extra:
+            projection_notes.append(
+                f"Retained constraint dependency fields: {', '.join(sorted(extra))}."
+            )
+    if any(
+        not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", name)
+        or name in RESERVED
+        or name.startswith("rule_")
+        for name in requested
+    ):
+        raise WebsiteError("Requested output fields contain invalid or reserved source names.")
+    names = {column.name for column in candidate.columns}
+    defaults = []
+    # Complete the same useful news schema without replacing existing identities.
+    # General websites can explicitly pin any source fields using output_fields.
+    if (
+        not values.output_fields
+        and "article_title" in names
+        and re.search(r"article|news|blog|stor", candidate.content_type, re.I)
+    ):
+        defaults = [
+            "article_url",
+            "article_excerpt",
+            "article_snippet",
+            "author",
+            "published_time",
+            "section",
+        ]
+    missing = list(dict.fromkeys(name for name in requested + defaults if name not in names))
+    if len(names) + len(missing) > 16:
+        if requested:
+            raise WebsiteError(
+                "Requested and inferred fields exceed 16 columns. Request fewer fields."
+            )
+        missing = missing[: max(0, 16 - len(names))]
+    for name in missing:
+        candidate.columns.append(
+            Column(
+                name=name,
+                description="Requested or standard output field; blank if not extracted",
+                kind="text",
+                unit="",
+            )
+        )
+    candidate._contract_added_fields = set(missing)
+    preferred = values.output_fields or (["article_title"] + defaults if defaults else requested)
+    order = {name: index for index, name in enumerate(preferred)}
+    candidate.columns.sort(key=lambda column: order.get(column.name, len(order)))
+    candidate.requested_fields = requested
+    return projection_notes + (
+        [
+            f"Preserved output fields not returned in the model schema: {', '.join(missing)}. "
+            "No values were invented."
+        ]
+        if missing
+        else []
+    )
 
 
 def prepare_extraction(candidate, values, *, schema_issues=None):
     """Normalize rows without guessing source values or approving unexpected fields."""
     candidate, values = candidate.model_copy(deep=True), values.model_copy(deep=True)
     columns, unique = [], {}
-    notes = []
+    notes = complete_output_contract(candidate, values)
     for column in candidate.columns:
         if column.name in unique:
             if unique[column.name] != column:
@@ -442,7 +604,10 @@ def prepare_extraction(candidate, values, *, schema_issues=None):
                 if schema_issues is None:
                     raise WebsiteError("The model returned conflicting relevance classifications.")
                 schema_issues[index] = [
-                    {"field": "relevance", "reason": "conflicting_relevance_classification"}
+                    {
+                        "field": "relevance",
+                        "reason": "conflicting_relevance_classification",
+                    }
                 ]
                 continue
         if unexpected:
@@ -542,7 +707,18 @@ def apply_query_rules(rows, rules):
 
 
 def validate_extraction(
-    candidate, values, pages, *, rejected=None, schema_issues=None, field_issues=None
+    candidate,
+    values,
+    pages,
+    *,
+    rejected=None,
+    schema_issues=None,
+    field_issues=None,
+    apply_filters=True,
+    enforce_limit=True,
+    preserve_sources=False,
+    review_counts=None,
+    field_repairs=None,
 ):
     names = [c.name for c in candidate.columns]
     reserved = RESERVED
@@ -555,20 +731,19 @@ def validate_extraction(
     validate_conditions(candidate.filters + values.business_rules, candidate.columns)
     # A record must retain its identity and every field used by a filter or rule.
     # Other unsupported cells may be nulled only in the reviewed partial-preview path.
-    identity_field = next(
-        (
-            name
-            for name in ("article_title", "headline", "hotel_name", "name", "title")
-            if name in names
-        ),
-        names[0],
+    # A newly preserved, empty output slot is not a new mandatory identity.
+    record_identity = identity_field(
+        [name for name in names if name not in candidate._contract_added_fields] or names
     )
-    protected_fields = {identity_field}
+    protected_fields = {record_identity}
     protected_fields.update(rule.field for rule in candidate.filters + values.business_rules)
     protected_fields.update(
         rule.field for query_rule in candidate.query_rules for rule in query_rule.conditions
     )
     rows, excluded, seen = [], 0, set()
+    unrelated, uncertain, duplicates, filtered_out = 0, 0, 0, 0
+    rejected_start = len(rejected) if rejected is not None else 0
+    page_row_counts = Counter(row.page_index for row in candidate.rows)
     for index, item in enumerate(candidate.rows):
         if schema_issues and index in schema_issues:
             if rejected is None:
@@ -585,11 +760,161 @@ def validate_extraction(
                 }
             )
             continue
-        if item.page_index >= len(pages) or [cell.field for cell in item.cells] != names:
+        if item.page_index >= len(pages):
+            if rejected is None:
+                raise WebsiteError(
+                    "Model fields or page references did not match the extraction schema."
+                )
+            rejected.append(
+                {
+                    "record_id": f"record-{index + 1:04d}",
+                    "source_url": "",
+                    "issues": [
+                        {
+                            "field": "record",
+                            "reason": "unavailable_source_page",
+                            "page_index": item.page_index,
+                        }
+                    ],
+                }
+            )
+            continue
+        if [cell.field for cell in item.cells] != names:
             raise WebsiteError(
                 "Model fields or page references did not match the extraction schema."
             )
+        # Topic selection precedes source-cell checks. Unrelated content is excluded,
+        # not reported as invalid merely because an unused optional label was invented.
+        # Schema conflicts and unavailable page references above still fail validation.
+        if candidate.semantic_selection is not None and item.relevance == "not_relevant":
+            unrelated += 1
+            excluded += 1
+            continue
+        if candidate.semantic_selection is not None and item.relevance == "uncertain":
+            if rejected is None:
+                raise WebsiteError("Topic relevance is uncertain. Review the captured content.")
+            uncertain += 1
+            rejected.append(
+                {
+                    "record_id": f"record-{index + 1:04d}",
+                    "source_url": pages[item.page_index]["url"],
+                    "issues": [
+                        {
+                            "field": "topic_relevance",
+                            "value": "uncertain",
+                            "evidence": item.relevance_evidence,
+                            "reason": "uncertain_relevance",
+                        }
+                    ],
+                }
+            )
+            continue
         page = pages[item.page_index]
+        item = item.model_copy(deep=True)
+        repaired = []
+        primary = primary_headline(page)
+        url_cells = [
+            cell.value
+            for cell in item.cells
+            if cell.field in {"article_url", "detail_url", "url"} and cell.value
+        ]
+        bound_heading = (
+            linked_headline(page, url_cells[0])
+            if page.get("source_kind") != "detail" and len(set(url_cells)) == 1
+            else None
+        )
+        # Only one main detail candidate with an unambiguous captured H1 can be
+        # canonicalized. Never convert sidebar rows or index teasers into detail facts.
+        main_detail_heading = (
+            primary
+            and page.get("source_kind") != "index"
+            and (page.get("source_kind") == "detail" or primary.get("content_role") == "headline")
+            and page_row_counts[item.page_index] == 1
+            and url_cells
+            and all(url in {page["url"], page.get("requested_url")} for url in url_cells)
+            and is_headline_field(record_identity, candidate.content_type)
+        )
+        correction_heading = primary if main_detail_heading else bound_heading
+        if correction_heading and is_headline_field(record_identity, candidate.content_type):
+            cell = next(cell for cell in item.cells if cell.field == record_identity)
+            if cell.value != correction_heading["text"]:
+                repaired.append(
+                    {
+                        "field": cell.field,
+                        "old_value": cell.value,
+                        "value": correction_heading["text"],
+                        "evidence": correction_heading["text"],
+                        "reason": "headline_from_unique_captured_h1"
+                        if main_detail_heading
+                        else "headline_from_url_bound_captured_heading",
+                    }
+                )
+                cell.value = correction_heading["text"]
+                cell.evidence = correction_heading["text"]
+        identity_cell = next(cell for cell in item.cells if cell.field == record_identity)
+        matched_identities = [
+            block
+            for block in page.get("blocks", [])
+            if block.get("kind") in {"heading", "link"}
+            and block.get("href")
+            and block.get("association") != "ambiguous"
+            and identity_cell.value is not None
+            and normalized(block["text"]) == normalized(identity_cell.value)
+            and (
+                not is_headline_field(record_identity, candidate.content_type)
+                or headline_issue(identity_cell.value, page) is None
+            )
+        ]
+        captured_urls = {block["href"] for block in matched_identities}
+        main_identity = bool(
+            primary
+            and identity_cell.value is not None
+            and normalized(primary["text"]) == normalized(identity_cell.value)
+            and page.get("source_kind") != "index"
+            and page_row_counts[item.page_index] == 1
+        )
+        if not captured_urls and main_identity:
+            captured_urls = {page["url"]}
+        for cell in item.cells:
+            literal = None
+            if (
+                cell.value is None
+                and cell.field
+                in {
+                    "article_url",
+                    "detail_url",
+                    "url",
+                    "hotel_url",
+                    "product_url",
+                    "listing_url",
+                }
+                and len(captured_urls) == 1
+            ):
+                literal = next(iter(captured_urls))
+            elif cell.value is None and cell.field == "article_excerpt" and main_identity:
+                bodies = [
+                    block
+                    for block in page.get("blocks", [])
+                    if block.get("kind") == "paragraph"
+                    and block.get("content_role") == "body"
+                    and block.get("association") != "ambiguous"
+                    and (
+                        not primary.get("group_id") or block.get("group_id") == primary["group_id"]
+                    )
+                ]
+                if bodies:
+                    literal = bodies[0]["text"][:1500]
+            if literal:
+                cell.value, cell.evidence = literal, literal
+                repaired.append(
+                    {
+                        "field": cell.field,
+                        "old_value": None,
+                        "value": literal,
+                        "evidence": literal,
+                        "reason": "literal_value_from_captured_structure",
+                    }
+                )
         if not any(cell.value is not None for cell in item.cells):
             if rejected is None:
                 raise WebsiteError("A returned record has no source values. Nothing was approved.")
@@ -606,7 +931,15 @@ def validate_extraction(
             quote = None
             if cell.value is not None:
                 if (
-                    column.name == "article_url"
+                    column.name
+                    in {
+                        "article_url",
+                        "detail_url",
+                        "url",
+                        "hotel_url",
+                        "product_url",
+                        "listing_url",
+                    }
                     and cell.value == page["url"]
                     and cell.evidence == page["url"]
                 ):
@@ -615,6 +948,23 @@ def validate_extraction(
                     quote = page["url"]
                 else:
                     quote = source_quote(cell.evidence, page["text"])
+                if (
+                    column.kind == "text"
+                    and quote
+                    and not value_supported(cell.model_copy(update={"evidence": quote}), column)
+                ):
+                    literal = source_quote(cell.value, quote)
+                    if literal is not None:
+                        repaired.append(
+                            {
+                                "field": cell.field,
+                                "old_value": cell.value,
+                                "value": literal,
+                                "evidence": quote,
+                                "reason": "display_quote_wrapper_removed",
+                            }
+                        )
+                        cell.value = literal
                 try:
                     supported = bool(quote) and value_supported(
                         cell.model_copy(update={"evidence": quote}), column
@@ -632,6 +982,43 @@ def validate_extraction(
                             else "value_missing_from_quote",
                         }
                     )
+                elif is_headline_field(column.name, candidate.content_type):
+                    role_error = headline_issue(cell.value, page)
+                    if role_error:
+                        issues.append(
+                            {
+                                "field": cell.field,
+                                "value": cell.value,
+                                "evidence": quote,
+                                "reason": role_error,
+                            }
+                        )
+                elif column.name == "article_excerpt":
+                    role_error = excerpt_issue(quote, page)
+                    if role_error:
+                        issues.append(
+                            {
+                                "field": cell.field,
+                                "value": cell.value,
+                                "evidence": quote,
+                                "reason": role_error,
+                            }
+                        )
+                elif column.name == "article_snippet" and page.get("blocks"):
+                    if not any(
+                        block.get("kind") == "paragraph"
+                        and block.get("association") != "ambiguous"
+                        and normalized(quote) in normalized(block["text"])
+                        for block in page["blocks"]
+                    ):
+                        issues.append(
+                            {
+                                "field": cell.field,
+                                "value": cell.value,
+                                "evidence": quote,
+                                "reason": "snippet_not_supported_by_teaser_paragraph",
+                            }
+                        )
                 if column.kind == "number":
                     try:
                         decimal(cell.value)
@@ -646,6 +1033,15 @@ def validate_extraction(
                         )
             record[cell.field] = cell.value
             evidence[cell.field] = quote if cell.value is not None and quote else cell.evidence
+        if record.get(record_identity) is None:
+            issues.append(
+                {
+                    "field": record_identity,
+                    "value": None,
+                    "evidence": "",
+                    "reason": "missing_record_identity",
+                }
+            )
         # A quote anywhere on the page is not enough to prove that fields belong
         # to the same card/article. When the capture identified record containers,
         # reject rows whose supported cells point to different containers.
@@ -662,7 +1058,23 @@ def validate_extraction(
             }
             if groups:
                 grouped_cells[field] = groups
-        if len(grouped_cells) > 1 and not set.intersection(*grouped_cells.values()):
+        identity_groups = grouped_cells.get(record_identity, set())
+        conflicting_fields = [
+            field
+            for field, groups in grouped_cells.items()
+            if identity_groups
+            and field != record_identity
+            and not groups.intersection(identity_groups)
+        ]
+        for field in conflicting_fields:
+            # Clear unsupported optional metadata, not the entire sound record.
+            # Identity and filter/rule values still fail the record when mismatched.
+            issues.append({"field": field, "reason": "values_from_different_source_groups"})
+        if (
+            not identity_groups
+            and len(grouped_cells) > 1
+            and not set.intersection(*grouped_cells.values())
+        ):
             issues.append(
                 {
                     "field": "record",
@@ -670,6 +1082,16 @@ def validate_extraction(
                     "fields": sorted(grouped_cells),
                 }
             )
+        for field, quote in evidence.items():
+            if record[field] is None or not quote:
+                continue
+            matching = [
+                block
+                for block in page.get("blocks", [])
+                if normalized(quote) in normalized(block["text"] + " " + (block.get("href") or ""))
+            ]
+            if matching and all(block.get("association") == "ambiguous" for block in matching):
+                issues.append({"field": field, "reason": "ambiguous_record_association"})
         if candidate.semantic_selection is not None:
             if item.relevance == "relevant":
                 relevance_quote = source_quote(item.relevance_evidence, page["text"])
@@ -686,15 +1108,6 @@ def validate_extraction(
                     record["topic_relevance"] = "relevant"
                     record["relevance_reason"] = item.relevance_reason
                     evidence["topic_relevance"] = relevance_quote
-            elif item.relevance == "uncertain":
-                issues.append(
-                    {
-                        "field": "topic_relevance",
-                        "value": item.relevance,
-                        "evidence": item.relevance_evidence,
-                        "reason": "uncertain_relevance",
-                    }
-                )
             elif item.relevance is None:
                 issues.append(
                     {
@@ -709,7 +1122,6 @@ def validate_extraction(
             recoverable = (
                 field_issues is not None
                 and rejected is not None
-                and item.relevance != "not_relevant"
                 and all(
                     issue["field"] in names and issue["field"] not in protected_fields
                     for issue in issues
@@ -734,20 +1146,29 @@ def validate_extraction(
                 }
             )
             continue
-        if candidate.semantic_selection is not None and item.relevance == "not_relevant":
-            excluded += 1
-            continue
-        identity = json.dumps(record, sort_keys=True)
+        identity = json.dumps([page["url"], record] if preserve_sources else record, sort_keys=True)
         if identity in seen:
+            duplicates += 1
             continue
         seen.add(identity)
-        if not all(matches(record, condition) for condition in candidate.filters):
+        if apply_filters and not all(matches(record, condition) for condition in candidate.filters):
             excluded += 1
+            filtered_out += 1
             continue
         record.update(
-            listing_id=f"record-{index + 1:04d}", source_url=page["url"], evidence=evidence
+            listing_id=f"record-{index + 1:04d}",
+            source_url=page["url"],
+            evidence=evidence,
         )
         rows.append(record)
+        if repaired and field_repairs is not None:
+            field_repairs.append(
+                {
+                    "record_id": record["listing_id"],
+                    "source_url": page["url"],
+                    "issues": repaired,
+                }
+            )
         if recovered_issues:
             field_issues.append(
                 {
@@ -756,7 +1177,20 @@ def validate_extraction(
                     "issues": recovered_issues,
                 }
             )
-    if len(rows) > values.record_limit:
+    if review_counts is not None:
+        review_counts.update(
+            candidates=len(candidate.rows),
+            matched=len(rows),
+            unrelated=unrelated,
+            uncertain=uncertain,
+            invalid=(len(rejected) - rejected_start - uncertain) if rejected is not None else 0,
+            filtered_out=filtered_out,
+            duplicates=duplicates,
+            optional_fields_cleared=len(field_issues or []),
+        )
+        if field_repairs is not None:
+            review_counts["source_fields_corrected"] = len(field_repairs)
+    if enforce_limit and len(rows) > values.record_limit:
         raise WebsiteError(
             f"{len(rows)} source-verified matching records exceed your preview limit of "
             f"{values.record_limit}. Nothing was truncated or saved. Narrow the request "

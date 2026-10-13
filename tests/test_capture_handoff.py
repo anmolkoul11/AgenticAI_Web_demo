@@ -313,6 +313,7 @@ def test_extension_permissions_are_narrow_and_dom_capture_matches_browser():
     assert "parent.closest('a[href]')" in (folder / "capture_dom.js").read_text(
         encoding="utf-8"
     )
-    assert "if (root === primary && budget >= 500) break;" in (
-        folder / "capture_dom.js"
-    ).read_text(encoding="utf-8")
+    script = (folder / "capture_dom.js").read_text(encoding="utf-8")
+    assert "if (root === primary && budget >= 500) break;" not in script
+    assert "source-inventory-v1" in script
+    assert "[primary, document.body]" in script
