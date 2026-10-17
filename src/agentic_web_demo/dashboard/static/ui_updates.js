@@ -56,6 +56,7 @@ function workflowActivity(job, browser, source = "browser") {
     hotel_review: "Waiting for you to approve the destination, dates, adults and rooms.",
     hotel_running: browser?.guidance || "Setting hotel fields, checking values and submitting Search.",
     agent_running: browser?.guidance || "Agent observing the page and choosing its next action.",
+    agent_pausing: "Pausing before the next browser action. An in-flight model call may finish first.",
     agent_paused: browser?.guidance || "Agent paused — check the browser and choose how to continue.",
     agent_collecting: "Passing the agent's retained source pages to extraction.",
     discovering_links: "Finding relevant links in the captured starting page.",

@@ -31,7 +31,7 @@ from agentic_web_demo.exports import CONTENT_TYPES, ExportError, build_export
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-10-12.2"
+UI_VERSION = "2026-10-17.1"
 
 
 class CustomApproval(BaseModel):
@@ -209,6 +209,7 @@ def create_app(settings=None, service=None):
                     "source URL and 80-24,000 characters; instructions are optional. "
                     "Automatic sign-in needs website credentials; the HTTPS login URL is optional. "
                     "Normal browser mode requires its separate confirmation checkbox. "
+                    "Run workflow needs LangGraph, a browser source, a task and agent consent. "
                     "Browser loading scroll steps must be between 0 and 8. "
                     "Business-rule fields use lowercase snake_case and require a value."
                 },
@@ -376,7 +377,9 @@ def create_app(settings=None, service=None):
                 if values.remember
                 else "Session only. Any previously saved key is unchanged."
             )
-            + " Access and ownership are not verified; no API call was made.",
+            + " Access and ownership are not verified; no API call was made. "
+            "Already-open browser agents retain their previous connection. "
+            "Cancel the old browser and start a fresh workflow to use this connection.",
         }
 
     @app.post("/api/model-key/forget", dependencies=[Depends(guard)])
@@ -461,6 +464,23 @@ def create_app(settings=None, service=None):
                 400, "Configure your API key and check the custom source fields."
             ) from None
 
+    @app.get("/api/custom/browsers", dependencies=[Depends(guard)])
+    def verification_browsers(request: Request):
+        service = user_service(request)
+        with service.lock:
+            controls = list(service.browser_controls.items())
+        browsers = []
+        for job_id, control in controls:
+            status = control.snapshot()
+            if (status.get("inspection") or {}).get("active"):
+                browsers.append({
+                    "job_id": job_id,
+                    "state": status["state"],
+                    "guidance": status["guidance"],
+                    "snapshot_frozen": True,
+                })
+        return {"browsers": browsers}
+
     @app.get("/api/custom/jobs/{job_id}/browser", dependencies=[Depends(guard)])
     def browser_status(request: Request, job_id: str):
         service = user_service(request)
@@ -481,6 +501,7 @@ def create_app(settings=None, service=None):
         action: Literal[
             "capture",
             "cancel",
+            "close",
             "plan",
             "approve",
             "dismiss",
@@ -494,6 +515,7 @@ def create_app(settings=None, service=None):
             "hotel_dismiss",
             "agent_start",
             "agent_resume",
+            "agent_pause",
             "agent_collect",
             "agent_manual",
         ],
@@ -576,9 +598,10 @@ def create_app(settings=None, service=None):
             raise HTTPException(404, "Job not found") from None
 
     @app.get("/api/jobs/{job_id}/records", dependencies=[Depends(guard)])
-    def records(request: Request, job_id: str):
+    def records(request: Request, job_id: str, presentation: bool = False):
         try:
-            return user_service(request).records(job_id)
+            service = user_service(request)
+            return service.preview_records(job_id) if presentation else service.records(job_id)
         except (ValueError, OSError):
             raise HTTPException(404, "No saved export available for this job") from None
 

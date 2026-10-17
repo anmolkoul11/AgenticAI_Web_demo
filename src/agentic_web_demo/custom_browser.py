@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from queue import Queue
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 from uuid import uuid4
@@ -17,7 +18,12 @@ from playwright.sync_api import sync_playwright
 from pydantic import ValidationError
 
 from agentic_web_demo.authentication import assess_authentication, authentication_expired
-from agentic_web_demo.browser_agent import BrowserAgent, DOMBrowserTools, OpenAIBrowserDecider
+from agentic_web_demo.browser_agent import (
+    BrowserAgent,
+    DOMBrowserTools,
+    OpenAIBrowserDecider,
+    safe_browser_diagnostics,
+)
 from agentic_web_demo.browser_links import approved_links, inspect_links, propose_links
 from agentic_web_demo.browser_navigation import (
     execute_navigation,
@@ -40,12 +46,73 @@ from agentic_web_demo.hotel_search import (
     run_hotel_search,
 )
 
+CAPTURE_GUIDANCE = {
+    "insufficient_content": "Too little source content survived capture. Open relevant content "
+    "or a loaded results page before trying again; no extraction call ran.",
+    "page_changed": "The page changed during capture. Review the tab and retry capture once "
+    "when it is stable; no extraction call ran.",
+    "closed": "The browser or tab closed during capture. Start a new session.",
+    "timeout": "Page capture timed out. Review the loaded page before another capture.",
+    "invalid_capture": "Captured source structure was invalid. No data was sent for extraction.",
+    "preparation_failed": "Content preparation failed before capture. Review the browser "
+    "before trying again; no extraction call ran.",
+    "collector_exception": "The source collector failed on this page. Review capture diagnostics; "
+    "repeating model decisions cannot repair a collector error. No extraction call ran.",
+}
+
+
+class BrowserCaptureError(WebsiteError):
+    """Safe collector failure facts, never raw DOM, URLs or credential exceptions."""
+
+    def __init__(self, code, **facts):
+        if code not in CAPTURE_GUIDANCE:
+            raise ValueError("Unknown capture failure code")
+        super().__init__(CAPTURE_GUIDANCE[code])
+        self.code = code
+        self.capture_diagnostics = {"code": code}
+        if facts.get("phase") in {"prepare", "collect", "validate"}:
+            self.capture_diagnostics["phase"] = facts["phase"]
+        for key in ("block_count", "captured_text_chars", "main_status"):
+            value = facts.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10_000_000:
+                self.capture_diagnostics[key] = value
+
+
+def capture_failure(error, phase="collect"):
+    """Classify a driver error without exposing its message to the model or UI."""
+    message = str(error).lower()
+    code = (
+        "insufficient_content"
+        if "capture_insufficient_content" in message or "too little visible content" in message
+        else "timeout"
+        if isinstance(error, PlaywrightTimeout)
+        else "closed"
+        if "closed" in message or "crash" in message
+        else "page_changed"
+        if "execution context" in message or "detached" in message
+        else "preparation_failed"
+        if phase == "prepare"
+        else "collector_exception"
+    )
+    return BrowserCaptureError(code, phase=phase)
+
+
+def remember_capture_failure(control, error, stage="capture"):
+    with control.lock:
+        control.browser_error = {"stage": stage, **error.capture_diagnostics}
+
 
 class BrowserControl:
     def __init__(self, alive=lambda: True):
         self.lock = threading.Lock()
         self.capture = threading.Event()
         self.cancel = threading.Event()
+        self.review_open = threading.Event()
+        self.close_requested = threading.Event()
+        self.worker_closed = threading.Event()
+        self.owner_thread = None
+        self.on_closed = None
+        self.snapshot_frozen = False
         self.alive = alive
         self.state = "starting"
         self.message = "Opening a dedicated Chromium window. No model call yet."
@@ -88,7 +155,58 @@ class BrowserControl:
         self.agent_report = None
         self.on_agent_diagnostics = None
         self.agent_visual_enabled = False
+        self.agent_pause_requested = threading.Event()
+        self.workflow_mode = "manual"
+        self.automatic_start = "disabled"
+        self.initial_agent_confirmed = False
+        self.initial_agent_visual_confirmed = False
+        self.initial_signin_required = False
         self.startup_timing = {}
+
+    def configure_workflow(self, values):
+        """Keep the initial authorization local to this browser/session control."""
+        with self.lock:
+            self.workflow_mode = values.workflow_mode
+            self.automatic_start = "pending" if values.workflow_mode == "automatic" else "disabled"
+            self.initial_agent_confirmed = values.agent_confirmed
+            self.initial_agent_visual_confirmed = values.agent_visual_confirmed
+            self.initial_signin_required = values.login_mode != "none"
+
+    def maybe_auto_start(self):
+        """Consume initial consent once, only after readiness and sign-in handoff."""
+        if not self.alive():
+            return False
+        with self.lock:
+            if (
+                self.workflow_mode != "automatic"
+                or self.automatic_start != "pending"
+                or self.state != "waiting"
+                or self.agent_report is not None
+                or not self.initial_agent_confirmed
+                or self.cancel.is_set()
+                or self.authentication["status"]
+                not in (
+                    {"authenticated", "operator_confirmed"}
+                    if self.initial_signin_required
+                    else {"not_requested", "authenticated", "operator_confirmed"}
+                )
+            ):
+                return False
+            self.automatic_start = "starting"
+            visual_confirmed = self.initial_agent_visual_confirmed
+        # Use the same command validation as the manual agent button. Never hold
+        # the control lock while invoking command or the caller's alive callback.
+        try:
+            self.command(
+                "agent_start",
+                agent_confirmed=True,
+                agent_visual_confirmed=visual_confirmed,
+                automatic_start_only=True,
+            )
+        except WebsiteError:
+            # A simultaneous cancel/manual command wins; never re-arm initial consent.
+            return False
+        return True
 
     def update(self, state, message):
         with self.lock:
@@ -99,6 +217,10 @@ class BrowserControl:
             return {
                 "state": self.state,
                 "guidance": self.message,
+                "inspection": {
+                    "active": self.review_open.is_set() and not self.worker_closed.is_set(),
+                    "snapshot_frozen": self.snapshot_frozen,
+                },
                 "blocked_origins": sorted(self.blocked_origins),
                 "blocked_resources": [
                     {"origin": host, "type": kind, "count": count}
@@ -140,6 +262,8 @@ class BrowserControl:
                 "hotel_capture_after": self.hotel_capture_after,
                 "hotel_revision": self.hotel_revision,
                 "agent_report": copy.deepcopy(self.agent_report),
+                "workflow_mode": self.workflow_mode,
+                "automatic_start": self.automatic_start,
                 "startup_timing": dict(self.startup_timing),
                 "navigation_result": copy.deepcopy(self.navigation_result),
                 "navigation_history": copy.deepcopy(self.navigation_history),
@@ -217,8 +341,18 @@ class BrowserControl:
     def set_agent_report(self, report):
         with self.lock:
             self.agent_report = copy.deepcopy(report)
-            self.state = "agent_paused" if report["status"] == "paused" else "agent_running"
-            self.message = report["guidance"]
+            self.state = (
+                "agent_paused"
+                if report["status"] == "paused"
+                else "agent_pausing"
+                if self.agent_pause_requested.is_set()
+                else "agent_running"
+            )
+            self.message = (
+                "Pause requested. An in-flight model call may finish; no new action will run."
+                if self.state == "agent_pausing"
+                else report["guidance"]
+            )
             callback = self.on_agent_diagnostics
             diagnostics = {
                 key: copy.deepcopy(report.get(key))
@@ -233,6 +367,38 @@ class BrowserControl:
             }
             if report.get("counter_diagnostics"):
                 diagnostics["counter_diagnostics"] = copy.deepcopy(report["counter_diagnostics"])
+            checklist = report.get("task_checklist") or {}
+            transition = checklist.get("search_transition") or {}
+            if isinstance(transition, dict) and "attempted" in transition:
+                diagnostics["search_transition"] = {
+                    "attempted": transition.get("attempted") is True,
+                    "confirmed": transition.get("confirmed") is True,
+                    "response_pending": checklist.get("search_response_pending") is True,
+                    "attempt_status": transition.get("attempt_status")
+                    if transition.get("attempt_status")
+                    in {"not_attempted", "attempted_unconfirmed", "transition_confirmed"}
+                    else "unknown",
+                    "dispatch_status": transition.get("dispatch_status")
+                    if transition.get("dispatch_status")
+                    in {
+                        "not_attempted",
+                        "attempted",
+                        "action_completed",
+                        "outcome_unknown",
+                        "not_dispatched",
+                    }
+                    else "unknown",
+                }
+            browser_facts = safe_browser_diagnostics(report.get("browser_diagnostics"))
+            if browser_facts:
+                diagnostics["browser_diagnostics"] = browser_facts
+                if report["status"] == "paused" and not browser_facts.get("recovered"):
+                    self.browser_error = {
+                        "stage": browser_facts["operation"],
+                        **browser_facts,
+                    }
+                elif browser_facts.get("recovered"):
+                    self.browser_error = None
 
             def counts(values, keys):
                 return {
@@ -328,9 +494,27 @@ class BrowserControl:
         hotel_confirmed=False,
         agent_confirmed=False,
         agent_visual_confirmed=False,
+        automatic_start_only=False,
     ):
         with self.lock:
-            if action == "cancel":
+            if action == "close":
+                if not self.review_open.is_set():
+                    raise WebsiteError("No captured verification browser is open.")
+                self.close_requested.set()
+                self.state = "review_closing"
+                self.message = "Closing the verification browser. Captured results are unchanged."
+            elif action == "cancel" and self.review_open.is_set():
+                # Older clients may still label the button Cancel. Once the
+                # snapshot is handed off, window closure must not cancel its
+                # independent extraction/save job.
+                self.close_requested.set()
+                self.state = "review_closing"
+                self.message = "Closing the verification browser. Captured results are unchanged."
+            elif self.review_open.is_set():
+                raise WebsiteError(
+                    "This browser is open for verification only. Start a new run to collect again."
+                )
+            elif action == "cancel":
                 self.cancel.set()
             elif action == "resume_login" and self.state == "authentication_pending":
                 self.state = "checking_authentication"
@@ -342,6 +526,8 @@ class BrowserControl:
                 "waiting",
                 "agent_paused",
             }:
+                if automatic_start_only and self.automatic_start != "starting":
+                    raise WebsiteError("Initial automatic start was cancelled or taken over.")
                 if not agent_confirmed:
                     raise WebsiteError("Authorize the paid browser-agent loop before running it.")
                 if action == "agent_start" and self.agent_report is not None:
@@ -350,13 +536,27 @@ class BrowserControl:
                     )
                 if action == "agent_resume" and self.agent_report is None:
                     raise WebsiteError("Start the browser agent before resuming it.")
+                if self.cancel.is_set():
+                    raise WebsiteError("Browser session cancelled. No agent start.")
+                self.agent_pause_requested.clear()
                 self.agent_visual_enabled = bool(agent_visual_confirmed)
+                if self.workflow_mode == "automatic" and self.automatic_start in {
+                    "pending",
+                    "starting",
+                }:
+                    self.automatic_start = "started"
                 self.state = "agent_running"
                 self.message = (
                     "Starting the observe, decide, act and verify loop. "
                     "Paid API calls are authorized."
                 )
                 self.agent_requested.set()
+            elif action == "agent_pause" and self.state == "agent_running":
+                self.agent_pause_requested.set()
+                self.state = "agent_pausing"
+                self.message = (
+                    "Pause requested. An in-flight model call may finish; no new action will run."
+                )
             elif action == "agent_collect" and self.state == "agent_paused":
                 if not agent_confirmed:
                     raise WebsiteError("Authorize extraction of the agent's captured pages first.")
@@ -364,7 +564,9 @@ class BrowserControl:
                     raise WebsiteError("No agent captures are available yet.")
                 self.state = "agent_collecting"
                 self.agent_requested.set()
-            elif action == "agent_manual" and self.state == "agent_paused":
+            elif action == "agent_manual" and self.state in {"waiting", "agent_paused"}:
+                self.agent_requested.clear()
+                self.automatic_start = "manual" if self.workflow_mode == "automatic" else "disabled"
                 self.state = "waiting"
                 self.message = (
                     "Agent paused. Continue manually or use the other collection options."
@@ -442,6 +644,23 @@ class BrowserControl:
                 self.message = "Article proposal dismissed. Navigate manually or capture this page."
             else:
                 raise WebsiteError("The browser is not ready to capture. Check its current state.")
+            if self.workflow_mode == "automatic" and action in {
+                "capture",
+                "hotel_plan",
+                "hotel_approve",
+                "hotel_extract",
+                "hotel_dismiss",
+                "plan",
+                "approve",
+                "dismiss",
+                "discover",
+                "approve_links",
+                "dismiss_links",
+            }:
+                # Only a valid, accepted manual command consumes initial automation.
+                # Review dismissal returning to waiting must not restart the agent.
+                self.automatic_start = "manual"
+                self.agent_requested.clear()
 
 
 def capture_url(value, expected_origin):
@@ -892,7 +1111,10 @@ def capture_rendered_page(page, approved, redactions, main_status, *, preparatio
     script = (Path(__file__).parent / "dashboard" / "static" / "capture_dom.js").read_text(
         encoding="utf-8"
     )
-    capture = page.evaluate("(" + script + ")", {})
+    try:
+        capture = page.evaluate("(" + script + ")", {})
+    except PlaywrightError as exc:
+        raise capture_failure(exc) from None
     if preparation and capture.get("coverage"):
         capture["coverage"].update(preparation)
     for secret in redactions:
@@ -905,9 +1127,17 @@ def capture_rendered_page(page, approved, redactions, main_status, *, preparatio
         capture["coverage"]["captured_text_chars"] = sum(
             len(block["text"]) for block in capture["blocks"]
         )
-    captured = Capture.model_validate(capture).page()
+    try:
+        captured = Capture.model_validate(capture).page()
+    except ValidationError:
+        raise BrowserCaptureError("invalid_capture", phase="validate") from None
     if len(captured["text"].strip()) < 80:
-        raise WebsiteError("Too little text. Navigate to content before capture.")
+        raise BrowserCaptureError(
+            "insufficient_content",
+            block_count=len(captured["blocks"]),
+            captured_text_chars=len(captured["text"].strip()),
+            main_status=main_status[0],
+        )
     if access_challenge(captured["text"]):
         raise WebsiteError(VERIFICATION_GUIDANCE)
     check_robots(current)
@@ -1039,6 +1269,9 @@ def install_browser_guards(context, page, route, browser_mode):
 
 def browser_error_message(control, error, stage):
     """Classify driver errors without exposing raw URLs, DOM, or credentials."""
+    if isinstance(error, BrowserCaptureError):
+        remember_capture_failure(control, error, stage)
+        return str(error)
     text = str(error).lower()
     code = (
         "timeout"
@@ -1072,7 +1305,111 @@ def browser_error_message(control, error, stage):
     )
 
 
+def _wait_for_browser_review(page, browser, proxy, control):
+    """Pump the original owner thread without collecting or making model calls."""
+    try:
+        while (
+            not control.close_requested.is_set()
+            and not control.cancel.is_set()
+            and control.alive()
+            and browser.is_connected()
+            and not page.is_closed()
+            and not (proxy is not None and proxy.stopped.is_set())
+        ):
+            page.wait_for_timeout(250)
+    except Exception:
+        # Window closure, lost connection or logout cannot invalidate the
+        # already handed-off snapshot. Resource cleanup stays with its owner.
+        pass
+
+
 def read_browser(values, control, model_settings=None):
+    """Return one frozen capture while its tracked Playwright owner stays alive."""
+    result = Queue(maxsize=1)
+    handed_off = False
+
+    def handoff(pages, page, browser, proxy):
+        nonlocal handed_off, model_settings
+        if handed_off:
+            raise WebsiteError("This browser already supplied its captured snapshot.")
+        frozen = copy.deepcopy(pages)
+        with control.lock:
+            control.snapshot_frozen = True
+            control.review_open.set()
+            control.state = "reviewing"
+            control.message = (
+                "Source snapshot captured. The browser stays open for you to verify it while "
+                "extraction continues. Manual browsing does not update the captured results."
+            )
+        handed_off = True
+        model_settings = None
+        result.put(("captured", frozen))
+        _wait_for_browser_review(page, browser, proxy, control)
+        return pages
+
+    def owner_closed():
+        with control.lock:
+            if control.worker_closed.is_set():
+                return
+            control.review_open.clear()
+            control.state = "closed"
+            control.message = (
+                "Verification browser closed. Captured results are unchanged."
+                if control.snapshot_frozen
+                else "Browser session ended."
+            )
+            control.worker_closed.set()
+            callback = control.on_closed
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass  # Registry cleanup must not hide the capture or its original failure.
+
+    def own_browser():
+        try:
+            _read_browser_owned(values, control, model_settings, handoff=handoff)
+            if not handed_off:
+                raise WebsiteError("Browser session ended before a source snapshot was captured.")
+        except BaseException as exc:
+            # Even an owner-thread abort must release the waiting job. Never
+            # serialize unexpected driver/abort text into a user-visible result.
+            if not handed_off:
+                error = (
+                    WebsiteError(str(exc))
+                    if isinstance(exc, WebsiteError)
+                    else WebsiteError(
+                        "Browser session could not complete. Inspect the browser configuration "
+                        "before starting a new run. No automatic retry."
+                    )
+                )
+                result.put(("error", error))
+        finally:
+            owner_closed()
+
+    with control.lock:
+        if control.owner_thread is not None:
+            raise WebsiteError("This browser control already has an owner.")
+        worker = threading.Thread(
+            target=own_browser,
+            name="demo-browser-" + uuid4().hex[:10],
+            daemon=False,
+        )
+        control.owner_thread = worker
+    try:
+        worker.start()
+    except Exception:
+        owner_closed()
+        raise WebsiteError("The browser worker could not start. No browser action ran.") from None
+    kind, payload = result.get()
+    if kind == "error":
+        worker.join()
+        raise payload
+    return payload
+
+
+def _read_browser_owned(values, control, model_settings=None, *, handoff):
+    control.configure_workflow(values)
     target = values.urls[0]
     approved = origin(target)
     verification = set(values.verification_origins)
@@ -1092,9 +1429,11 @@ def read_browser(values, control, model_settings=None):
         if login
         else []
     )
-    auth_requested = login is not None
+    auth_requested = login is not None or (
+        values.workflow_mode == "automatic" and values.login_mode == "manual"
+    )
     auth_success_selector = login.success_selector if login else ""
-    auth_method = login.method if login else ""
+    auth_method = login.method if login else "manual"
     agent = None  # Lives only in this browser worker; never serialized or shared between users.
     if auth_requested:
         with control.lock:
@@ -1104,6 +1443,23 @@ def read_browser(values, control, model_settings=None):
     os.environ.pop("PWDEBUG", None)
     session_stage = "launch"
     startup_started = time.monotonic()
+
+    def handoff_pages(pages, page, browser, proxy):
+        nonlocal agent, login, model_settings
+        # Collection is finished. Release credential/model references before
+        # retaining the window, and never resume automation on this context.
+        if agent is not None:
+            try:
+                agent.decider.close()
+            except Exception:
+                pass
+            agent = None
+        values.login = None
+        login = None
+        redactions.clear()
+        model_settings = None
+        return handoff(pages, page, browser, proxy)
+
     try:
         if control.cancel.is_set() or not control.alive():
             raise WebsiteError("Browser session cancelled before opening. No model call.")
@@ -1205,7 +1561,10 @@ def read_browser(values, control, model_settings=None):
                         notice = VERIFICATION_GUIDANCE
                     else:
                         notice = (
-                            "No website sign-in selected. Navigate to the content, "
+                            "Website opened. The agent continues when the page and "
+                            "any requested sign-in are ready."
+                            if values.workflow_mode == "automatic"
+                            else "No website sign-in selected. Navigate to the content, "
                             "then click Capture current page here."
                             if values.login_mode == "none"
                             else "Sign in if needed, navigate to the content, "
@@ -1263,8 +1622,8 @@ def read_browser(values, control, model_settings=None):
                 control.update("waiting", notice)
                 if auth_requested:
                     control.require_authentication(
-                        notice + " Complete the emailed code/link or any further verification "
-                        "in the original browser. Return to the selected website, then click "
+                        notice + " Complete sign-in or any required verification in the original "
+                        "browser. Return to the selected website, then click "
                         "'I completed sign-in — continue'. No inbox access or code storage."
                     )
                 session_stage = "session"
@@ -1363,6 +1722,7 @@ def read_browser(values, control, model_settings=None):
                                 pass
                             page.wait_for_timeout(250)
                             continue  # No navigation/discovery/capture/model calls during handoff.
+                    control.maybe_auto_start()
                     if control.agent_requested.is_set():
                         control.agent_requested.clear()
                         try:
@@ -1386,22 +1746,29 @@ def read_browser(values, control, model_settings=None):
                                 control.update(
                                     "captured",
                                     "Using the agent's captured pages for the approved "
-                                    "extraction. Chromium is closing.",
+                                    "extraction. The browser will stay open for verification.",
                                 )
-                                return pages
+                                return handoff_pages(pages, page, browser, proxy)
                             if agent is None:
 
                                 def agent_capture():
-                                    preparation = prepare_browser_content(
-                                        page, control, values.browser_scroll_steps
-                                    )
-                                    return capture_rendered_page(
-                                        page,
-                                        None if normal_network else approved,
-                                        redactions,
-                                        main_status,
-                                        preparation=preparation,
-                                    )
+                                    try:
+                                        try:
+                                            preparation = prepare_browser_content(
+                                                page, control, values.browser_scroll_steps
+                                            )
+                                        except PlaywrightError as exc:
+                                            raise capture_failure(exc, phase="prepare") from None
+                                        return capture_rendered_page(
+                                            page,
+                                            None if normal_network else approved,
+                                            redactions,
+                                            main_status,
+                                            preparation=preparation,
+                                        )
+                                    except BrowserCaptureError as exc:
+                                        remember_capture_failure(control, exc)
+                                        raise
 
                                 tools = DOMBrowserTools(
                                     page,
@@ -1418,12 +1785,15 @@ def read_browser(values, control, model_settings=None):
                                     ),
                                     secrets=redactions,
                                     visual_enabled=control.agent_visual_enabled,
+                                    user_pause=lambda: control.agent_pause_requested.is_set(),
                                 )
                                 agent = BrowserAgent(
                                     tools,
                                     OpenAIBrowserDecider(model_settings),
                                     values.instructions,
                                     progress=control.set_agent_report,
+                                    output_fields=values.output_fields,
+                                    collection_goal_required=values.workflow_mode == "automatic",
                                 )
                             agent.tools.visual_enabled = control.agent_visual_enabled
                             report = agent.run()
@@ -1433,6 +1803,18 @@ def read_browser(values, control, model_settings=None):
                                 )
                             if report["status"] == "ready":
                                 pages = agent_sources()
+                                checklist = report.get("task_checklist") or {}
+                                if (
+                                    report.get("collection_outcome") == "empty_results"
+                                    and checklist.get("search_submitted")
+                                    and not checklist.get("search_response_pending")
+                                ):
+                                    control.update(
+                                        "captured",
+                                        "The confirmed search displayed no results. "
+                                        "The browser stays open; no extraction call is needed.",
+                                    )
+                                    return handoff_pages(pages, page, browser, proxy)
                                 if not pages:
                                     raise WebsiteError(
                                         "Agent finished without source captures. "
@@ -1440,10 +1822,10 @@ def read_browser(values, control, model_settings=None):
                                     )
                                 control.update(
                                     "captured",
-                                    "Agent collected source content. Chromium is closing; "
+                                    "Agent collected source content. The browser stays open; "
                                     "extraction and validation follow.",
                                 )
-                                return pages
+                                return handoff_pages(pages, page, browser, proxy)
                             control.update("agent_paused", report["guidance"])
                         except (WebsiteError, PlaywrightError) as exc:
                             control.update(
@@ -1769,10 +2151,13 @@ def read_browser(values, control, model_settings=None):
                             control.update(
                                 "captured",
                                 f"Starting page retained; {coverage['captured']} detail pages "
-                                f"captured, {coverage['failed']} failed. Chromium is closing.",
+                                f"captured, {coverage['failed']} failed. "
+                                "The browser stays open for verification.",
                             )
-                            return pages
+                            return handoff_pages(pages, page, browser, proxy)
                         except WebsiteError as exc:
+                            if isinstance(exc, BrowserCaptureError):
+                                remember_capture_failure(control, exc)
                             control.update("waiting", str(exc))
                         except (PlaywrightError, ValidationError) as exc:
                             detail = (
@@ -1820,10 +2205,12 @@ def read_browser(values, control, model_settings=None):
                             )
                             control.update(
                                 "captured",
-                                "Content captured. Chromium is closing before model extraction.",
+                                "Content captured. The browser stays open during model extraction.",
                             )
-                            return [captured]
+                            return handoff_pages([captured], page, browser, proxy)
                         except WebsiteError as exc:
+                            if isinstance(exc, BrowserCaptureError):
+                                remember_capture_failure(control, exc)
                             control.update("waiting", str(exc))
                         except (PlaywrightError, ValidationError) as exc:
                             detail = (
@@ -1840,6 +2227,15 @@ def read_browser(values, control, model_settings=None):
                     if report.get("status") == "paused" and report.get("guidance")
                     else "Check action evidence for any model calls already attempted."
                 )
+                browser_facts = safe_browser_diagnostics(report.get("browser_diagnostics"))
+                if browser_facts and not browser_facts.get("recovered"):
+                    detail += (
+                        " Browser diagnostic: "
+                        + browser_facts["code"]
+                        + " during "
+                        + browser_facts["operation"]
+                        + ". No repeat Search was attempted."
+                    )
                 raise WebsiteError("The ten-minute browser session expired. " + detail)
             finally:
                 try:

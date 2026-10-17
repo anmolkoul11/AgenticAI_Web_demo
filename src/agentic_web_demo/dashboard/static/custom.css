@@ -96,6 +96,36 @@
 .record-all-fields{width:100%;border-top:1px solid #dce7e8;margin-top:10px;padding-top:10px}
 .record-all-fields summary{font-size:12px;color:var(--navy);font-weight:650;cursor:pointer}
 .record-all-fields dd{white-space:pre-wrap}.field-missing-reason{display:block;font-size:11px;color:#806020;margin-top:6px}
+/* The same source-field grouping is used in compact cards and full previews. */
+.record-cards{grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr));align-items:start}
+.record-card{padding:22px;background:#fff;gap:4px}.record-card .eyebrow{margin-bottom:0}
+.record-card h3{margin:7px 0 8px;line-height:1.35}.record-card .record-completeness{line-height:1.6}
+.record-sections{width:100%;display:grid;gap:16px;margin:12px 0}
+.record-fact-section{border-top:1px solid var(--line);padding-top:13px;min-width:0}
+.record-fact-section h4,.record-missing-details h4,.record-source-section h4,.pricing-preview h4{font-size:12px;color:var(--navy);margin:0 0 8px;font-weight:750}
+.record-fact-section .record-card-facts{margin:0;grid-template-columns:minmax(100px,1fr) minmax(0,2fr);line-height:1.65;gap:6px 12px}
+.record-value-list{padding-left:16px;margin:0}.record-value-list li{margin:0 0 4px}
+.record-card-source{margin:10px 0;font-size:11px}.record-card>button{width:100%;margin-top:8px}
+.record-source-details,.record-missing-details{width:100%;margin:6px 0 0;border-top:1px solid var(--line)}
+.record-source-details summary,.record-missing-details summary{color:var(--muted);font-size:12px}
+.record-missing-details>section{margin:10px 0 16px}.record-missing-details h4{margin-bottom:4px}
+.record-source-details blockquote,.record-missing-details blockquote,.price-observations blockquote{margin:8px 0;padding:8px 11px;border-left:3px solid #c4d9d4;background:#f5f9f8;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;color:#405969}
+.record-source-details p,.record-missing-details p{overflow-wrap:anywhere;margin-bottom:6px}
+.record-source-section{margin:14px 0 16px}.record-source-quote{margin:8px 0 12px}
+.record-source-quote blockquote{margin-bottom:0}.record-source-quote>.source-quote-evidence{border:0;padding:0;margin:0}
+.source-quote-evidence>summary{font-size:11px;min-height:30px;padding:5px 0;color:var(--muted)}
+.source-quote-evidence .micro{font-size:11px;margin:4px 0}.source-quote-evidence small{display:block;font-size:10px;overflow-wrap:anywhere}
+.pricing-preview{width:100%;margin:6px 0 2px;padding:15px 16px;border:1px solid #d0e4dd;border-radius:11px;background:#f4faf7}
+.price-headline-label{display:block;font-size:11px;font-weight:650;color:#446b5e}.price-headline{display:block;font-size:26px;line-height:1.3;color:var(--navy);margin:4px 0 8px;overflow-wrap:anywhere}
+.price-stay-total{font-size:12px;margin:0 0 6px;color:#435b67}.price-status{font-size:11px;font-weight:650;color:var(--amber);margin:0}
+.price-status[data-verified=true]{color:#26624e}.pricing-preview>details{margin:10px 0 0;border-color:#d6e5df}
+.pricing-preview summary{font-size:11px;padding:10px 0 0;min-height:32px}.pricing-preview>details>p{margin-top:12px}
+.price-observations{padding:0;list-style:none;font-size:12px}.price-observations>li{border-top:1px solid #d8e6e0;padding:10px 0;overflow-wrap:anywhere}
+.price-observations>li[data-price-role=original]{color:var(--muted)}.price-observations small{display:block;font-size:10px}.price-observations p{margin:6px 0 0}
+.preview-fields{display:block;border:0}.preview-fields .record-card-facts dt,.preview-fields .record-card-facts dd{border:0;padding:0;font-size:13px;line-height:1.7}
+.preview-fields .record-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 24px}.preview-fields .record-fact-section .record-card-facts{grid-template-columns:1fr}
+.preview-fields .record-card-facts dd{margin-bottom:6px}.record-preview .pricing-preview{margin:16px 0}
+@media(max-width:650px){.record-card{padding:18px}.preview-fields .record-sections{grid-template-columns:1fr;gap:16px}.record-fact-section .record-card-facts{grid-template-columns:minmax(85px,1fr) minmax(0,1.65fr)}.price-headline{font-size:24px}}
 @media(prefers-reduced-motion:reduce){.flow-steps [data-running="true"] .flow-step-number::after{animation:none} }
 .source-details{margin:14px 0;padding:12px 15px;border:1px solid #d5e1e4;border-radius:10px;background:#f8fbfc}
 .source-details>summary,#web-captured-pages>summary{cursor:pointer;font-size:12px;font-weight:650;color:var(--navy)}

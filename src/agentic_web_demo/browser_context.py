@@ -150,6 +150,14 @@ def _interaction_focus(observation, checklist):
     }
     requirements = checklist.get("requirements", [])
     base = "Guidance only: do not refill verified fields or reopen an expanded widget. "
+    if checklist.get("collection_scope", {}).get("allowed_modes") == ["current_page"]:
+        return {
+            "phase": "collect_starting_page",
+            "fields": [],
+            "control_ids": [],
+            "hint": "Capture/finish the supplied page. Extraction will select relevant records; "
+            "no section, search or detail navigation was requested.",
+        }
     if checklist.get("search_response_pending"):
         return {
             "phase": "awaiting_results",
@@ -161,9 +169,19 @@ def _interaction_focus(observation, checklist):
     ready = bool(form) and all(item.get("status") == "verified" for item in form)
     if (
         checklist.get("search_submitted")
-        and not checklist.get("pending_fields")
-        and (not form or ready)
+        and (
+            not checklist.get("pending_fields") and (not form or ready)
+            or (checklist.get("result_scope") or {}).get("status") in {"unverified", "mismatch"}
+        )
     ):
+        if (checklist.get("result_scope") or {}).get("status") in {"unverified", "mismatch"}:
+            return {
+                "phase": "collect_source_preview",
+                "fields": [], "control_ids": [],
+                "hint": "Search changed the page, but its returned stay scope is unverified. "
+                "Capture source evidence for a read-only preview; do not claim requested "
+                "dates/occupancy or matching nightly prices from pre-search form proof.",
+            }
         return {
             "phase": "collect_results",
             "fields": [],
@@ -265,7 +283,12 @@ def _interaction_focus(observation, checklist):
         different = known_text and " ".join(field["value"].casefold().split()) != " ".join(
             str(requirement.get("expected", "")).casefold().split()
         )
-        if known_text and "fill" in actions and (action == "fill" or different):
+        # The ledger knows whether a qualified autocomplete value is a
+        # committed choice. Raw string differences must not override its
+        # wait/select/inspect guidance and erase a site's selected entity.
+        if known_text and "fill" in actions and (
+            action == "fill" or not action and different
+        ):
             return {
                 "phase": "fill_fields",
                 "fields": [requirement["field"]],
@@ -293,6 +316,22 @@ def _interaction_focus(observation, checklist):
             "hint": "Requested form values are verified; submit the actual search control once. "
             "An ordinary catalogue link does not submit the prepared form.",
         }
+    information = checklist.get("information_coverage") or {}
+    if checklist.get("information_needs") and (not form or ready):
+        linked = checklist.get("collection_mode") == "linked_details"
+        retained_index = any(
+            item.get("kind") == "index"
+            for item in checklist.get("collection_progress", {}).get("sources", [])
+        )
+        return {
+            "phase": "collect_needed_details" if linked and retained_index else "inspect_information",
+            "fields": list(information.get("detail_needed_fields", [])),
+            "control_ids": [],
+            "hint": "Inspect whether requested information is already visible. If absent, "
+            "retain the current index and open its relevant same-site record links, not "
+            "section/search links. Do not add unrequested metadata. Finish with partial_reason "
+            "when fields are unavailable or budgets cannot provide them.",
+        }
     return {
         "phase": "continue",
         "fields": list(checklist.get("pending_fields", [])),
@@ -317,6 +356,7 @@ def _control(item, expected_values=(), *, focused=False, include_geometry=True):
         "suggestions_pending",
         "submits_form",
         "form_scope",
+        "widget_scope",
         "date",
         "href",
         "option_primary",
@@ -606,8 +646,105 @@ def _build_navigation_context(
         "search_submitted": bool(checklist.get("search_submitted")),
         "search_response_pending": bool(checklist.get("search_response_pending")),
     }
-    if checklist.get("collection_mode") in {"model_decides", "linked_details", "listing_results"}:
+    if checklist.get("collection_mode") in {
+        "model_decides",
+        "linked_details",
+        "listing_results",
+        "search_results",
+        "current_page",
+    }:
         compact_checklist["collection_mode"] = checklist["collection_mode"]
+    if checklist.get("collection_goal"):
+        compact_checklist["collection_goal"] = {
+            "mode": checklist["collection_goal"]["mode"],
+            "reason": _short(checklist["collection_goal"].get("reason", ""), 160),
+        }
+    if checklist.get("collection_scope"):
+        compact_checklist["collection_scope"] = copy.deepcopy(checklist["collection_scope"])
+    if checklist.get("information_need_feedback"):
+        compact_checklist["information_need_feedback"] = copy.deepcopy(
+            checklist["information_need_feedback"][-3:]
+        )
+    if checklist.get("information_needs"):
+        compact_checklist["information_needs"] = [
+            {
+                "field": item["field"], "role": item.get("role", "other"),
+                "status": item.get("status", "unknown"),
+                "evidence": _short(item.get("evidence", ""), 120),
+                "captured_sources": len(item.get("source_evidence", [])),
+            }
+            for item in checklist["information_needs"][:16]
+        ]
+        coverage = checklist.get("information_coverage") or {}
+        compact_checklist["information_coverage"] = {
+            key: copy.deepcopy(coverage[key])
+            for key in (
+                "status", "missing_fields", "detail_needed_fields",
+                "fields_with_source_evidence", "partial_reason",
+            )
+            if key in coverage
+        }
+    if checklist.get("result_scope"):
+        scope = checklist["result_scope"]
+        compact_checklist["result_scope"] = {
+            "status": scope.get("status"),
+            "source": "returned_page",
+            "fields": [
+                {key: copy.deepcopy(item[key]) for key in ("field", "expected", "observed", "status") if key in item}
+                for item in scope.get("fields", [])[:6]
+            ],
+            "contradictions": [
+                {"code": item.get("code"), "evidence": _short(item.get("evidence", ""), 120)}
+                for item in scope.get("contradictions", [])[:3]
+            ],
+            "note": "Independent returned context; pre-search checks are not availability proof.",
+        }
+    if checklist.get("catalog_followup"):
+        compact_checklist["catalog_followup"] = {
+            "status": checklist["catalog_followup"].get("status"),
+            "limit": 1,
+            "note": "Different observed catalog document; verify its fresh form before one new Search.",
+        }
+    if checklist.get("collection_progress"):
+        progress = checklist["collection_progress"]
+        sources = []
+        for source in progress.get("sources", [])[:6]:
+            url = str(source.get("url", ""))
+            # Do not turn shortened URLs into apparent navigation targets.
+            sources.append(
+                {
+                    "kind": source.get("kind"),
+                    **(
+                        {"url": url}
+                        if len(url) <= 300
+                        else {
+                            "url_omitted": True,
+                            "url_fingerprint": hashlib.sha256(url.encode()).hexdigest()[:16],
+                        }
+                    ),
+                }
+            )
+        compact_checklist["collection_progress"] = {
+            "sources": sources,
+            **{
+                key: progress[key]
+                for key in (
+                    "captured_pages",
+                    "detail_pages",
+                    "max_pages",
+                    "max_detail_pages",
+                )
+                if key in progress
+            },
+            "coverage": _short(progress.get("coverage", ""), 160),
+            "detail_candidates": [
+                {"label": _short(item.get("label", ""), 100), **(
+                    {"url": item["url"]} if len(item.get("url", "")) <= 300
+                    else {"url_omitted": True}
+                )}
+                for item in progress.get("detail_candidates", [])[:8]
+            ],
+        }
     if "submission_ready" in checklist:
         compact_checklist["submission_ready"] = bool(checklist["submission_ready"])
     if checklist.get("search_transition"):
@@ -636,6 +773,12 @@ def _build_navigation_context(
         ]
     result = {
         "task": copy.deepcopy(payload.get("task", "")),
+        **({"collection_goal_required": True} if payload.get("collection_goal_required") else {}),
+        **(
+            {"requested_output_fields": list(payload["requested_output_fields"])}
+            if payload.get("requested_output_fields")
+            else {}
+        ),
         "reference_date": payload.get("reference_date"),
         "task_checklist": compact_checklist,
         "budget": copy.deepcopy(payload.get("budget", {})),

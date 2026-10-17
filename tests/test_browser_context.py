@@ -61,6 +61,81 @@ def size(value):
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
+def test_collection_goal_and_capture_memory_fit_navigation_context_without_mutation():
+    values = payload([], pending=[])
+    values["task"] = "Find sports content and open relevant pages for their context."
+    values["requested_output_fields"] = ["headline", "source_url", "context"]
+    values["collection_goal_required"] = True
+    values["task_checklist"].update(
+        collection_mode="linked_details",
+        collection_goal={
+            "mode": "linked_details",
+            "request_quote": "open relevant pages",
+            "reason": "The user requested context from linked sources.",
+        },
+        collection_progress={
+            "sources": [
+                {"url": f"https://example.org/detail/{index}", "kind": "detail"}
+                for index in range(5)
+            ],
+            "captured_pages": 5,
+            "detail_pages": 5,
+            "max_pages": 6,
+            "max_detail_pages": 5,
+            "coverage": "Bounded captures, not every website record.",
+        },
+    )
+    baseline = copy.deepcopy(values)
+    result = build_navigation_context(values)
+    assert result["task_checklist"]["collection_goal"]["mode"] == "linked_details"
+    assert result["requested_output_fields"] == values["requested_output_fields"]
+    assert result["collection_goal_required"] is True
+    assert len(result["task_checklist"]["collection_progress"]["sources"]) == 5
+    assert result["task_checklist"]["collection_progress"]["detail_pages"] == 5
+    assert "request_quote" not in result["task_checklist"]["collection_goal"]
+    assert values == baseline
+    assert size(result) <= 14000
+
+
+def test_long_capture_url_is_disclosed_as_omitted_not_a_fake_shortened_link():
+    values = payload([], pending=[])
+    values["task_checklist"]["collection_progress"] = {
+        "sources": [{"url": "https://example.org/" + "x" * 1000, "kind": "page"}],
+        "captured_pages": 1,
+    }
+    result = build_navigation_context(values)
+    source = result["task_checklist"]["collection_progress"]["sources"][0]
+    assert "url" not in source
+    assert source["url_omitted"] is True
+    assert len(source["url_fingerprint"]) == 16
+
+
+@pytest.mark.parametrize("mode", ["current_page", "search_results", "linked_details"])
+def test_generic_collection_modes_survive_projection(mode):
+    values = payload([], pending=[])
+    values["task_checklist"]["collection_mode"] = mode
+    result = build_navigation_context(values)
+    assert result["task_checklist"]["collection_mode"] == mode
+
+
+def test_optional_information_feedback_is_compact_and_does_not_rewrite_the_task():
+    values = payload([], pending=[])
+    values["task"] = "Get articles related to world politics."
+    values["task_checklist"]["information_need_feedback"] = [
+        {"field": f"inferred_{index}", "status": "ignored",
+         "reason": "not_requested_navigation_need"}
+        for index in range(8)
+    ]
+    baseline = copy.deepcopy(values)
+    result = build_navigation_context(values)
+    assert result["task"] == baseline["task"]
+    assert result["task_checklist"]["information_need_feedback"] == (
+        baseline["task_checklist"]["information_need_feedback"][-3:]
+    )
+    assert values == baseline
+    assert size(result) <= 14000
+
+
 def test_navigation_context_retains_task_and_is_not_a_delta_or_source_mutation():
     values = payload(
         [
@@ -743,6 +818,32 @@ def test_typed_autocomplete_focus_commits_owned_option_not_refill_or_old_history
     focus = build_navigation_context(values)["interaction_focus"]
     assert focus["phase"] == "continue"
     assert "do not refill verified fields" in focus["hint"]
+
+
+@pytest.mark.parametrize("next_action", ["open_suggestions", "wait_suggestions"])
+def test_qualified_destination_readback_does_not_override_selection_guidance(next_action):
+    values = payload(
+        [{"id": "0:field", "tag": "INPUT", "role": "combobox", "type": "text",
+          "label": "Destination", "value": "New York, New York, United States of America",
+          "selection_required": True, "expanded": "false", "option_ids": []}],
+        requirements=[{
+            "field": "destination", "expected": "New York", "application": "form",
+            "status": "pending", "control_id": "0:field", "next_action": next_action,
+        }],
+    )
+    assert build_navigation_context(values)["interaction_focus"]["phase"] == next_action
+
+
+def test_actual_destination_mismatch_still_requests_the_known_literal_value():
+    values = payload(
+        [{"id": "0:field", "tag": "INPUT", "role": "combobox", "type": "text",
+          "label": "Destination", "value": "Boston", "selection_required": True}],
+        requirements=[{
+            "field": "destination", "expected": "New York", "application": "form",
+            "status": "mismatch", "control_id": "0:field", "next_action": "fill",
+        }],
+    )
+    assert build_navigation_context(values)["interaction_focus"]["phase"] == "fill_fields"
 
 
 def ready_search_values(*extra):

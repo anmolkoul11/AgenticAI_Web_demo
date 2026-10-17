@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -16,7 +17,13 @@ from agentic_web_demo.custom_browser import (
     access_challenge,
     read_browser,
 )
+from agentic_web_demo.custom_constraints import (
+    constraint_coverage,
+    requested_constraints,
+    unverified_constraints,
+)
 from agentic_web_demo.custom_extract import (
+    Column,
     Condition,
     QueryRule,
     apply_query_rules,
@@ -29,6 +36,193 @@ from agentic_web_demo.custom_fetch import WebsiteError, read_pages
 from agentic_web_demo.custom_workflow import run_steps
 from agentic_web_demo.enrichment import evidence_block_ids, reconcile_records
 from agentic_web_demo.messaging import Broker, connect
+from agentic_web_demo.output_contract import project_output_records, select_output_contract
+from agentic_web_demo.result_presentation import annotate_source_coverage
+from agentic_web_demo.pricing import (
+    CONTRACT_VERSION as PRICING_CONTRACT_VERSION,
+    assess_pricing,
+    pricing_comparison_record,
+)
+
+
+PRICING_COLUMNS = [
+    {
+        "name": "pricing_combined_nightly",
+        "kind": "number",
+        "unit": "source currency, all requested rooms / night",
+        "description": "Computed comparison; average per night only for verified stay totals",
+        "computed": True,
+    },
+    {
+        "name": "pricing_currency",
+        "kind": "text",
+        "unit": "",
+        "description": "Source-assessed price currency; not assumed from a bare dollar symbol",
+        "computed": True,
+    },
+    {
+        "name": "pricing_basis",
+        "kind": "text",
+        "unit": "",
+        "description": "Server-assessed displayed price basis, not an invented source quote",
+        "computed": True,
+    },
+    {
+        "name": "pricing_taxes",
+        "kind": "text",
+        "unit": "",
+        "description": "Source-backed taxes inclusion, exclusion or unknown",
+        "computed": True,
+    },
+    {
+        "name": "pricing_fees",
+        "kind": "text",
+        "unit": "",
+        "description": "Source-backed fees inclusion, exclusion or unknown, separate from taxes",
+        "computed": True,
+    },
+    {
+        "name": "pricing_budget_status",
+        "kind": "text",
+        "unit": "",
+        "description": "Computed target assessment; outside soft targets is not a hard exclusion",
+        "computed": True,
+    },
+    {
+        "name": "pricing_observed_amounts",
+        "kind": "text",
+        "unit": "",
+        "description": "Captured amount roles/labels; originals and unknowns are not budget matches",
+        "computed": True,
+    },
+]
+
+
+def criteria_issues_summary(records):
+    """Count actual per-record blockers, not every possible missing criterion."""
+    labels = {
+        "price_basis_unverified": "Price basis or room scope could not be confirmed",
+        "nightly_comparison_unverified": "The requested nightly comparison cannot be confirmed",
+        "price_observation_ambiguous": "More than one current amount could satisfy this price basis",
+        "original_price_not_current_quote": "The supported amount is crossed out, not a current quote",
+        "price_currency_unverified": "Source currency is unverified",
+        "requested_currency_unverified": "The requested currency is unverified",
+        "requested_stay_scope_unverified": "Returned stay details could not be fully verified",
+        "requested_stay_mismatch": "Returned stay details conflict with the request",
+        "price_amount_quote_unverified": "The amount is not supported by its source quote",
+        "price_record_binding_unverified": "The price is not uniquely tied to this record",
+        "price_quote_unavailable": "No source quote supports the selected amount",
+        "missing_or_ambiguous_price_field": "A primary numeric price field is missing or ambiguous",
+        "requested_rating_scale_unverified": "The requested rating scale is unverified",
+    }
+    counts = Counter(
+        reason for record in records
+        for reason in {issue.get("reason") for issue in record.get("issues", []) if issue.get("reason")}
+    )
+    return [
+        {"reason": reason, "count": count, "label": labels.get(reason, reason.replace("_", " "))}
+        for reason, count in sorted(counts.items())
+    ]
+
+
+def observed_amounts_text(observations):
+    """Flat exports keep every captured price, not only the comparison scalar."""
+    return " | ".join(
+        f"{item.get('raw') or item.get('amount', '')} — "
+        f"{item.get('label') or str(item.get('kind', 'unknown')).replace('_', ' ')}"
+        + ("; original/crossed out" if item.get("role") == "original" else "")
+        + ("; selected for comparison" if item.get("selected") else "")
+        for item in observations
+    ) or None
+
+
+def pricing_columns(columns, rows):
+    source = [column.model_dump() for column in columns]
+    applicable = any(
+        row.get("pricing") and row["pricing"].get("status") != "not_applicable"
+        for row in rows
+    )
+    return source + (PRICING_COLUMNS if applicable else [])
+
+
+def pricing_field_statuses(reports, rows):
+    """Computed fields do not gain forged source quotes or source-verified labels."""
+    by_id = {row["listing_id"]: row for row in rows}
+    for report in reports:
+        row = by_id[report["record_id"]]
+        if row.get("pricing"):
+            report["fields"].update(
+                {
+                    column["name"]: {
+                        "status": "computed"
+                        if row.get(column["name"]) is not None else "unverified",
+                        "reason": "Derived from reviewed source pricing and returned stay scope.",
+                    }
+                    for column in PRICING_COLUMNS
+                }
+            )
+    return reports
+
+
+def apply_pricing_rules(rows, rules):
+    compared = apply_query_rules([pricing_comparison_record(row) for row in rows], rules)
+    return [
+        {**row, **{f"rule_{rule.name}": result[f"rule_{rule.name}"] for rule in rules}}
+        for row, result in zip(rows, compared, strict=True)
+    ]
+
+
+def pricing_source_pages(pages):
+    """Persist assessment inputs, not a stale model conclusion, without duplicate bodies."""
+    return [
+        {
+            "url": page["url"],
+            "blocks": page.get("blocks", []),
+            **({"text": page.get("text", "")} if not page.get("blocks") else {}),
+            **(
+                {"browser_task_context": page["browser_task_context"]}
+                if page.get("browser_task_context")
+                else {}
+            ),
+            **({"source_kind": page["source_kind"]} if page.get("source_kind") else {}),
+        }
+        for page in pages
+    ]
+
+
+def saved_pricing_pages(proposal):
+    stored = proposal.get("pricing_sources")
+    if stored:
+        return [
+            {
+                **page,
+                "text": page.get("text")
+                or "\n".join(block.get("text", "") for block in page.get("blocks", [])),
+            }
+            for page in stored
+        ]
+    # Legacy pending previews have only capture summaries plus source blocks. They
+    # must pass current verification; a pre-submit checklist is not returned scope.
+    return [
+        {
+            **page,
+            "url": proposal.get("urls", [])[index]
+            if index < len(proposal.get("urls", []))
+            else page["source_url"],
+            "blocks": proposal.get("source_blocks", [])[index]
+            if index < len(proposal.get("source_blocks", []))
+            else [],
+            "text": "\n".join(
+                block.get("text", "")
+                for block in (
+                    proposal.get("source_blocks", [])[index]
+                    if index < len(proposal.get("source_blocks", []))
+                    else []
+                )
+            ),
+        }
+        for index, page in enumerate(proposal.get("captured_pages", []))
+    ]
 
 
 def now():
@@ -90,7 +284,7 @@ def write_json(path, value):
 
 
 def browser_diagnostics(control):
-    """Keep only non-secret load indicators after the visible browser closes."""
+    """Keep non-secret capture-time indicators, not later manual browser changes."""
     if control is None:
         return None
     status = control.snapshot()
@@ -202,6 +396,20 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 ]
             )
             context["browser_diagnostics"] = browser_diagnostics(control)
+            report = control.snapshot().get("agent_report") if control else None
+            checklist = report.get("task_checklist", {}) if report else {}
+            if (
+                report
+                and report.get("status") == "ready"
+                and report.get("collection_outcome") == "empty_results"
+                and checklist.get("search_submitted") is True
+                and checklist.get("search_response_pending") is False
+            ):
+                context["empty_results"] = True
+                context["model"] = {}
+                return
+            if not context["pages"]:
+                raise WebsiteError("No content was captured. No extraction request was sent.")
             if any(access_challenge(page["text"]) for page in context["pages"]):
                 raise WebsiteError(
                     "Captured text appears to be an access restriction. "
@@ -213,6 +421,8 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 raise WebsiteError(
                     "Session cancelled before the model call. No extraction request sent."
                 )
+            if context.get("empty_results"):
+                return
             try:
                 candidate, metadata = interpret(values, context["pages"], model_settings)
             except APIError:
@@ -227,6 +437,20 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
             )
 
         def review():
+            if context.get("empty_results"):
+                return {
+                    "status": "needs_input",
+                    "review_outcome": "no_matches",
+                    "record_count": 0,
+                    "request": values.instructions,
+                    "model": {},
+                    "review_counts": {"candidates": 0, "matched": 0},
+                    "captured_pages": [],
+                    "browser_diagnostics": context.get("browser_diagnostics"),
+                    "guidance": "The confirmed website search displayed no results. "
+                    "No extraction call ran and no records were saved. This describes "
+                    "that search response, not every record on the website.",
+                }
             candidate = context["candidate"]
             if candidate.outcome != "ready":
                 return {
@@ -244,6 +468,10 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
             candidate, effective, repairs = prepare_extraction(
                 candidate, values, schema_issues=schema_issues
             )
+            request_coverage = constraint_coverage(
+                candidate._requested_constraints, candidate.columns, candidate.filters
+            )
+            context["request_constraint_coverage"] = request_coverage
             linked = any(page.get("source_kind") == "index" for page in context["pages"])
             rows, excluded = validate_extraction(
                 candidate,
@@ -252,8 +480,8 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 rejected=rejected,
                 schema_issues=schema_issues,
                 field_issues=field_issues,
-                apply_filters=not linked,
-                enforce_limit=not linked,
+                apply_filters=False,
+                enforce_limit=False,
                 preserve_sources=linked,
                 review_counts=review_counts,
                 field_repairs=field_repairs,
@@ -279,32 +507,188 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                         link["validation_issues"] = relevant_issues
                         if link.get("record_status") == "no_verified_record":
                             link["record_status"] = "validation_failed"
-                accepted = [
-                    row
-                    for row in rows
-                    if all(matches(row, condition) for condition in candidate.filters)
-                ]
-                excluded += len(rows) - len(accepted)
-                review_counts["filtered_out"] += len(rows) - len(accepted)
-                rows = accepted
-                enrichment["excluded_after_enrichment"] = excluded
-                enrichment["preview_records"] = len(rows)
                 enrichment["truncated_captures"] = sum(
                     bool(page.get("truncated")) for page in context["pages"]
                 )
                 context["enrichment"] = enrichment
-                if len(rows) > values.record_limit:
-                    raise WebsiteError(
-                        f"{len(rows)} merged matching records exceed your preview limit of "
-                        f"{values.record_limit}. Nothing was truncated or saved. "
-                        "Narrow the query or increase Maximum records for a new paid run."
+            pricing_review = assess_pricing(
+                rows, context["pages"], values.instructions, candidate.columns
+            )
+            rows = pricing_review["records"]
+            for row in rows:
+                if row.get("pricing"):
+                    row["pricing_observed_amounts"] = observed_amounts_text(
+                        row["pricing"].get("observations", [])
                     )
+            pricing_summary = pricing_review["summary"]
+            pricing_summary["unknown_reasons"] = criteria_issues_summary(
+                pricing_review.get("assessments", [])
+            )
+            context["pricing_summary"] = pricing_summary
+            pricing_metadata = (
+                {
+                    "pricing_summary": pricing_summary,
+                    "criteria_issues_summary": pricing_summary["unknown_reasons"],
+                    "stay_scope": pricing_review["stay_scope"],
+                    "request_preferences": [
+                        item
+                        for item in candidate._requested_constraints
+                        if item.get("enforcement") == "preference"
+                    ],
+                }
+                if pricing_summary.get("applicable")
+                else {}
+            )
+            report = (context.get("browser_diagnostics") or {}).get("agent_report") or {}
+            checklist = report.get("task_checklist") or {}
+            information_coverage = (checklist.get("collection_progress") or {}).get(
+                "information_coverage"
+            )
+            collection_coverage = {
+                "scope": "captured_pages_only",
+                "whole_website_verified": False,
+                "captured_pages": len(context["pages"]),
+                "detail_pages": sum(
+                    page.get("source_kind") == "detail" for page in context["pages"]
+                ),
+                "truncated_pages": sum(
+                    bool(page.get("truncated")) for page in context["pages"]
+                ),
+                "reported_omitted_text_chars": sum(
+                    (page.get("coverage") or {}).get("omitted_text_chars", 0)
+                    for page in context["pages"]
+                ),
+                "information_coverage": information_coverage,
+                "information_needs": checklist.get("information_needs", []),
+            }
+            source_verified_rows = rows
+            result_columns = pricing_columns(candidate.columns, rows)
+
+            def readonly_preview(records):
+                bounded = records[: values.record_limit]
+                selected, contract = select_output_contract(
+                    candidate, effective.business_rules, bounded
+                )
+                bounded = project_output_records(bounded, candidate.columns, selected)
+                bounded = annotate_source_coverage(bounded, context["pages"], selected)
+                return {
+                    "columns": pricing_columns(selected, bounded),
+                    "output_contract": contract,
+                    "collection_coverage": collection_coverage,
+                    "unverified_preview": bounded,
+                    "unverified_preview_more_available": len(records) > len(bounded),
+                    "field_statuses": pricing_field_statuses(
+                        output_field_statuses(
+                            bounded,
+                            selected,
+                            context.get("model_columns", set()),
+                            field_issues,
+                        ),
+                        bounded,
+                    ),
+                    "source_blocks": [page.get("blocks", []) for page in context["pages"]],
+                }
+
+            if request_coverage["issues"]:
+                review_counts.update(matched=0, constraint_unverified=len(rows))
+                return {
+                    "status": "needs_input",
+                    "review_outcome": "constraint_unresolved",
+                    "request": values.instructions,
+                    "review_counts": review_counts,
+                    "columns": result_columns,
+                    "filters": [c.model_dump() for c in candidate.filters],
+                    "request_constraint_coverage": request_coverage,
+                    "rejected_records": rejected,
+                    "field_issues": field_issues,
+                    "field_repairs": field_repairs,
+                    **pricing_metadata,
+                    **readonly_preview(rows),
+                    "model": context["model"],
+                    "captured_pages": context.get("captured_pages", []),
+                    "browser_diagnostics": context.get("browser_diagnostics"),
+                    **({"enrichment": enrichment} if enrichment else {}),
+                    "guidance": "The extraction did not preserve every explicit requested "
+                    "price/rating comparison. The source-verified preview is read-only, "
+                    "not approved against your criteria. Requested bounds remain in constraint "
+                    "diagnostics. No unfiltered records were saved; capture the required "
+                    "values or revise the request.",
+                }
+            constraint_unverified = []
+            eligible = []
+            for row in rows:
+                issues = unverified_constraints(row, request_coverage)
+                if row.get("pricing", {}).get("status") == "unverified":
+                    issues += [
+                        {"field": row["pricing"].get("price_field") or "price", "reason": reason}
+                        for reason in row["pricing"].get(
+                            "issues", ["requested_stay_price_unverified"]
+                        )
+                    ]
+                if issues:
+                    constraint_unverified.append(
+                        {
+                            "record_id": row["listing_id"],
+                            "source_url": row["source_url"],
+                            "issues": issues,
+                        }
+                    )
+                else:
+                    eligible.append(row)
+            criteria_summary = criteria_issues_summary(constraint_unverified)
+            pricing_metadata["criteria_issues_summary"] = criteria_summary
+            accepted = [
+                row
+                for row in eligible
+                if all(
+                    matches(pricing_comparison_record(row), condition)
+                    for condition in candidate.filters
+                )
+            ]
+            excluded += len(eligible) - len(accepted)
+            review_counts["filtered_out"] += len(eligible) - len(accepted)
+            review_counts["constraint_unverified"] = len(constraint_unverified)
+            rows = accepted
+            if enrichment:
+                enrichment["excluded_after_enrichment"] = excluded
+                enrichment["preview_records"] = len(rows)
+            if len(rows) > values.record_limit:
+                raise WebsiteError(
+                    f"{len(rows)} {'merged' if linked else 'source-verified'} matching records "
+                    f"exceed your preview limit of {values.record_limit}. "
+                    "Nothing was truncated or saved. Narrow the query or increase "
+                    "Maximum records for a new paid run."
+                )
             review_counts["matched"] = len(rows)
             review_counts["linked_sources_merged"] = linked
+            if pricing_summary.get("applicable"):
+                pricing_summary.update(
+                    ready_for_review=len(rows),
+                    within_target_ready=sum(
+                        row.get("pricing", {}).get("budget_status") == "within_target"
+                        for row in rows
+                    ),
+                    outside_target_ready=sum(
+                        row.get("pricing", {}).get("budget_status") == "outside_target"
+                        for row in rows
+                    ),
+                )
             if not rows:
                 topic = candidate.semantic_selection.topic if candidate.semantic_selection else None
-                attention = review_counts["invalid"] or review_counts["uncertain"]
-                if attention:
+                attention = (
+                    review_counts["invalid"] or review_counts["uncertain"] or constraint_unverified
+                )
+                if constraint_unverified:
+                    reasons = "; ".join(
+                        f"{item['label']} ({item['count']} records)" for item in criteria_summary
+                    )
+                    guidance = (
+                        f"{len(constraint_unverified)} source-verified candidates need attention: "
+                        f"{reasons}. Captured amounts remain in the read-only preview. "
+                        "They were not labelled matches or saved. An unknown criterion is "
+                        "not a confirmed out-of-range result."
+                    )
+                elif attention:
                     guidance = (
                         "No records are ready for review: "
                         f"{review_counts['invalid']} failed source/required-field checks and "
@@ -327,16 +711,39 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     )
                 return {
                     "status": "needs_input",
-                    "review_outcome": "needs_attention" if attention else "no_matches",
+                    "review_outcome": "constraint_unresolved"
+                    if constraint_unverified
+                    else "needs_attention"
+                    if attention
+                    else "no_matches",
                     "review_counts": review_counts,
                     "request": values.instructions,
-                    "columns": [c.model_dump() for c in candidate.columns],
+                    "columns": result_columns,
                     "filters": [c.model_dump() for c in candidate.filters],
+                    "request_constraint_coverage": request_coverage,
+                    "constraint_unverified_records": constraint_unverified,
+                    **pricing_metadata,
+                    **(
+                        readonly_preview(
+                            [
+                                row
+                                for row in source_verified_rows
+                                if any(
+                                    issue["record_id"] == row["listing_id"]
+                                    for issue in constraint_unverified
+                                )
+                            ]
+                        )
+                        if constraint_unverified
+                        else {}
+                    ),
                     "semantic_selection": candidate.semantic_selection.model_dump()
                     if candidate.semantic_selection
                     else None,
                     "source_urls": [safe_display_url(page["url"]) for page in context["pages"]],
-                    "next_step": "open_browser_for_links",
+                    "next_step": "capture_required_fields"
+                    if constraint_unverified
+                    else "open_browser_for_links",
                     "rejected_records": rejected,
                     "field_issues": field_issues,
                     "field_repairs": field_repairs,
@@ -346,8 +753,47 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     **({"enrichment": enrichment} if enrichment else {}),
                     "guidance": guidance,
                 }
-            rows = apply_query_rules(rows, candidate.query_rules)
+            output_columns, output_contract = select_output_contract(
+                candidate, effective.business_rules, rows
+            )
+            rows = project_output_records(rows, candidate.columns, output_columns)
+            rows = annotate_source_coverage(rows, context["pages"], output_columns)
+            result_columns = pricing_columns(output_columns, rows)
+            rows = apply_pricing_rules(rows, candidate.query_rules)
             warnings = list(candidate.warnings) + repairs
+            if output_contract["omitted_inferred_fields"]:
+                warnings.append(
+                    "Omitted empty optional inferred fields: "
+                    + ", ".join(output_contract["omitted_inferred_fields"])
+                    + ". Their availability on the original website is unconfirmed."
+                )
+            if output_contract["missing_requested_fields"]:
+                warnings.append(
+                    "Requested fields remain visible but have missing source-verified values: "
+                    + ", ".join(output_contract["missing_requested_fields"])
+                    + ". Review per-record reasons and capture coverage."
+                )
+            if pricing_summary.get("applicable"):
+                warnings.append(
+                    "An unqualified nightly budget is combined for all requested rooms. "
+                    "Displayed source amounts remain unchanged; computed nightly amounts "
+                    "are labelled and do not prove room availability or quote validity."
+                )
+                if (
+                    pricing_summary.get("outside_target_ready")
+                    and pricing_metadata["request_preferences"]
+                ):
+                    warnings.append(
+                        f"{pricing_summary['outside_target_ready']} ready prices are outside the "
+                        "approximate target. Verified alternatives may remain visible; "
+                        "they are not labelled budget matches."
+                    )
+            if constraint_unverified:
+                warnings.append(
+                    f"{len(constraint_unverified)} candidates were excluded because requested "
+                    "numeric constraints or their units/basis could not be verified. "
+                    "They are not counted as confirmed out-of-range results."
+                )
             if enrichment:
                 warnings.append(
                     "Starting-page records retained and reconciled with verified detail records. "
@@ -432,8 +878,8 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
             if field_repairs:
                 warnings.append(
                     f"Source-backed field corrections: {len(field_repairs)} records. "
-                    "Unique captured headlines or display-only quote wrappers were corrected; "
-                    "review the old and corrected values. No title was inferred from a URL."
+                    "Unique captured values or evidence spans were corrected; review the "
+                    "original and corrected evidence. No value was invented from a URL."
                 )
             if any(page["truncated"] for page in context["pages"]):
                 warnings.append(
@@ -488,7 +934,10 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
                 "interpretation": candidate.interpretation,
                 "content_type": candidate.content_type,
-                "columns": [c.model_dump() for c in candidate.columns]
+                "output_contract": output_contract,
+                "collection_coverage": collection_coverage,
+                "source_columns": [column.model_dump() for column in candidate.columns],
+                "columns": result_columns
                 + (
                     [
                         {
@@ -517,6 +966,14 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     for rule in candidate.query_rules
                 ],
                 "filters": [c.model_dump() for c in candidate.filters],
+                "request_constraint_coverage": request_coverage,
+                **pricing_metadata,
+                **(
+                    {"pricing_sources": pricing_source_pages(context["pages"])}
+                    if pricing_summary.get("applicable")
+                    else {}
+                ),
+                "constraint_unverified_records": constraint_unverified,
                 "semantic_selection": (
                     candidate.semantic_selection.model_dump()
                     if candidate.semantic_selection
@@ -530,18 +987,28 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "rejected_records": rejected,
                 "field_issues": field_issues,
                 "field_repairs": field_repairs,
-                "field_statuses": output_field_statuses(
+                "field_statuses": pricing_field_statuses(
+                    output_field_statuses(
+                        rows,
+                        output_columns,
+                        context.get("model_columns", set()),
+                        field_issues,
+                    ),
                     rows,
-                    candidate.columns,
-                    context.get("model_columns", set()),
-                    field_issues,
                 ),
                 "partial": bool(
                     rejected
+                    or constraint_unverified
                     or field_issues
                     or field_repairs
                     or source_failures
                     or agent_partial
+                    or output_contract["missing_requested_fields"]
+                    or information_coverage and (
+                        information_coverage.get("detail_needed_fields")
+                        or information_coverage.get("partial_reason")
+                    )
+                    or any(page.get("truncated") for page in context["pages"])
                     or enrichment
                     and (
                         enrichment["conflicting_records"]
@@ -593,6 +1060,11 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "browser_diagnostics": context.get("browser_diagnostics")
                 or browser_diagnostics(control),
                 **({"enrichment": context["enrichment"]} if context.get("enrichment") else {}),
+                **(
+                    {"request_constraint_coverage": context["request_constraint_coverage"]}
+                    if context.get("request_constraint_coverage")
+                    else {}
+                ),
             }
         except APIError:
             return {
@@ -603,14 +1075,24 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
         finally:
             if control:
                 control.on_agent_diagnostics = None
-                control.update("closed", "Browser session ended.")
-                with service.lock:
-                    service.browser_controls.pop(job_id, None)
+                # A retained verification browser has its own owning thread.
+                # Finishing extraction must not close it or hide its Close action.
+                if control.owner_thread is None:  # Non-browser adapters/fixtures.
+                    control.update("closed", "Browser session ended.")
+                    forget_browser()
+                elif control.worker_closed.is_set():
+                    forget_browser()
+
+    def forget_browser():
+        with service.lock:
+            if service.browser_controls.get(job_id) is control:
+                service.browser_controls.pop(job_id, None)
 
     # Hold the same lock used by job startup so the control is registered before the worker runs.
     with service.lock:
         job_id = service.submit("custom-plan", values.framework, operation)
         if control:
+            control.on_closed = forget_browser
             service.browser_controls[job_id] = control
     return job_id
 
@@ -676,6 +1158,63 @@ def execute(service, plan_id, approval, *, accept_partial=False):
         raise WebsiteError("Proposal changed. Review a fresh proposal before approval.")
     if proposal.get("partial") and not accept_partial:
         raise WebsiteError("Explicit approval of partial results is required.")
+    # Previously created previews must not bypass newly enforced request coverage.
+    source_columns = [
+        Column.model_validate({key: item[key] for key in ("name", "kind", "unit", "description")})
+        for item in proposal.get("source_columns", proposal["columns"])
+        if not item["name"].startswith(("rule_", "pricing_"))
+        and not item.get("computed")
+    ]
+    request_coverage = constraint_coverage(
+        requested_constraints(proposal.get("request", "")),
+        source_columns,
+        [Condition.model_validate(item) for item in proposal["filters"]],
+    )
+    pricing_review = assess_pricing(
+        proposal["records"],
+        saved_pricing_pages(proposal),
+        proposal.get("request", ""),
+        source_columns,
+    )
+    for row in pricing_review["records"]:
+        if row.get("pricing"):
+            row["pricing_observed_amounts"] = observed_amounts_text(
+                row["pricing"].get("observations", [])
+            )
+    if not pricing_review["summary"].get("applicable") and any(
+        "pricing" in row or any(column["name"] in row for column in PRICING_COLUMNS)
+        for row in proposal["records"]
+    ):
+        raise WebsiteError(
+            "This preview contains stale pricing metadata. Create a fresh preview; "
+            "no records were saved or events published."
+        )
+    if pricing_review["summary"].get("applicable"):
+        pricing_keys = ("pricing",) + tuple(column["name"] for column in PRICING_COLUMNS)
+        if (
+            proposal.get("pricing_summary", {}).get("contract_version") != PRICING_CONTRACT_VERSION
+            or any(
+                row.get("pricing", {}).get("status") != "verified"
+                for row in pricing_review["records"]
+            )
+            or any(
+                any(original.get(key) != assessed.get(key) for key in pricing_keys)
+                for original, assessed in zip(
+                    proposal["records"], pricing_review["records"], strict=True
+                )
+            )
+        ):
+            raise WebsiteError(
+                "This preview does not independently verify the returned stay and price basis. "
+                "Create a fresh preview; no records were saved or events published."
+            )
+    if request_coverage["issues"] or any(
+        unverified_constraints(row, request_coverage) for row in pricing_review["records"]
+    ):
+        raise WebsiteError(
+            "This preview does not verify every requested numeric criterion or its units/basis. "
+            "Create a fresh preview; no records were saved or events published."
+        )
 
     def operation(progress):
         context = {}
@@ -717,14 +1256,24 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 "records": rows,
                 "captured_at": proposal["captured_at"],
                 "filters": proposal["filters"],
+                "request_constraint_coverage": request_coverage,
+                "output_contract": proposal.get("output_contract"),
+                "collection_coverage": proposal.get("collection_coverage"),
+                **(
+                    {
+                        "pricing_summary": proposal["pricing_summary"],
+                        "stay_scope": proposal.get("stay_scope"),
+                        "request_preferences": proposal.get("request_preferences", []),
+                        "computed_columns": PRICING_COLUMNS,
+                    }
+                    if proposal.get("pricing_summary", {}).get("applicable")
+                    else {}
+                ),
+                "constraint_unverified_records": proposal.get("constraint_unverified_records", []),
                 "semantic_selection": proposal.get("semantic_selection"),
                 "warnings": proposal["warnings"],
                 **({"enrichment": proposal["enrichment"]} if proposal.get("enrichment") else {}),
-                **(
-                    {"captured_pages": proposal["captured_pages"]}
-                    if proposal.get("enrichment")
-                    else {}
-                ),
+                "captured_pages": proposal.get("captured_pages", []),
                 "partial": proposal.get("partial", False),
                 "rejected_count": len(proposal.get("rejected_records", [])),
                 "field_issues": proposal.get("field_issues", []),
@@ -759,10 +1308,10 @@ def execute(service, plan_id, approval, *, accept_partial=False):
             query_rules = [
                 QueryRule.model_validate(item) for item in proposal.get("query_rules", [])
             ]
-            evaluated_rows = apply_query_rules(context["records"], query_rules)
+            evaluated_rows = apply_pricing_rules(context["records"], query_rules)
 
             def qualifies(row):
-                return all(matches(row, rule) for rule in rules) and (
+                return all(matches(pricing_comparison_record(row), rule) for rule in rules) and (
                     not query_rules
                     or any(row[f"rule_{rule.name}"] == "matched" for rule in query_rules)
                 )
@@ -775,7 +1324,7 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                         "reasons": [
                             f"{rule.field} {rule.operator} {rule.value}"
                             for rule in rules
-                            if not matches(row, rule)
+                            if not matches(pricing_comparison_record(row), rule)
                         ]
                         + [
                             f"{rule.name}: {row[f'rule_{rule.name}']}"

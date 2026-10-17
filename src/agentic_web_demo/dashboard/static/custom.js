@@ -43,6 +43,7 @@ advancedSummary.textContent = "Advanced settings: framework, limits, browser set
 const advancedBody = document.createElement("div"); advancedBody.className = "web-advanced-body";
 advancedBody.append(
   sourceSelectors,
+  $("web-manual-mode-label"),
   $("web-limit").closest("label"),
   $("web-browser-options"),
   $("web-verification-options"),
@@ -72,7 +73,7 @@ $("web-urls").closest("label").nextElementSibling.after(loginChoice);
 loginChoice.before($("web-browser-mode-options"));
 $("web-browser-options").querySelector("legend").textContent = "Advanced browser access";
 $("web-browser-controls").querySelector("p.micro").textContent =
-  "Finish any sign-in in the website browser, then choose how to collect the content.";
+  "The workflow continues after requested sign-in. MFA stays with you; review the preview before saving.";
 // One visible task surface instead of a long stack of setup, review and results.
 const sourcePanel = webForm.closest(".card"), workPanel = $("web-status").closest(".card");
 const resultsPanel = $("web-record-cards").closest(".card");
@@ -114,6 +115,58 @@ setStudioStep("source");
 const customHeading = document.querySelector('[data-page="custom"] .page-heading');
 customHeading.querySelector("h1").textContent = "Extract. Review. Download.";
 customHeading.querySelector("p").textContent = "Choose a source and tell us what you need.";
+// Verification windows outlive the collection job and the selected result tab.
+// Poll only their small status list; never re-render a completed result to do so.
+const verificationBrowsersPanel = document.createElement("section");
+verificationBrowsersPanel.className = "notice"; verificationBrowsersPanel.hidden = true;
+verificationBrowsersPanel.setAttribute("aria-label", "Browsers open for verification");
+const verificationBrowsersTitle = document.createElement("h3");
+verificationBrowsersTitle.textContent = "Verify in your browser";
+const verificationBrowsersNote = document.createElement("p");
+verificationBrowsersNote.className = "micro";
+verificationBrowsersNote.textContent = "The original website stays open so you can compare its details with the results. " +
+  "Automation has stopped. Browsing or closing this window does not change the captured snapshot or cancel extraction/saving. " +
+  "Sign-out, session expiry or server shutdown closes it.";
+const verificationBrowsersList = document.createElement("ul");
+let verificationBrowserTimer = null;
+verificationBrowsersPanel.append(verificationBrowsersTitle, verificationBrowsersNote, verificationBrowsersList);
+studioTabs.after(verificationBrowsersPanel);
+function renderVerificationBrowsers(browsers) {
+  const rows = Array.isArray(browsers) ? browsers : [];
+  verificationBrowsersPanel.hidden = rows.length === 0;
+  updateRegion(verificationBrowsersList, rows, () => {
+    verificationBrowsersList.replaceChildren();
+    for (const browser of rows) {
+      const item = document.createElement("li"); item.className = "button-group";
+      const label = document.createElement("span");
+      label.textContent = `Browser for run ${browser.job_id.slice(0, 8)} is open for verification.`;
+      const close = document.createElement("button");
+      close.type = "button"; close.className = "secondary small"; close.textContent = "Close browser";
+      close.disabled = browser.state === "review_closing";
+      close.onclick = async () => {
+        close.disabled = true;
+        try {
+          // Save selects a different job. Always address this browser's original job.
+          await api(`/api/custom/jobs/${encodeURIComponent(browser.job_id)}/browser/close`, {});
+          label.textContent = "Closing verification browser. Captured results are unchanged.";
+        } catch (error) { label.textContent = error.message; close.disabled = false; }
+      };
+      item.append(label, close); verificationBrowsersList.append(item);
+    }
+  });
+}
+async function pollVerificationBrowsers() {
+  try {
+    if (!signedIn || connectionBlocked) return;
+    const response = await api("/api/custom/browsers");
+    if (signedIn && !connectionBlocked) renderVerificationBrowsers(response.browsers || []);
+  } catch (_) {
+    // A status lookup failure is not permission to close a window or alter a job.
+  } finally {
+    verificationBrowserTimer = setTimeout(pollVerificationBrowsers, 2000);
+  }
+}
+verificationBrowserTimer = setTimeout(pollVerificationBrowsers, 2000);
 sourcePanel.querySelector("h2").textContent = "Set up your source";
 workPanel.querySelector("h2").textContent = "Workflow & review";
 resultsPanel.querySelector("h2").textContent = "Your results";
@@ -159,13 +212,24 @@ previewResultsButton.onclick = () => setStudioStep("results", true);
 $("web-status").after(previewResultsButton);
 function updateSourceChoice() {
   const selected = $("web-source").value;
+  const automatic = automaticWorkflowSelected();
   for (const button of sourceChoices.querySelectorAll("button")) {
     button.setAttribute("aria-pressed", String(button.dataset.source === selected));
   }
   $("web-create").textContent = selected === "browser" ?
-    "Open website and start" : "Create a preview";
+    automatic ? "Run workflow" : "Open website for manual collection" : "Create a preview";
+  $("web-workflow-options").hidden = !automatic;
+  $("web-workflow-options").disabled = !automatic;
+  $("web-manual-mode-label").hidden = selected !== "browser";
+  $("web-manual-mode").disabled = selected !== "browser" || $("web-framework").value !== "langgraph";
+  $("web-request").required = automatic;
+  $("web-request-optional").textContent = automatic ? "Required for automation" : "Optional";
+  $("web-consent-text").textContent = automatic ?
+    "I approve up to 30 paid agent decisions (5 active minutes), followed by paid extraction of up to 6 captured pages. No reservation or payment. I will review results before saving." :
+    "I approve reading the supplied content and a paid extraction call. Manual search navigation, link discovery or browser-agent actions require separate approval.";
   const guidance = {
-    browser: "Open an interactive browser to search, sign in and collect content.",
+    browser: automatic ? "Your request guides search, navigation and collection in one run. Preview first; save after review." :
+      "Open the website, then choose an action under Advanced tools. CrewAI supports this manual collection path.",
     capture: "Send the reviewed page from Chrome or Edge using the extension.",
     public: "Read up to three public HTML pages from one website.",
     paste: "Paste authorized content and its original page address.",
@@ -176,6 +240,10 @@ function updateSourceChoice() {
       " Normal networking." : " Restricted networking.";
   }
   if (!webSelected) renderWorkflow();
+}
+function automaticWorkflowSelected() {
+  return $("web-source").value === "browser" && $("web-framework").value === "langgraph" &&
+    !$("web-manual-mode").checked;
 }
 const flowShell = document.createElement("section");
 flowShell.className = "workflow-map card";
@@ -497,6 +565,11 @@ agentCollect.id = "web-agent-collect"; agentCollect.textContent = "Extract retai
 const agentManual = document.createElement("button"); agentManual.type = "button";
 agentManual.id = "web-agent-manual"; agentManual.className = "secondary";
 agentManual.textContent = "Continue manually";
+const agentPause = document.createElement("button"); agentPause.type = "button";
+agentPause.id = "web-agent-pause"; agentPause.className = "secondary";
+agentPause.textContent = "Pause workflow";
+const agentBrief = document.createElement("p"); agentBrief.className = "workflow-run-status";
+agentBrief.setAttribute("role", "status");
 const agentStatus = document.createElement("p"); agentStatus.setAttribute("role", "status");
 const agentDetails = document.createElement("details"), agentSummary = document.createElement("summary");
 agentSummary.textContent = "Browser-agent action evidence";
@@ -505,20 +578,29 @@ const agentChecklist = document.createElement("details"), agentChecklistTitle = 
 const agentChecklistFields = document.createElement("ul"), agentChecklistNote = document.createElement("p");
 agentChecklistNote.className = "micro";
 agentChecklist.append(agentChecklistTitle, agentChecklistFields, agentChecklistNote);
-agentButtons.append(agentStart, agentResume, agentCollect, agentManual);
-agentPanel.append(agentTitle, agentHelp, agentConsent, agentVisualConsent, agentButtons, agentStatus, agentChecklist, agentDetails);
+const agentInformation = document.createElement("details");
+const agentInformationTitle = document.createElement("summary"), agentInformationList = document.createElement("ul");
+const agentInformationNote = document.createElement("p"); agentInformationNote.className = "micro";
+agentInformation.append(agentInformationTitle, agentInformationList, agentInformationNote);
+agentInformation.hidden = true;
+agentButtons.append(agentResume, agentCollect, agentManual, agentPause);
+agentPanel.append(agentTitle, agentBrief, agentConsent, agentVisualConsent, agentButtons, agentChecklist, agentInformation, agentDetails);
 let latestAgentBrowser = {};
 function agentApprovalState() {
   const browser = latestAgentBrowser, report = browser.agent_report;
+  const pendingAutomatic = browser.state === "waiting" && browser.workflow_mode === "automatic" &&
+    browser.automatic_start === "pending";
   agentStart.hidden = !!report;
   agentResume.hidden = !report || !!report.task_checklist?.request_error ||
     !["agent_paused", "waiting"].includes(browser.state);
   agentCollect.hidden = browser.state !== "agent_paused" || !report?.captured_pages?.length;
-  agentManual.hidden = browser.state !== "agent_paused";
+  agentManual.hidden = browser.state !== "agent_paused" && !pendingAutomatic;
+  agentPause.hidden = !["agent_running", "agent_pausing"].includes(browser.state);
+  agentPause.disabled = browser.state !== "agent_running";
   const available = ["waiting", "agent_paused"].includes(browser.state);
   agentStart.disabled = agentResume.disabled = agentCollect.disabled =
     !agentCheckbox.checked || !available || $("web-framework").value !== "langgraph";
-  agentManual.disabled = browser.state !== "agent_paused";
+  agentManual.disabled = browser.state !== "agent_paused" && !pendingAutomatic;
   agentCheckbox.disabled = !available;
   agentVisualCheckbox.disabled = !available;
 }
@@ -717,18 +799,53 @@ pageOnlyTitle.textContent = "Or use just this page";
 const pageOnlyHelp = document.createElement("p"); pageOnlyHelp.className = "micro";
 pageOnlyHelp.textContent = "Capture the content visible at this URL. Linked detail pages will not be opened.";
 $("web-capture").textContent = "Extract current page only (paid API)";
-browserActions.before($("web-resume-login"), agentPanel, healthDisclosure, hotelPanel, navPanel, linkPanel,
-  pageOnlyTitle, pageOnlyHelp);
+const advancedTools = document.createElement("details"); advancedTools.className = "workflow-advanced-tools";
+advancedTools.id = "web-advanced-tools";
+const advancedToolsTitle = document.createElement("summary");
+advancedToolsTitle.textContent = "Advanced tools & collection alternatives";
+const advancedToolsBody = document.createElement("div"); advancedToolsBody.className = "web-advanced-body";
+const manualAgentTools = document.createElement("section"); manualAgentTools.className = "journey-action";
+const manualAgentTitle = document.createElement("h4"); manualAgentTitle.textContent = "Start the browser agent manually";
+manualAgentTools.append(manualAgentTitle, agentHelp, agentStart);
+const currentPageActions = document.createElement("div"); currentPageActions.className = "button-group";
+currentPageActions.append($("web-capture"));
+advancedToolsBody.append(manualAgentTools, hotelPanel, navPanel, linkPanel,
+  pageOnlyTitle, pageOnlyHelp, currentPageActions, agentStatus, healthDisclosure);
+advancedTools.append(advancedToolsTitle, advancedToolsBody);
+browserActions.before($("web-resume-login"), agentPanel, advancedTools);
 const resourceDisclosure = document.createElement("details");
 resourceDisclosure.className = "web-resource-disclosure";
 const resourceSummary = document.createElement("summary");
 resourceSummary.textContent = "Advanced: page loading and blocked resources";
 resourceDisclosure.append(resourceSummary, resourcePanel);
-browserActions.after(resourceDisclosure);
+advancedToolsBody.append(resourceDisclosure);
 navPanel.classList.add("journey-action"); linkPanel.classList.add("journey-action");
 hotelPanel.classList.add("journey-action");
+let lastToolsMode = null;
+function manualCollectionAvailable(browser) {
+  return browser.state === "waiting" &&
+    (browser.workflow_mode !== "automatic" || browser.automatic_start === "manual");
+}
 function renderBrowserOptions(browser) {
   const authenticationPending = ["authentication_pending", "checking_authentication"].includes(browser.state);
+  const automatic = browser.workflow_mode === "automatic" && browser.automatic_start !== "manual";
+  const toolsMode = `${webSelected || ""}:${automatic ? "automatic" : "manual"}`;
+  if (toolsMode !== lastToolsMode) {
+    advancedTools.open = !automatic;
+    lastToolsMode = toolsMode;
+  }
+  advancedTools.hidden = authenticationPending;
+  const running = ["agent_running", "agent_pausing"].includes(browser.state);
+  const renewing = browser.state === "agent_paused" || (browser.state === "waiting" && !!browser.agent_report);
+  agentConsent.hidden = agentVisualConsent.hidden = automatic && !renewing;
+  manualAgentTools.hidden = $("web-framework").value !== "langgraph";
+  stableText(agentBrief, browser.state === "agent_pausing" ?
+    "Pause requested. An in-flight model call or browser action may finish first." :
+    running ? browser.guidance || "Working through your request and collecting relevant content." :
+    renewing ? browser.guidance || "The workflow needs your attention. Review the browser, then resume or continue manually." :
+    automatic ? "The agent starts after the website and any requested sign-in are ready." :
+    "Choose a collection action under Advanced tools. Each paid action requires approval.");
+  agentTitle.textContent = automatic ? "Your workflow" : "Browser agent controls";
   $("web-resume-login").hidden = !authenticationPending;
   $("web-resume-login").disabled = browser.state !== "authentication_pending";
   navPanel.hidden = linkPanel.hidden = pageOnlyTitle.hidden = pageOnlyHelp.hidden = authenticationPending;
@@ -762,22 +879,36 @@ function renderBrowserOptions(browser) {
     (navigationUsage.cached_input_tokens != null ?
       `; ${navigationUsage.cached_input_tokens.toLocaleString()} input tokens cached (included in input total)` : "") +
     ". Extraction usage is separate." : "";
+  const browserFacts = agentReport?.browser_diagnostics;
+  const browserMessage = browserFacts ?
+    ` Browser: ${browserFacts.code.replaceAll("_", " ")} during ${browserFacts.operation.replaceAll("_", " ")}; ` +
+    `${browserFacts.recovery_attempts || 0} passive recovery attempt(s), ` +
+    `${browserFacts.recovered ? "recovered" : "not recovered"}. Search is not clicked again by recovery.` : "";
   stableText(agentStatus, agentMessage + (agentReport?.task_checklist?.date_resolution?.guidance ?
     " " + agentReport.task_checklist.date_resolution.guidance : "") +
     (agentReport?.prompt_version ? ` Agent version: ${agentReport.prompt_version}.` : "") +
     (agentReport ? ` Observation: ${agentReport.visual_enabled ? "DOM + adaptive screenshots" : "DOM/text"}; ` +
       `${agentReport.visual_calls_attempted || 0} visual model decisions attempted.` : "") +
     (agentReport?.failure ? ` Paused at ${agentReport.failure.stage}: ${agentReport.failure.code}.` : "") +
-    decisionMessage + validationMessage + messageStructure + selectionMessage + usageMessage);
+    decisionMessage + validationMessage + messageStructure + selectionMessage + usageMessage + browserMessage);
   agentDetails.hidden = !agentReport;
   const checklist = agentReport?.task_checklist;
   const fields = checklist?.requirements || [];
   const formFields = fields.filter(item => item.application === "form");
   agentChecklist.hidden = !fields.length;
   stableText(agentChecklistTitle, `Search readiness · ${formFields.filter(item => item.status === "verified").length}/${formFields.length} form fields verified`);
-  stableText(agentChecklistNote, (checklist?.search_submitted ? "Search page transition observed. " :
-    checklist?.search_response_pending ? "Waiting for the Search response; no repeat submission. " : "Search not yet confirmed. ") +
-    "Form checks do not prove a listing's availability or price. Review the extracted source evidence.");
+  let checklistNote = (checklist?.search_transition?.dispatch_status === "not_dispatched" ?
+    "Search was not dispatched. Review the control or start a fresh session. " :
+    checklist?.search_submitted ? "Search page transition observed. " :
+    checklist?.search_response_pending ? "Search dispatch attempted; waiting for a confirmed response. No repeat submission. " : "Search not yet confirmed. ") +
+    "Form checks do not prove a listing's availability or price. Review the extracted source evidence.";
+  if (checklist?.result_scope) {
+    const scope = checklist.result_scope;
+    checklistNote += ` Returned stay: ${(scope.status || "unverified").replaceAll("_", " ")}. ` +
+      "This check is separate from the values entered before Search.";
+    if (scope.reason) checklistNote += " " + scope.reason;
+  }
+  stableText(agentChecklistNote, checklistNote);
   updateRegion(agentChecklistFields, fields, () => {
     agentChecklistFields.replaceChildren();
     for (const field of fields) {
@@ -787,6 +918,21 @@ function renderBrowserOptions(browser) {
       if (field.summary_confirmation_pending) row.textContent += "; confirm/close the widget, then verify its header.";
       if (field.model_interpreted) row.textContent += `; model interpretation: ${field.interpretation || "review this value"}.`;
       agentChecklistFields.append(row);
+    }
+  });
+  const information = checklist?.information_needs || [];
+  const informationCoverage = checklist?.information_coverage || checklist?.collection_progress?.information_coverage || {};
+  agentInformation.hidden = !information.length;
+  stableText(agentInformationTitle, `Requested information · ${informationCoverage.fields_with_source_evidence?.length || 0}/${information.length} fields have captured evidence`);
+  stableText(agentInformationNote, (informationCoverage.partial_reason || "") +
+    " Evidence found in some captured sources does not prove every record is complete. Final field checks happen during extraction.");
+  updateRegion(agentInformationList, information, () => {
+    agentInformationList.replaceChildren();
+    for (const need of information) {
+      const item = document.createElement("li");
+      item.textContent = `${need.field.replaceAll("_", " ")}: ${(need.status || "unknown").replaceAll("_", " ")}` +
+        (need.evidence ? ` — ${need.evidence}` : "");
+      agentInformationList.append(item);
     }
   });
   updateRegion(agentLog, agentReport?.actions || [], () => {
@@ -823,6 +969,21 @@ function renderBrowserOptions(browser) {
             `${c.label || c.role || "unlabelled control"} (${c.id})`).join("; ");
           row.append(discovered);
         }
+      }
+      if (item.capture_diagnostics) {
+        const capture = document.createElement("p"); capture.className = "micro";
+        const facts = item.capture_diagnostics;
+        capture.textContent = `Capture stopped: ${facts.code.replaceAll("_", " ")}. ` +
+          (facts.captured_text_chars != null ? `${facts.captured_text_chars} retained text characters. ` : "") +
+          "No extraction ran for this failed capture.";
+        row.append(capture);
+      }
+      if (item.browser_diagnostics) {
+        const detail = document.createElement("p"); detail.className = "micro";
+        const facts = item.browser_diagnostics;
+        detail.textContent = `Browser diagnostic: ${facts.code.replaceAll("_", " ")} during ${facts.operation.replaceAll("_", " ")}. ` +
+          `${facts.recovery_attempts || 0} passive recovery attempt(s); ${facts.recovered ? "recovered" : "not recovered"}.`;
+        row.append(detail);
       }
       if (item.counter_evidence) {
         const counter = item.counter_evidence;
@@ -888,10 +1049,10 @@ function renderBrowserOptions(browser) {
   if (blockedAssets.length) {
     healthStatus.textContent += ` ${blockedAssets.length} script/style/font origin(s) were blocked. This may explain a text-only page. Review the origins below; only add ones you trust, then start a new session. Do not extract until the page looks complete.`;
   }
-  navPlanButton.disabled = browser.state !== "waiting";
+  navPlanButton.disabled = !manualCollectionAvailable(browser);
   hotelPanel.hidden = authenticationPending ||
     (!/\b(?:hotels?|stays?|accommodations?)\b/i.test($("web-request").value) && !browser.hotel_plan);
-  hotelPrepare.disabled = browser.state !== "waiting";
+  hotelPrepare.disabled = !manualCollectionAvailable(browser);
   hotelReview.hidden = browser.state !== "hotel_review" || !browser.hotel_plan;
   updateRegion(hotelTargets, [browser.hotel_plan || null, browser.hotel_revision || null], () => {
     hotelTargets.replaceChildren(); hotelCheckbox.checked = false;
@@ -947,7 +1108,7 @@ function renderBrowserOptions(browser) {
     }
   }
   });
-  linkDiscover.disabled = browser.state !== "waiting";
+  linkDiscover.disabled = !manualCollectionAvailable(browser);
   linkApprove.hidden = linkDismiss.hidden = browser.state !== "link_review";
   linkApprove.disabled = linkDismiss.disabled = browser.state !== "link_review";
   linkApprove.textContent = browser.link_selection?.kind === "section" ?
@@ -1040,9 +1201,9 @@ function canApproveWeb() {
   return webProposal && $("web-approved").checked &&
     (!webProposal.partial || $("web-partial-approved").checked);
 }
-function showRejected(items, fieldIssues = [], fieldRepairs = []) {
+function showRejected(items, fieldIssues = [], fieldRepairs = [], constraintIssues = []) {
   const target = $("web-rejected");
-  updateRegion(target, [items, fieldIssues, fieldRepairs], () => {
+  updateRegion(target, [items, fieldIssues, fieldRepairs, constraintIssues], () => {
   target.replaceChildren();
   const showGroup = (entries, headingText) => {
     if (!entries?.length) return;
@@ -1061,6 +1222,120 @@ function showRejected(items, fieldIssues = [], fieldRepairs = []) {
   showGroup(uncertain, `${uncertain.length} records with uncertain topic relevance (not included)`);
   showGroup(fieldIssues, `${fieldIssues.length} records with unsupported optional fields cleared to blank`);
   showGroup(fieldRepairs, `${fieldRepairs.length} records with source-backed corrections — review before saving`);
+  showGroup(constraintIssues, `${constraintIssues.length} records with unverified requested criteria (not matched results)`);
+  });
+}
+const constraintPanel = document.createElement("section");
+constraintPanel.className = "notice"; constraintPanel.hidden = true;
+constraintPanel.setAttribute("role", "status");
+const constraintTitle = document.createElement("strong"), constraintList = document.createElement("ul");
+constraintTitle.textContent = "Requested criteria need attention";
+constraintPanel.append(constraintTitle, constraintList); $("web-status").after(constraintPanel);
+function criterionIssueLabel(reason) {
+  return ({
+    price_basis_unverified: "Price basis is not verified",
+    nightly_comparison_unverified: "Nightly comparison is not verified",
+    price_observation_ambiguous: "More than one current price remains ambiguous",
+    requested_stay_scope_unverified: "Returned stay details are not verified",
+    requested_stay_mismatch: "Returned stay details differ from the request",
+    price_currency_unverified: "Displayed currency is not verified",
+    requested_currency_unverified: "Requested currency is not verified",
+    missing_or_ambiguous_price_field: "No unique numeric price field is available",
+    price_amount_quote_unverified: "Price amount does not match its source quote",
+    combined_room_price_unverified: "Combined price for all requested rooms is not verified",
+  })[reason] || String(reason).replaceAll("_", " ");
+}
+function criteriaIssueSummary(data) {
+  const summary = data?.criteria_issues_summary || data?.pricing_summary?.unknown_reasons;
+  if (summary?.length) return summary;
+  const counts = new Map();
+  for (const record of data?.constraint_unverified_records || []) {
+    const reasons = new Set((record.issues || []).map(issue => issue.reason).filter(Boolean));
+    for (const reason of reasons) counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  return [...counts].map(([reason, count]) => ({reason, count, label: criterionIssueLabel(reason)}));
+}
+function showRequestConstraints(data) {
+  const coverage = data?.request_constraint_coverage;
+  const unverified = data?.constraint_unverified_records || [];
+  const reasons = criteriaIssueSummary(data);
+  constraintPanel.hidden = !coverage?.issues?.length && !unverified.length && !reasons.length;
+  updateRegion(constraintList, [coverage, unverified, reasons], () => {
+    constraintList.replaceChildren();
+    for (const issue of coverage?.issues || []) {
+      const item = document.createElement("li");
+      item.textContent = `${issue.field.replaceAll("_", " ")}: ${issue.reason.replaceAll("_", " ")}` +
+        (issue.operator ? ` (${issue.operator} ${issue.value})` : "") + ".";
+      constraintList.append(item);
+    }
+    for (const reason of reasons) {
+      const item = document.createElement("li");
+      item.textContent = `${reason.count} record(s): ${reason.label || criterionIssueLabel(reason.reason)}.`;
+      constraintList.append(item);
+    }
+    if (unverified.length || reasons.length) {
+      const item = document.createElement("li");
+      item.textContent = "These are source previews, not confirmed matches or confirmed out-of-range results.";
+      constraintList.append(item);
+    }
+  });
+}
+const pricingPanel = document.createElement("section");
+pricingPanel.className = "notice"; pricingPanel.hidden = true;
+pricingPanel.setAttribute("role", "status");
+const pricingTitle = document.createElement("strong"), pricingNote = document.createElement("p");
+const pricingTargets = document.createElement("ul");
+pricingTitle.textContent = "Price and stay checks";
+pricingPanel.append(pricingTitle, pricingNote, pricingTargets); $("web-status").after(pricingPanel);
+function showPricingSummary(data) {
+  const summary = data?.pricing_summary;
+  pricingPanel.hidden = !summary?.applicable;
+  if (!summary?.applicable) return;
+  const within = summary.within_target_ready ?? summary.within_target ?? 0;
+  const outside = summary.outside_target_ready ?? summary.outside_target ?? 0;
+  stableText(pricingNote, `${summary.verified || 0} captured prices verified; ${summary.unverified || 0} unverified. ` +
+    `${within} ready records within the price target; ${outside} outside it. ` +
+    "Outside-target preferences are labelled alternatives, not budget matches. " +
+    "Nightly defaults to all requested rooms combined. Taxes and fees are shown separately.");
+  updateRegion(pricingTargets, data.request_preferences || [], () => {
+    pricingTargets.replaceChildren();
+    for (const preference of data.request_preferences || []) {
+      const item = document.createElement("li");
+      const bounds = (preference.conditions || []).map(condition => `${condition.operator} ${condition.value}`).join(", ");
+      item.textContent = `Preference: ${preference.request_quote || bounds}` +
+        (preference.currency ? ` (${preference.currency})` : "") + ". Not a hard exclusion filter.";
+      pricingTargets.append(item);
+    }
+  });
+}
+const outputContractPanel = document.createElement("details");
+outputContractPanel.className = "notice"; outputContractPanel.hidden = true;
+const outputContractTitle = document.createElement("summary");
+const outputContractNote = document.createElement("p"), outputContractList = document.createElement("ul");
+outputContractPanel.append(outputContractTitle, outputContractNote, outputContractList);
+$("web-count").after(outputContractPanel);
+function showOutputContract(data) {
+  const contract = data?.output_contract, coverage = data?.collection_coverage;
+  outputContractPanel.hidden = !contract;
+  if (!contract) return;
+  stableText(outputContractTitle, `${contract.selected_fields?.length || 0} extracted fields chosen for this request` +
+    (contract.missing_requested_fields?.length ? ` · ${contract.missing_requested_fields.length} requested fields need attention` : ""));
+  stableText(outputContractNote,
+    "Fields follow your request and the captured content, not a fixed website template. " +
+    (coverage ? `${coverage.captured_pages || 0} page(s) captured; ${coverage.detail_pages || 0} detail page(s); ` +
+      `${coverage.truncated_pages || 0} truncated. This is not verified whole-website coverage. ` : "") +
+    (contract.omitted_inferred_fields?.length ?
+      `Empty optional fields omitted: ${contract.omitted_inferred_fields.map(name => name.replaceAll("_", " ")).join(", ")}. ` : "") +
+    (coverage?.information_coverage?.partial_reason ? coverage.information_coverage.partial_reason + " " : "") +
+    "Missing means not verified in this capture, not absent from the website.");
+  updateRegion(outputContractList, contract.field_coverage || [], () => {
+    outputContractList.replaceChildren();
+    for (const field of contract.field_coverage || []) {
+      const item = document.createElement("li");
+      item.textContent = `${field.field.replaceAll("_", " ")}: ${field.populated} populated; ${field.missing} missing` +
+        (field.requested ? " · requested" : " · inferred or needed for rules");
+      outputContractList.append(item);
+    }
   });
 }
 const reviewCountsPanel = document.createElement("section");
@@ -1088,6 +1363,7 @@ function showReviewCounts(data) {
     `Filtered out: ${counts.filtered_out} · Duplicate candidates: ${counts.duplicates}`;
   reviewCountsNote.textContent = `${counts.candidates} model candidates reviewed; ` +
     `${counts.optional_fields_cleared} accepted candidates had unsupported optional fields cleared. ` +
+    (counts.constraint_unverified ? `${counts.constraint_unverified} had unverified requested criteria and were excluded separately. ` : "") +
     `${counts.source_fields_corrected || 0} accepted candidates had source-backed corrections. ` +
     "Unrelated means AI-assessed topic mismatch, not invalid source data. " +
     (counts.linked_sources_merged ? "Linked-source candidates may merge into fewer preview records. " : "") +
@@ -1114,6 +1390,7 @@ function webBusy(busy) {
   $("web-execute").disabled = busy || !canApproveWeb();
 }
 $("web-source").onchange = () => {
+  $("web-workflow-visual").checked = false;
   updateSourceChoice();
   const paste = $("web-source").value === "paste";
   const browser = $("web-source").value === "browser";
@@ -1183,6 +1460,11 @@ $("web-browser-mode").onchange = () => {
   updateBrowserMode();
   $("web-login-mode").onchange();
 };
+$("web-manual-mode").onchange = $("web-framework").onchange = () => {
+  $("web-consent").checked = false;
+  $("web-workflow-visual").checked = false;
+  updateSourceChoice();
+};
 $("web-source").onchange();
 $("web-approved").onchange = () => { $("web-execute").disabled = !canApproveWeb(); };
 $("web-partial-approved").onchange = $("web-approved").onchange;
@@ -1205,6 +1487,14 @@ $("web-form").onsubmit = async event => {
     return;
   }
   if (values.source === "browser") {
+    const automatic = automaticWorkflowSelected();
+    values.workflow_mode = automatic ? "automatic" : "manual";
+    values.agent_confirmed = automatic && $("web-consent").checked;
+    values.agent_visual_confirmed = automatic && $("web-workflow-visual").checked;
+    if (automatic && (!values.instructions.trim() || !values.agent_confirmed)) {
+      webText("web-status", "Describe the task and approve agent navigation plus extraction before running the workflow.");
+      return;
+    }
     values.browser_mode = $("web-browser-mode").value;
     values.browser_channel = $("web-browser-channel").value;
     values.browser_scroll_steps = Number($("web-scroll-steps").value);
@@ -1237,8 +1527,9 @@ $("web-form").onsubmit = async event => {
     if (!webCapture) { webText("web-status", "Send a new capture from the browser extension first."); return; }
     values.capture = webCapture; values.urls = [webCapture.url];
   }
-  webBusy(true); webText("web-status", "Submitting source inspection…");
-  setFlowActivity(true, "Submitting source inspection — waiting for the server to accept the run.");
+  agentCheckbox.checked = false; agentVisualCheckbox.checked = false;
+  webBusy(true); webText("web-status", "Starting your workflow…");
+  setFlowActivity(true, "Starting your workflow — waiting for the server to accept the run.");
   try {
     const job = await api("/api/custom/plans", values);
     await customSelect(job.job_id);
@@ -1246,7 +1537,7 @@ $("web-form").onsubmit = async event => {
     webText("web-status", error.message); webBusy(false);
     setFlowActivity(false, "Submission did not complete. Check the message before retrying.");
   }
-  finally { $("web-consent").checked = false; $("web-normal-confirm").checked = false; $("web-login-password").value = ""; $("web-login-user").value = ""; delete values.login; }
+  finally { $("web-consent").checked = false; $("web-workflow-visual").checked = false; $("web-normal-confirm").checked = false; $("web-login-password").value = ""; $("web-login-user").value = ""; delete values.login; }
 };
 function webTable(rows, fields) {
   previewRows = rows; previewFields = fields;
@@ -1255,7 +1546,7 @@ function webTable(rows, fields) {
   updateRegion($("web-table"), [rows, fields], () => {
   const head = $("web-table").querySelector("thead"), body = $("web-table").querySelector("tbody");
   head.replaceChildren(); body.replaceChildren();
-  const names = fields.filter(name => !["evidence", "evidence_sources", "enrichment_conflicts"].includes(name));
+  const names = fields.filter(name => !["evidence", "evidence_sources", "enrichment_conflicts", "source_coverage"].includes(name));
   const tr = document.createElement("tr");
   for (const name of [...names, "Source evidence"]) {
     const th = document.createElement("th"); th.scope = "col"; th.textContent = name.replaceAll("_", " "); tr.append(th);
@@ -1295,9 +1586,24 @@ function webTable(rows, fields) {
 let previewRows = [], previewFields = [], previewIndex = 0, previewReturnFocus = null;
 let previewQuality = {};
 const previewDialog = $("web-record-preview");
+const recordMetadata = new Set(["listing_id", "source_url", "extracted_at", "record_url", "detail_status",
+  "evidence", "evidence_sources", "enrichment_conflicts", "pricing", "source_coverage", "topic_relevance", "relevance_reason"]);
+function sourceField(name) {
+  return !recordMetadata.has(name) && !name.startsWith("rule_") && !name.startsWith("pricing_");
+}
+function recordRoleField(row, role) {
+  const configured = previewQuality.output_contract?.[`${role}_field`];
+  const pattern = {identity: /(^|_)(title|headline|name)$/, description: /(^|_)(description|snippet|excerpt|summary|overview)$/, url: /(^|_)url$/}[role];
+  return configured && row[configured] ? configured : Object.keys(row).find(name => sourceField(name) && pattern.test(name) && row[name]);
+}
 function recordTitle(row, index) {
-  return String(row.article_title || row.headline || row.title || row.hotel_name ||
-    row.product_name || row.name || row.listing_id || `Record ${index + 1}`);
+  return String(row[recordRoleField(row, "identity")] || row.listing_id || `Record ${index + 1}`);
+}
+function recordDescription(row) {
+  return row[recordRoleField(row, "description")] || "";
+}
+function recordSource(row) {
+  return row.record_url || row[recordRoleField(row, "url")] || row.source_url || "Source unavailable";
 }
 function sourceValue(target, value) {
   target.textContent = value === null || value === undefined ? "Not extracted — check field issues and page coverage" :
@@ -1318,18 +1624,276 @@ function recordFieldStatus(row, name) {
   return (previewQuality.field_statuses || []).find(item => item.record_id === row.listing_id)?.fields?.[name];
 }
 function outputFields() {
-  return previewFields.filter(name => !["listing_id", "source_url", "extracted_at", "record_url",
-    "detail_status", "evidence", "evidence_sources", "enrichment_conflicts", "topic_relevance",
-    "relevance_reason"].includes(name) && !name.startsWith("rule_"));
+  const selected = previewQuality.output_contract?.selected_fields;
+  return previewFields.filter(name => (!selected || selected.includes(name)) && sourceField(name));
 }
 function recordCoverage(row) {
   const names = outputFields();
   const missing = names.filter(name => row[name] === null || row[name] === undefined || row[name] === "");
   return {names, missing, filled: names.length - missing.length};
 }
+function pricingText(pricing) {
+  if (!pricing || pricing.status === "not_applicable") return "";
+  const displayed = pricing.displayed_amount == null ? "Unavailable" : String(pricing.displayed_amount);
+  const currency = pricing.currency || "currency unverified";
+  const amountLabel = pricing.observations?.some(item => item.selected) ? "Selected source amount" : "Displayed price";
+  let text = `${amountLabel}: ${displayed} ${currency}. ${pricing.basis_label || "Price basis unverified"}. `;
+  if (pricing.combined_nightly != null) {
+    text += `${pricing.calculation ? "Average" : "Combined"} nightly cost, all requested rooms: ` +
+      `${pricing.combined_nightly} ${currency}. `;
+    if (pricing.calculation) text += "Calculated from the verified stay total divided by nights, not rooms. ";
+  } else if (pricing.status === "verified" && pricing.comparison_scope === "per_room" && pricing.comparison_amount != null) {
+    text += `${pricing.calculation ? "Average per room, per night" : "Per room, per night"}: ` +
+      `${pricing.calculation?.result || pricing.comparison_amount} ${currency}. Combined room cost is not inferred. `;
+  }
+  text += `Taxes: ${pricing.taxes_status || "unknown"}; fees: ${pricing.fees_status || "unknown"}. `;
+  text += pricing.budget_status === "within_target" ? "Within price target. " :
+    pricing.budget_status === "outside_target" ? "Outside price target — alternative, not a budget match. " :
+    pricing.budget_status === "unverified" ? "Price target cannot be verified. " : "";
+  if (pricing.scope_status === "mismatch") text += "Displayed stay details differ from the request. ";
+  else if (pricing.scope_status === "unverified") text += "Returned stay details are unverified. ";
+  if (pricing.status === "unverified") {
+    text += "Source price only; not a verified requested-stay quote. ";
+    if (pricing.issues?.length) text += "Needs attention: " +
+      [...new Set(pricing.issues)].map(criterionIssueLabel).join("; ") + ".";
+  }
+  return text;
+}
+function groupedPriceObservations(observations = []) {
+  // Presentation copies only: never rewrite the saved quote or comparison decision.
+  const groups = new Map();
+  for (const observation of observations) {
+    const raw = String(observation.amount ?? "").trim();
+    const normalized = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(raw) ? raw.replaceAll(",", "") : raw;
+    const amount = /^\d+(\.\d+)?$/.test(normalized) ?
+      normalized.replace(/^0+(?=\d)/, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") : raw;
+    const key = JSON.stringify([amount, String(observation.currency || "").toUpperCase(),
+      observation.kind || "unknown", observation.role || "unknown"]);
+    if (!groups.has(key)) groups.set(key, {...observation, quotes: [], source_urls: [], block_ids: [], quote_ids: []});
+    const group = groups.get(key);
+    group.selected = Boolean(group.selected || observation.selected);
+    for (const [name, items] of Object.entries({
+      quotes: [observation.quote, ...(observation.quotes || [])],
+      source_urls: [observation.source_url, ...(observation.source_urls || [])],
+      block_ids: observation.block_ids || [],
+      quote_ids: [observation.quote_id, ...(observation.quote_ids || [])],
+    })) group[name] = [...new Set([...group[name], ...items.filter(Boolean)])];
+  }
+  return [...groups.values()];
+}
+function priceAmount(amount, currency) {
+  return `${amount ?? "Unavailable"} ${currency || "currency unverified"}`;
+}
+function priceField(name) {
+  return /(^|_)(price|amount|currency|tax|taxes|fee|fees|discount|cost|budget|rate)(_|$)/.test(name);
+}
+function recordFieldLabel(target, name) {
+  const metadata = previewQuality.output_contract?.presentation?.field_metadata?.[name] || {};
+  target.textContent = name.replaceAll("_", " ") + (metadata.unit ? ` · ${metadata.unit}` : "");
+  if (metadata.description) target.title = metadata.description;
+}
+function pricingPreview(pricing, row = null) {
+  const section = document.createElement("section"); section.className = "pricing-preview";
+  const observations = groupedPriceObservations(pricing.observations);
+  const selected = observations.find(item => item.selected && item.role !== "original");
+  const nightly = pricing.combined_nightly ?? (pricing.status === "verified" && pricing.comparison_scope === "per_room" ? pricing.comparison_amount : null);
+  const label = document.createElement("span"); label.className = "price-headline-label";
+  label.textContent = nightly != null ?
+    `${pricing.calculation ? "Average nightly price" : "Nightly price"} · ${pricing.comparison_scope === "per_room" ? "per room" : "all requested rooms"}` :
+    selected?.kind === "per_room_per_night" ? "Displayed nightly price · per room" :
+    selected?.kind === "all_rooms_per_night" ? "Displayed nightly price · all requested rooms" : "Displayed source price";
+  const amount = document.createElement("strong"); amount.className = "price-headline";
+  amount.textContent = priceAmount(nightly ?? selected?.amount ?? pricing.displayed_amount, pricing.currency || selected?.currency);
+  section.append(label, amount);
+  const totals = observations.filter(item => item.role === "current" && item.kind?.startsWith("stay_total"));
+  for (const total of totals) {
+    const note = document.createElement("p"); note.className = "price-stay-total";
+    const scope = total.kind === "stay_total_per_room" ? "per room" :
+      total.kind === "stay_total_all_rooms" ? "all requested rooms" : "scope unverified";
+    note.textContent = `Current stay total · ${scope}: ${priceAmount(total.amount, total.currency)}`;
+    section.append(note);
+  }
+  const status = document.createElement("p"); status.className = "price-status";
+  status.dataset.verified = String(pricing.status === "verified");
+  status.textContent = pricing.budget_status === "within_target" ? "Within your price target" :
+    pricing.budget_status === "outside_target" ? "Outside your target · alternative" :
+    pricing.status === "unverified" ? "Price or stay details need verification" : pricing.basis_label || "Review price details";
+  section.append(status);
+  const details = document.createElement("details"), summary = document.createElement("summary");
+  summary.textContent = "Price details & source quotes"; details.append(summary);
+  const note = document.createElement("p"); note.className = "micro";
+  note.textContent = pricingText(pricing); details.append(note);
+  const labels = {
+    all_rooms_per_night: "Nightly price · all requested rooms", per_room_per_night: "Nightly price · per room",
+    stay_total_all_rooms: "Current stay total · all requested rooms", stay_total_per_room: "Current stay total · per room",
+    stay_total_unknown: "Current stay total · scope unverified",
+    starting_from: "Starting price · not a verified stay quote",
+  };
+  const list = document.createElement("ul"); list.className = "price-observations";
+  for (const observation of observations) {
+    const item = document.createElement("li"); item.dataset.priceRole = observation.role || "unknown";
+    const original = observation.role === "original";
+    const title = document.createElement("span");
+    title.textContent = (original ? "Original price · not used for matching" : labels[observation.kind] || "Additional price · basis unverified") + ": ";
+    const value = document.createElement(original ? "s" : "strong"); value.textContent = priceAmount(observation.amount, observation.currency);
+    item.append(title, value);
+    if (observation.selected && !original) item.append(document.createTextNode(" · used for comparison"));
+    for (const text of observation.quotes) {
+      const quote = document.createElement("blockquote"); quote.textContent = text; item.append(quote);
+    }
+    if (observation.block_ids.length || observation.quote_ids.length) {
+      const ids = document.createElement("small"); ids.className = "muted";
+      ids.textContent = [...observation.block_ids, ...observation.quote_ids].join(" · "); item.append(ids);
+    }
+    for (const url of observation.source_urls) {
+      const source = document.createElement("p"); source.className = "micro"; sourceValue(source, url); item.append(source);
+    }
+    list.append(item);
+  }
+  if (observations.length) details.append(list);
+  const sourceFields = row ? outputFields().filter(name => priceField(name) && row[name] !== null && row[name] !== undefined && row[name] !== "") : [];
+  if (sourceFields.length) {
+    const heading = document.createElement("h4"); heading.textContent = "Extracted price fields";
+    const fields = document.createElement("dl"); fields.className = "record-card-facts";
+    for (const name of sourceFields) {
+      const key = document.createElement("dt"), value = document.createElement("dd"); recordFieldLabel(key, name);
+      recordFieldValue(value, row[name]); fields.append(key, value);
+    }
+    details.append(heading, fields);
+  }
+  section.append(details); return section;
+}
+function recordSections(row) {
+  const contract = previewQuality.output_contract || {}, names = outputFields();
+  const omitted = new Set(["identity", "description", "url"].map(role => recordRoleField(row, role)));
+  const hasPricing = row.pricing && row.pricing.status !== "not_applicable";
+  const available = names.filter(name => !omitted.has(name) && !(hasPricing && priceField(name)) &&
+    row[name] !== null && row[name] !== undefined && row[name] !== "");
+  const groups = [], assigned = new Set();
+  const configured = contract.presentation?.sections || [];
+  for (const group of configured) {
+    const fields = (group.fields || []).filter(name => available.includes(name) && !assigned.has(name));
+    fields.forEach(name => assigned.add(name));
+    if (fields.length) groups.push({id: group.id, label: group.label || "Details", fields});
+  }
+  const fallback = [
+    ["location", "Location & access", /location|address|city|country|region|distance|access/],
+    ["features", "Features & inclusions", /amenit|feature|inclusion|facilit|benefit|equipment/],
+    ["conditions", "Conditions & policies", /policy|cancel|payment|refund|restriction|availability/],
+    ["configuration", "Configuration", /room|bed|capacity|occupan|size|dimension|variant/],
+    ["feedback", "Ratings & feedback", /rating|review|score/],
+    ["context", "Context", /author|publisher|published|date|time|theme|topic|category|section/],
+    ["price", "Price & value", /price|currency|tax|fee|discount|cost|budget|rate/],
+  ];
+  for (const [id, label, pattern] of fallback) {
+    const fields = available.filter(name => !assigned.has(name) && pattern.test(name));
+    fields.forEach(name => assigned.add(name)); if (fields.length) groups.push({id, label, fields});
+  }
+  const rest = available.filter(name => !assigned.has(name));
+  if (rest.length) groups.push({id: "details", label: "Details", fields: rest});
+  return groups;
+}
+function recordFieldValue(target, value) {
+  if (Array.isArray(value) && value.every(item => item == null || ["string", "number", "boolean"].includes(typeof item))) {
+    const list = document.createElement("ul"); list.className = "record-value-list";
+    for (const item of value) { const entry = document.createElement("li"); entry.textContent = String(item ?? ""); list.append(entry); }
+    target.append(list);
+  } else sourceValue(target, typeof value === "boolean" ? value ? "Yes" : "No" : value);
+}
+function groupedRecordFields(row) {
+  const container = document.createElement("div"); container.className = "record-sections";
+  for (const group of recordSections(row)) {
+    const section = document.createElement("section"); section.className = "record-fact-section"; section.dataset.section = group.id;
+    const heading = document.createElement("h4"); heading.textContent = group.label;
+    const facts = document.createElement("dl"); facts.className = "record-card-facts";
+    for (const name of group.fields) {
+      const label = document.createElement("dt"), value = document.createElement("dd");
+      recordFieldLabel(label, name); value.dataset.field = name; recordFieldValue(value, row[name]); facts.append(label, value);
+    }
+    section.append(heading, facts); container.append(section);
+  }
+  return container;
+}
+function appendSourceQuote(target, detail, compactEvidence = false) {
+  const quote = document.createElement("blockquote"); quote.textContent = detail.text || ""; target.append(quote);
+  let evidence = target;
+  if (compactEvidence && (detail.source_url || detail.block_ids?.length)) {
+    evidence = document.createElement("details"); evidence.className = "source-quote-evidence";
+    const title = document.createElement("summary"); title.textContent = "View source";
+    evidence.append(title); target.append(evidence);
+  }
+  if (detail.source_url) { const source = document.createElement("p"); source.className = "micro"; sourceValue(source, detail.source_url); evidence.append(source); }
+  if (detail.block_ids?.length) { const ids = document.createElement("small"); ids.className = "muted"; ids.textContent = detail.block_ids.join(" · "); evidence.append(ids); }
+}
+function sourceDetailSections(row) {
+  const coverage = row.source_coverage || {}, seen = new Set(), sections = [];
+  const append = (id, label, details) => {
+    const unique = [];
+    for (const detail of Array.isArray(details) ? details : []) {
+      if (!detail || typeof detail.text !== "string" || !detail.text.trim()) continue;
+      const key = JSON.stringify([detail.text, detail.source_url || "", detail.block_ids || []]);
+      if (!seen.has(key)) { seen.add(key); unique.push(detail); }
+    }
+    if (unique.length) {
+      const existing = sections.find(section => section.id === id && section.label === label);
+      if (existing) existing.details.push(...unique);
+      else sections.push({id, label, details: unique});
+    }
+  };
+  for (const section of Array.isArray(coverage.detail_sections) ? coverage.detail_sections : []) {
+    if (section) append(section.id || "details", section.label || "Other source details", section.details);
+  }
+  // Older saved runs have only the flat list. Keep these quotes, including any
+  // overflow absent from a newer grouped projection, without showing them twice.
+  append("details", "Other source details", coverage.additional_details);
+  return sections;
+}
+function recordSourceDetails(row) {
+  const details = document.createElement("details"); details.className = "record-source-details";
+  const coverage = row.source_coverage || {}, sections = sourceDetailSections(row);
+  const count = sections.reduce((total, section) => total + section.details.length, 0);
+  const omitted = Number(coverage.omitted_details) || 0;
+  details.hidden = !count && !omitted;
+  const title = document.createElement("summary"); title.textContent = `Additional source details (${count})`;
+  const note = document.createElement("p"); note.className = "micro";
+  note.textContent = "Captured quotes grouped for readability, not confirmed output fields or verified filter matches. Review each source in context.";
+  details.append(title, note);
+  for (const group of sections) {
+    const section = document.createElement("section"); section.className = "record-source-section"; section.dataset.section = group.id;
+    const heading = document.createElement("h4"); heading.textContent = group.label; section.append(heading);
+    for (const item of group.details) {
+      const quote = document.createElement("div"); quote.className = "record-source-quote";
+      appendSourceQuote(quote, item, true); section.append(quote);
+    }
+    details.append(section);
+  }
+  if (omitted || coverage.note) {
+    const limit = document.createElement("p"); limit.className = "micro";
+    limit.textContent = (omitted ? `${omitted} additional source detail(s) are not shown in this bounded preview. ` : "") + (coverage.note || "");
+    details.append(limit);
+  }
+  return details;
+}
+function recordMissingDetails(row) {
+  const details = document.createElement("details"); details.className = "record-missing-details";
+  const missing = recordCoverage(row).missing; details.hidden = !missing.length;
+  const title = document.createElement("summary"); title.textContent = `Missing details (${missing.length})`; details.append(title);
+  const issues = recordFieldIssues(row);
+  for (const name of missing) {
+    const field = document.createElement("section"), heading = document.createElement("h4"), why = document.createElement("p");
+    recordFieldLabel(heading, name); why.className = "micro";
+    const related = row.source_coverage?.related_fields?.[name] || [], issue = issues.find(item => item.field === name);
+    const state = recordFieldStatus(row, name);
+    why.textContent = related.length ? "Related text was captured, but no source-verified field value was extracted." :
+      issue ? `Source check: ${issue.reason.replaceAll("_", " ")}.` : state?.reason || "Not extracted. This does not mean the website lacks this detail.";
+    field.append(heading, why); for (const item of related) appendSourceQuote(field, item); details.append(field);
+  }
+  return details;
+}
 function renderRecordCards() {
   const cards = $("web-record-cards");
-  updateRegion(cards, [previewRows, previewFields, previewQuality.field_issues, previewQuality.field_statuses], () => {
+  updateRegion(cards, [previewRows, previewFields, previewQuality.field_issues, previewQuality.field_statuses,
+    previewQuality.output_contract], () => {
   cards.replaceChildren();
   if (!previewRows.length) {
     const empty = document.createElement("p"); empty.className = "preview-empty";
@@ -1341,50 +1905,27 @@ function renderRecordCards() {
     const number = document.createElement("span"); number.className = "eyebrow";
     number.textContent = `RECORD ${index + 1} OF ${previewRows.length}`;
     const title = document.createElement("h3"); title.textContent = recordTitle(row, index);
-    const excerpt = document.createElement("p"); excerpt.className = "record-card-excerpt";
-    excerpt.textContent = row.article_excerpt || row.excerpt || row.description || row.summary ||
-      "No description or body excerpt was extracted. Open the full preview to inspect the available fields.";
     const coverage = recordCoverage(row);
     const completeness = document.createElement("p"); completeness.className = "record-completeness";
     completeness.dataset.incomplete = String(coverage.missing.length > 0);
     completeness.textContent = `${coverage.filled}/${coverage.names.length} output fields filled` +
-      (coverage.missing.length ? ` · ${coverage.missing.length} need attention` : " · review source accuracy");
-    const facts = document.createElement("dl"); facts.className = "record-card-facts";
-    const keys = previewFields.filter(name => !["listing_id", "evidence", "evidence_sources",
-      "enrichment_conflicts", "source_url", "article_excerpt", "excerpt", "description", "summary",
-      "article_title", "headline", "title", "hotel_name", "product_name", "name"].includes(name));
-    for (const key of keys.slice(0, 3)) {
-      const label = document.createElement("dt"), value = document.createElement("dd");
-      label.textContent = key.replaceAll("_", " "); sourceValue(value, row[key]); facts.append(label, value);
-    }
+      (previewQuality.criteria_unverified_preview ? " · requested criteria unverified" :
+        coverage.missing.length ? ` · ${coverage.missing.length} need attention` : " · review source accuracy");
+    const sourceDetailsCount = sourceDetailSections(row).reduce((total, section) => total + section.details.length, 0);
+    if (sourceDetailsCount) completeness.textContent += ` · ${sourceDetailsCount} additional source details`;
     const source = document.createElement("p"); source.className = "record-card-source";
-    sourceValue(source, row.record_url || row.article_url || row.source_url || "Source unavailable");
-    const allFields = document.createElement("details"); allFields.className = "record-all-fields";
-    const allSummary = document.createElement("summary");
-    allSummary.textContent = `All output fields (${coverage.names.length})`;
-    const allValues = document.createElement("dl"); allValues.className = "record-card-facts";
-    const issues = recordFieldIssues(row);
-    for (const key of coverage.names) {
-      const label = document.createElement("dt"), value = document.createElement("dd");
-      label.textContent = key.replaceAll("_", " "); sourceValue(value, row[key]);
-      const issue = issues.find(item => item.field === key);
-      if (issue) {
-        const why = document.createElement("small"); why.className = "field-missing-reason";
-        why.textContent = `Source check: ${issue.reason.replaceAll("_", " ")}`; value.append(why);
-      } else if (coverage.missing.includes(key)) {
-        const state = recordFieldStatus(row, key);
-        const why = document.createElement("small"); why.className = "field-missing-reason";
-        why.textContent = state?.status === "model_not_returned" ?
-          "Field preserved, but the model did not return it." :
-          state?.reason || "No value extracted; source availability is unconfirmed.";
-        value.append(why);
-      }
-      allValues.append(label, value);
-    }
-    allFields.append(allSummary, allValues);
+    sourceValue(source, recordSource(row));
     const button = document.createElement("button"); button.type = "button";
     button.textContent = "Preview record & evidence"; button.onclick = () => openRecordPreview(index, button);
-    card.append(number, title, completeness, excerpt, facts, allFields, source, button); cards.append(card);
+    card.append(number, title, completeness);
+    if (recordDescription(row)) {
+      const excerpt = document.createElement("p"); excerpt.className = "record-card-excerpt";
+      excerpt.textContent = String(recordDescription(row)); card.append(excerpt);
+    }
+    if (row.pricing && row.pricing.status !== "not_applicable") {
+      card.append(pricingPreview(row.pricing, row));
+    }
+    card.append(groupedRecordFields(row), recordMissingDetails(row), recordSourceDetails(row), source, button); cards.append(card);
   });
   });
 }
@@ -1401,18 +1942,23 @@ function openRecordPreview(index, opener = null) {
     coverage.missing.map(name => name.replaceAll("_", " ")).join(", ") +
     ". A blank does not prove that the website lacks this information." :
     `${coverage.filled}/${coverage.names.length} output fields filled. This does not prove all website content was captured.`;
-  const fields = $("web-preview-fields"); fields.replaceChildren();
-  for (const key of previewFields.filter(name => !["evidence", "evidence_sources", "enrichment_conflicts"].includes(name))) {
-    const label = document.createElement("dt"), value = document.createElement("dd");
-    label.textContent = key.replaceAll("_", " "); sourceValue(value, row[key]); fields.append(label, value);
-    const issue = recordFieldIssues(row).find(item => item.field === key);
-    if (issue) {
-      const why = document.createElement("small"); why.className = "field-missing-reason";
-      why.textContent = `Source check: ${issue.reason.replaceAll("_", " ")}`; value.append(why);
-    }
+  if (previewQuality.criteria_unverified_preview) {
+    $("web-preview-quality").textContent = "Source preview only: requested criteria are unverified. This is not a matched result. " +
+      $("web-preview-quality").textContent;
   }
+  const previousPricing = previewDialog.querySelector(".pricing-preview");
+  if (previousPricing) previousPricing.remove();
+  if (row.pricing && row.pricing.status !== "not_applicable")
+    $("web-preview-quality").after(pricingPreview(row.pricing, row));
+  const fields = $("web-preview-fields"); fields.replaceChildren();
+  if (recordDescription(row)) {
+    const description = document.createElement("p"); description.textContent = String(recordDescription(row)); fields.append(description);
+  }
+  fields.append(groupedRecordFields(row), recordMissingDetails(row), recordSourceDetails(row));
+  const source = document.createElement("p"); source.className = "record-card-source"; sourceValue(source, recordSource(row)); fields.append(source);
   $("web-preview-evidence").textContent = JSON.stringify({quotes: row.evidence || {},
-    sources: row.evidence_sources || {}, conflicts: row.enrichment_conflicts || {}}, null, 2);
+    sources: row.evidence_sources || {}, conflicts: row.enrichment_conflicts || {},
+    ...(row.pricing ? {pricing: row.pricing} : {}), ...(row.source_coverage ? {source_coverage: row.source_coverage} : {})}, null, 2);
   $("web-preview-previous").disabled = index === 0;
   $("web-preview-next").disabled = index === previewRows.length - 1;
   if (!previewDialog.open) previewDialog.showModal();
@@ -1452,6 +1998,9 @@ async function customSelect(id) {
   $("web-partial-approved").checked = false; $("web-partial-label").hidden = true;
   showRejected([]);
   showReviewCounts(null);
+  showRequestConstraints(null);
+  showPricingSummary(null);
+  showOutputContract(null);
   showCapturedPages([]);
   showEnrichment(null);
   showNavigationEvidence(null);
@@ -1475,6 +2024,9 @@ async function customPoll(id, epoch = webPollEpoch) {
     const result = job.result || {};
     previewQuality = result.proposal || result;
     showReviewCounts(result.proposal || result);
+    showRequestConstraints(result.proposal || result);
+    showPricingSummary(result.proposal || result);
+    showOutputContract(result.proposal || result);
     showNavigationEvidence(browser || result.proposal?.browser_diagnostics || result.browser_diagnostics);
     renderWorkflow(job, browser);
     showCapturedPages(result.proposal?.captured_pages || result.captured_pages || []);
@@ -1494,10 +2046,10 @@ async function customPoll(id, epoch = webPollEpoch) {
     });
     webBusy(!terminal(job.status));
     if (!terminal(job.status)) {
-      $("web-browser-controls").hidden = browser.state === "closed";
+      $("web-browser-controls").hidden = browser.state === "closed" || !!browser.inspection?.active;
       webText("web-browser-status", browser.guidance);
       renderBrowserOptions(browser);
-      $("web-capture").disabled = browser.state !== "waiting";
+      $("web-capture").disabled = !manualCollectionAvailable(browser);
       $("web-cancel-browser").disabled = browser.state === "captured";
       webTimer = setTimeout(() => customPoll(id, epoch), 1000); return;
     }
@@ -1505,7 +2057,8 @@ async function customPoll(id, epoch = webPollEpoch) {
     showRejected(
       result.proposal?.rejected_records || result.rejected_records || [],
       result.proposal?.field_issues || result.field_issues || [],
-      result.proposal?.field_repairs || result.field_repairs || []
+      result.proposal?.field_repairs || result.field_repairs || [],
+      result.proposal?.constraint_unverified_records || result.constraint_unverified_records || []
     );
     if (result.proposal) {
       webProposal = result.proposal; webRevision = result.revision;
@@ -1524,16 +2077,26 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
         ...(webProposal.enrichment ? ["record_url", "detail_status"] : []), "source_url"]);
       webText("web-count", `${webProposal.records.length} preview records. Not yet saved as an approved run. Coverage is limited to submitted page text.`);
     }
+    if (!result.proposal && result.unverified_preview?.length) {
+      previewQuality = {...result, criteria_unverified_preview: true};
+      webTable(result.unverified_preview, ["listing_id", ...(result.columns || []).map(field => field.name), "source_url"]);
+      webText("web-count", `${result.unverified_preview.length} source-preview records — requested criteria are unverified. ` +
+        "Not approved, saved, downloadable or eligible for events." +
+        (result.unverified_preview_more_available ? " More source candidates exist beyond this preview limit." : ""));
+    }
     if (result.run_id) {
       try {
-        const snapshot = await api(`/api/jobs/${id}/records`);
+        const snapshot = await api(`/api/jobs/${id}/records?presentation=true`);
         if (webSelected !== id || epoch !== webPollEpoch) return;
         previewQuality = snapshot;
         webTable(snapshot.records, snapshot.columns);
         showEnrichment(snapshot.enrichment);
         showCapturedPages(snapshot.captured_pages || []);
         showReviewCounts(snapshot);
-        showRejected(snapshot.rejected_records || [], snapshot.field_issues || [], snapshot.field_repairs || []);
+        showRequestConstraints(snapshot);
+        showPricingSummary(snapshot);
+        showOutputContract(snapshot);
+        showRejected(snapshot.rejected_records || [], snapshot.field_issues || [], snapshot.field_repairs || [], snapshot.constraint_unverified_records || []);
         webText("web-count", `${snapshot.records.length} saved records · rule matches: ${result.evaluation?.matched ?? "not evaluated"} · summary events acknowledged: ${result.delivery?.published ?? 0}. Run ${result.run_id}`);
         $("web-downloads").hidden = false;
       } catch (_) { webText("web-count", "Saved export not available. Inspect technical evidence before retrying."); }
@@ -1570,6 +2133,7 @@ for (const [id, action] of [["web-capture", "capture"], ["web-cancel-browser", "
   ["web-hotel-plan", "hotel_plan"], ["web-hotel-approve", "hotel_approve"],
   ["web-hotel-extract", "hotel_extract"], ["web-hotel-dismiss", "hotel_dismiss"],
   ["web-agent-start", "agent_start"], ["web-agent-resume", "agent_resume"],
+  ["web-agent-pause", "agent_pause"],
   ["web-agent-collect", "agent_collect"], ["web-agent-manual", "agent_manual"],
   ["web-approve-links", "approve_links"], ["web-dismiss-links", "dismiss_links"]]) {
   $(id).onclick = async () => {

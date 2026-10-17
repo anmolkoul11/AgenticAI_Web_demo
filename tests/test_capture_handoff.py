@@ -315,5 +315,5 @@ def test_extension_permissions_are_narrow_and_dom_capture_matches_browser():
     )
     script = (folder / "capture_dom.js").read_text(encoding="utf-8")
     assert "if (root === primary && budget >= 500) break;" not in script
-    assert "source-inventory-v1" in script
+    assert "source-inventory-v6" in script
     assert "[primary, document.body]" in script

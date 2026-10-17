@@ -60,24 +60,17 @@ def candidate():
     )
 
 
-def test_default_news_fields_do_not_disappear_between_runs():
+def test_inferred_news_fields_do_not_gain_empty_template_columns():
     fixed, values, notes = prepare_extraction(candidate(), inputs())
     names = [column.name for column in fixed.columns]
-    assert {
-        "article_title",
-        "article_url",
-        "article_excerpt",
-        "article_snippet",
-        "author",
-        "published_time",
-        "section",
-    } <= set(names)
+    assert names == ["article_title"]
     assert [cell.field for cell in fixed.rows[0].cells] == names
     assert all(cell.value is None for cell in fixed.rows[0].cells[1:])
     rows, _ = validate_extraction(
         fixed, values, [{"url": values.urls[0], "text": values.page_text}]
     )
-    assert rows[0]["article_excerpt"] is None and notes
+    assert "article_excerpt" not in rows[0]
+    assert not notes
 
 
 def test_explicit_generic_fields_are_preserved_even_when_model_omits_schema_slot():
@@ -142,7 +135,7 @@ def test_filter_dependency_is_not_silently_projected_out():
 
 def test_single_detail_body_can_fill_empty_excerpt_from_literal_capture():
     raw = candidate()
-    values = inputs()
+    values = inputs(output_fields=["article_title", "article_url", "article_excerpt"])
     fixed, effective, _ = prepare_extraction(raw, values)
     body = "The team won the match after scoring twice in extra time, with fans celebrating."
     page = {
@@ -214,7 +207,7 @@ def test_same_captured_snapshot_uses_same_validation_in_both_modes(mode):
 
 
 def test_captured_unique_headline_href_repairs_missing_url_without_guessing():
-    values = inputs()
+    values = inputs(output_fields=["article_title", "article_url"])
     fixed, effective, _ = prepare_extraction(candidate(), values)
     url = "https://example.org/sport/story"
     page = {

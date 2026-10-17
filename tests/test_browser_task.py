@@ -1862,5 +1862,5 @@ def test_extraction_adapter_passes_form_context_separately_and_does_not_duplicat
     assert payload["output_fields"] == ["name", "price", "url"]
     assert "text" not in payload["pages"][0]
     assert payload["pages"][0]["browser_task_context"] == page["browser_task_context"]
-    assert metadata["prompt_version"] == "website-extractor-v10"
+    assert metadata["prompt_version"] == "website-extractor-v15"
     assert "proof of per-hotel availability" in received["input"][0]["content"]

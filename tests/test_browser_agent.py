@@ -548,7 +548,11 @@ def test_local_dynamic_calendar_and_occupancy_loop_reobserves_new_controls(agent
             assert len(matches) == 1
             return decision("click", matches[0]["id"])
 
-    report = BrowserAgent(tools_for(agent_page), LocalScriptedModel(), "Hotel task").run()
+    report = BrowserAgent(
+        tools_for(agent_page),
+        LocalScriptedModel(),
+        "Prepare the visible form and search for hotels",
+    ).run()
     assert report["status"] == "ready" and report["calls"] == 9
     assert report["captured_pages"] == ["https://example.org/"]
 
@@ -969,9 +973,25 @@ def test_local_render_readiness_facts_distinguish_records_loading_and_empty_resu
 ):
     agent_page.set_content(f"<main>{markup}</main>")
     observed = tools_for(agent_page).observe()
-    assert observed["results"] == {
+    assert {key: observed["results"][key] for key in ("record_count", "busy", "no_results")} == {
         "record_count": record_count,
         "busy": busy,
         "no_results": no_results,
     }
     assert browser_agent.rendered_results_ready(observed) is ready
+
+
+def test_local_returned_headings_exclude_cards_navigation_and_form_echoes(agent_page):
+    agent_page.set_content("""<main itemscope itemtype='https://schema.org/SearchResultsPage'>
+      <nav><h2>Boston: 50 hotels found</h2></nav>
+      <form><h2>Chicago: 10 properties found</h2></form>
+      <h1>New York: 373 properties found</h1>
+      <article><h2><a href='/one'>Miami: 3 hotels found</a></h2>
+        <p>Record description and USD 300 displayed price.</p></article>
+      <h2 style='display:none'>London: 10 hotels found</h2>
+      <div role='dialog'><h2>Paris: 8 hotels found</h2></div>
+    </main>""")
+    observed = tools_for(agent_page).observe()
+    assert observed["results"]["headings"] == [
+        {"text": "New York: 373 properties found", "level": 1}
+    ]
