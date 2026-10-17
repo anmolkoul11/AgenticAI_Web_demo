@@ -1,5 +1,14 @@
 # Demo Dashboard MVP
 
+## v1.2 single-run workflow
+
+Website Studio's browser path now offers **Run workflow**: initial consent,
+optional sign-in, automatic navigation/search and collection, extraction and a
+results preview. Final approval still saves the exact reviewed snapshot. Manual
+collection tools remain in Advanced, and CrewAI/non-browser sources keep their
+existing paths. See [UNIFIED_WORKFLOW_GUIDE.md](UNIFIED_WORKFLOW_GUIDE.md) for
+setup, the action differences and user-run verification scenarios.
+
 The current navy/teal interface separates **Website Studio**, **Hotel demo**, **Run history**,
 **API connection**, and **Administration** (admins only). The search page contains
 configure, review/run and results panels. Hotel exports offer all/filtered records;

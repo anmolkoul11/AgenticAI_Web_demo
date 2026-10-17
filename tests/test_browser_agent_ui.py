@@ -203,7 +203,7 @@ def test_action_effect_feedback_and_interpretation_are_visible_without_json(agen
             changed_controls:[{control:'Options',after:'',expanded:'true'}]}}]}});
       setStudioStep('work');
     }""")
-    assert agent_ui.get_by_text("DOM + viewport screenshots", exact=False).is_visible()
+    assert agent_ui.get_by_text("DOM + adaptive screenshots", exact=False).is_visible()
     agent_ui.get_by_text("Browser-agent action evidence", exact=True).click()
     assert agent_ui.get_by_text("Widget state changed.", exact=False).is_visible()
     assert agent_ui.get_by_text("Options: true", exact=False).is_visible()

@@ -6,10 +6,10 @@ similarity, connect records. Every filled field keeps its own source evidence.
 
 from copy import deepcopy
 
-from agentic_web_demo.capture import clean_url
+from agentic_web_demo.capture import clean_url, query_identity_omitted
 from agentic_web_demo.custom_fetch import WebsiteError
 from agentic_web_demo.record_identity import identity_field
-from agentic_web_demo.source_fields import normalized
+from agentic_web_demo.source_fields import normalized, quote_in_block
 
 URL_FIELDS = (
     "article_url",
@@ -27,9 +27,20 @@ URL_FIELDS = (
 
 def safe_url(value):
     try:
-        return clean_url(value) if isinstance(value, str) else None
+        return (
+            clean_url(value)
+            if isinstance(value, str) and not query_identity_omitted(value)
+            else None
+        )
     except (WebsiteError, ValueError):
         return None
+
+
+def page_target_urls(page):
+    """A normalized page address cannot restore an omitted record identifier."""
+    if (page.get("coverage") or {}).get("page_url_identity_omitted"):
+        return None, None
+    return safe_url(page.get("requested_url")), safe_url(page.get("url"))
 
 
 def record_target(row, page, names):
@@ -58,7 +69,7 @@ def provenance(row, page):
             "block_ids": [
                 block["id"]
                 for block in page.get("blocks", [])
-                if normalized(quote) in normalized(block["text"] + " " + (block.get("href") or ""))
+                if quote_in_block(quote, block)
             ],
         }
         for field, quote in row.get("evidence", {}).items()
@@ -87,7 +98,13 @@ def reconcile_records(records, pages, columns, link_coverage, *, protected_field
             urls = {
                 url for field in URL_FIELDS if field in names and (url := safe_url(row.get(field)))
             }
-            target = next(iter(urls)) if len(urls) == 1 else page["url"] if not urls else None
+            target = (
+                next(iter(urls))
+                if len(urls) == 1
+                else page_target_urls(page)[1]
+                if not urls
+                else None
+            )
         else:
             target = record_target(row, page, names)
         row["record_url"] = target
@@ -109,13 +126,12 @@ def reconcile_records(records, pages, columns, link_coverage, *, protected_field
     primary_detail_counts = {}
     for row in detail_rows:
         page = page_by_url[row["source_url"]]
-        if row["record_url"] in {safe_url(page.get("requested_url")), safe_url(page["url"])}:
+        if row["record_url"] and row["record_url"] in set(page_target_urls(page)):
             primary_detail_counts[page["url"]] = primary_detail_counts.get(page["url"], 0) + 1
     unmatched, merged = [], 0
     for detail in detail_rows:
         page = page_by_url[detail["source_url"]]
-        requested = safe_url(page.get("requested_url"))
-        actual = safe_url(page["url"])
+        requested, actual = page_target_urls(page)
         counterparts = by_target.get(requested, [])
         identity = identity_field(names)
         primary_heading = next(
@@ -223,6 +239,6 @@ def evidence_block_ids(records, pages):
                 if page["url"] == source
                 for block in page.get("blocks", [])
                 if quote
-                and normalized(quote) in normalized(block["text"] + " " + (block.get("href") or ""))
+                and quote_in_block(quote, block)
             ]
     return result

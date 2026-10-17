@@ -123,9 +123,16 @@ class DashboardService:
 
     def close(self):
         with self.lock:
-            for control in self.browser_controls.values():
+            controls = list(self.browser_controls.values())
+            for control in controls:
                 control.cancel.set()
+                control.close_requested.set()
         self.pool.shutdown(wait=True, cancel_futures=False)
+        # Owner cleanup removes registry entries, so never join under service.lock.
+        for control in controls:
+            owner = control.owner_thread
+            if owner is not None and owner.ident is not None and owner is not threading.current_thread():
+                owner.join()
 
     def read(self, job_id):
         path = self.directory / f"{UUID(str(job_id))}.json"
@@ -323,3 +330,51 @@ class DashboardService:
         if path.stat().st_size > 4_000_000:
             raise ValueError("Oversized export")
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def preview_records(self, job_id):
+        """Read-only display projection; historical files/downloads stay unchanged."""
+        from agentic_web_demo.custom_service import load, saved_pricing_pages
+        from agentic_web_demo.result_presentation import (
+            annotate_source_coverage,
+            field_family,
+            presentation_contract,
+        )
+
+        snapshot = self.records(job_id)
+        job = self.read(job_id)
+        if job.get("kind") != "custom-execute":
+            return snapshot
+        proposal = {}
+        try:
+            proposal = load(self, job.get("plan_id"))
+        except (ValueError, OSError, KeyError):
+            # A retained export is still usable if its original plan has gone.
+            pass
+        metadata = {
+            "listing_id", "source_url", "extracted_at", "evidence", "pricing",
+            "record_url", "detail_status", "evidence_sources", "enrichment_conflicts",
+            "topic_relevance", "relevance_reason", "source_coverage",
+        }
+        selected = (snapshot.get("output_contract") or {}).get("selected_fields") or [
+            name for name in snapshot.get("columns", [])
+            if name not in metadata and not name.startswith(("pricing_", "rule_"))
+        ]
+        columns = [
+            column for column in proposal.get("source_columns", proposal.get("columns", []))
+            if column["name"] in selected
+        ] or [{"name": name, "description": ""} for name in selected]
+        contract = snapshot.get("output_contract") or {}
+        snapshot["output_contract"] = {
+            **contract, "presentation": presentation_contract(columns),
+        }
+        description = next(
+            (column for column in columns if column["name"] == contract.get("description_field")),
+            None,
+        )
+        if description and field_family(description) != "overview":
+            snapshot["output_contract"]["description_field"] = None
+        if proposal:
+            snapshot["records"] = annotate_source_coverage(
+                snapshot["records"], saved_pricing_pages(proposal), columns
+            )
+        return snapshot

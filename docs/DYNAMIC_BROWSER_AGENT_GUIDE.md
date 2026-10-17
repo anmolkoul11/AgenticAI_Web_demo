@@ -1,5 +1,13 @@
 # Dynamic browser-agent checkpoint
 
+## Single-run workflow (v17)
+
+Website Studio now defaults to a single **Run workflow** browser path: initial
+consent, optional sign-in handoff, agent navigation and source collection,
+extraction/filtering, then a reviewable preview. Final saving still requires
+approval. Separate collection tools remain available in Advanced/manual mode.
+See [the v1.2 workflow and verification guide](UNIFIED_WORKFLOW_GUIDE.md).
+
 ## Current checkpoint: useful decisions instead of retry loops (v14)
 
 The supplied v13 run used all 30 paid decisions with no Search submission or

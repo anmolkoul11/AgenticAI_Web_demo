@@ -74,6 +74,9 @@ def live_ui(request):
         """
         )
         browser.add_script_tag(content=(ASSETS / "custom.js").read_text(encoding="utf-8"))
+        # Each fixture drives its intended status updates explicitly. Unrelated
+        # background browser-status polling must not race API-call assertions.
+        browser.evaluate("clearTimeout(verificationBrowserTimer)")
         yield browser
 
 
@@ -95,6 +98,15 @@ def test_initial_checkpoints_are_idle_or_pending_not_running(live_ui):
         "hidden": True,
         "others": ["pending"] * 6,
     }
+
+
+def test_user_pause_request_stays_active_until_agent_stops(live_ui):
+    activity = live_ui.evaluate("""() => workflowActivity({
+      kind:'custom-plan',status:'running',stages:[{stage:'inspect_website'}]
+    },{state:'agent_pausing'})""")
+    assert activity["running"] and not activity["waiting"]
+    assert activity["stage"] == "browse"
+    assert "in-flight model call" in activity["message"]
 
 
 @pytest.mark.parametrize(
@@ -272,14 +284,17 @@ def test_cards_expose_all_fields_and_do_not_claim_blank_means_absent(live_ui):
         ['listing_id','title','price','currency','rating','city','author','source_url']);
       setStudioStep('results');
     }""")
-    live_ui.locator(".record-all-fields summary").click()
-    assert live_ui.locator(".record-all-fields dt").count() == 6
-    assert "quote missing from source" in live_ui.locator(".record-all-fields").inner_text()
+    card = live_ui.locator("#web-record-cards .record-card")
+    assert card.locator(".record-fact-section dt").count() == 4
+    assert card.get_by_text("Source title", exact=True).is_visible()
+    card.locator(".record-missing-details summary").click()
+    assert "author" in card.locator(".record-missing-details").inner_text()
+    assert "quote missing from source" in card.locator(".record-missing-details").inner_text()
     assert "5/6 output fields filled" in live_ui.locator(".record-completeness").inner_text()
     live_ui.locator(".record-card>button").click()
     assert "blank does not prove" in live_ui.locator("#web-preview-quality").inner_text()
     live_ui.locator("#web-preview-back").click()
-    assert live_ui.locator(".record-all-fields").get_attribute("open") is not None
+    assert card.locator(".record-missing-details").get_attribute("open") is not None
     assert live_ui.evaluate("window.fixtureCalls") == []
 
 

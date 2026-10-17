@@ -64,7 +64,11 @@ class PlanningError(Exception):
 
 
 PLANNER_ERRORS = {
-    "authentication": "Model authentication failed. Check local API credentials and access.",
+    "authentication": "OpenAI rejected the API key or account access. Check that the key is "
+    "active and re-paste the complete key in API connection or your local configuration. "
+    "If expired, revoked or invalid, replace it with another active OpenAI API key. "
+    "Save and start a fresh workflow/browser session, not Resume on an existing agent. "
+    "If an active key still fails, check project/account permissions and IP restrictions.",
     "rate_limit": "Model rate or quota limit reached. Check API budget and retry later.",
     "timeout": "Model request timed out. No browser tools ran; retry explicitly if desired.",
     "connection": "Model connection failed. Check approved network/proxy configuration.",

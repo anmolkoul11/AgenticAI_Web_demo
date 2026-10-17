@@ -39,11 +39,16 @@ from agentic_web_demo.browser_context import build_navigation_context, screensho
 from agentic_web_demo.browser_runtime import bound_controls, identity, state_fingerprint, transition
 from agentic_web_demo.browser_task import TaskLedger, occupancy_component
 from agentic_web_demo.custom_fetch import WebsiteError, origin
+from agentic_web_demo.stay_scope import (
+    observed_result_scope,
+    reconcile_captured_result_scope,
+    url_stay_values,
+)
 
 MAX_CALLS = 30
 MAX_SECONDS = 300
 MAX_PAGES = 6
-PROMPT_VERSION = "browser-agent-v16.1"
+PROMPT_VERSION = "browser-agent-v20.4"
 SENSITIVE = (
     'input[type="password"],input[type="email"],input[type="tel"],'
     'input[autocomplete="username"],input[autocomplete="one-time-code"],'
@@ -83,6 +88,41 @@ with all form values verified; awaiting response means wait/inspect, no resubmit
 or edits. No progress means another observed control, focused inspect or one wait;
 an uncertain click is not a failed click to retry.
 
+Choose collection_goal on a necessary decision, never in a separate planning call:
+current_page for requested data already visible; search_results when a search is
+needed; linked_details when requested context/fields require opening relevant
+links. Consider requested_output_fields too. Quote the user's request, give a
+brief reason, then omit unchanged goals.
+collection_goal.information_needs is OPTIONAL: use [] for inferred output fields
+such as a record's name, headline, URL, price or rating. Extraction selects these
+from the captured source; they are not extra browser prerequisites. Only report
+explicitly requested content that affects collection depth, or known checklist
+needs. Unsupported optional hints are ignored with feedback, not a failed action.
+Do not repeat ignored hints or stop to repair them; continue the actual task.
+For those requested needs, say
+visible (give a short literal observation quote), needs_detail, or unavailable.
+Send only changed needs, at most three short entries on an existing decision.
+Keep quotes/evidence about 80-100 characters; never echo the entire checklist or
+copy a full body paragraph into decision JSON. Omit unchanged collection_goal.
+Do not invent extra metadata requirements for a generic request. Required author,
+publication date or body/context may be on the supplied page already: inspect it
+before opening links. If requested content is absent, retain the current index
+and follow relevant same-site record links, not unrelated sections or a new search.
+Full body/context requires actual body source, not a headline or teaser. Captured
+evidence is collection-level, not proof every result has each field. If unavailable
+or budgets prevent collecting requested content, finish with partial_reason and
+name what is missing; never claim completion or fill it from memory.
+On a non-article detail layout without body roles, include a literal substantive
+main-content paragraph quote in the existing information need; short teasers and
+homepage paragraphs do not establish a full-content need. Partial capture is normal.
+Respect collection_scope.allowed_modes: a quote alone does not authorize navigation.
+Unspecified relevant-headline/list requests collect the starting page first;
+extraction assesses relevance. Do not search sections merely to improve coverage.
+This choice is independent of website genre. Use collection_progress to avoid
+revisiting captures; linked_details requires an actual retained index and at least
+one distinct detail page, not a headline-only finish. Stop within five details and
+six total sources; partial coverage is reported, never claimed complete.
+
 Use recent_actions/last_transition. finish captures source for extraction/filtering,
 not proof of availability or records; use it after a completed listing search.
 For detail/context requests, capture useful index then actual relevant links and
@@ -97,6 +137,15 @@ exact native option; check=true/false; set_counter an integer target. press supp
 Enter/Escape/Tab/arrows/Home/End/Space; scroll=up/down. Tool errors are feedback,
 not permission to repeat a possibly completed click. Stay within supplied budgets.
 click/fill/select/check/press/set_counter need control_id; other actions use null.
+Examples: occupancy Done closes a widget (set_field), never submit_search; the
+actual form Search submits after all values are verified. "Find sports headlines"
+means current_page, capture then extract; "open relevant links for full context"
+means linked_details, retain the index then open actual matching detail sources.
+Returned result_scope is separate from pre-search form proof. A catalog with
+"Price from"/default occupancy does not verify the requested stay. If a new
+catalog document needs one fresh form search, verify its own fields first.
+Otherwise collect an explicitly unverified source preview, never claim prices
+or availability satisfy dates/occupancy from the prepared form alone.
 """
 
 
@@ -112,6 +161,26 @@ class BrowserRequirement(BaseModel):
     )
     control_id: str | None = None
     interpretation: str = Field(default="", max_length=120)
+
+
+class BrowserInformationNeed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
+    request_quote: str = Field(default="", max_length=200)
+    status: Literal["visible", "needs_detail", "captured", "unavailable"]
+    evidence: str = Field(default="", max_length=220)
+
+
+class BrowserCollectionGoal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["current_page", "search_results", "linked_details"]
+    request_quote: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=160)
+    information_needs: list[BrowserInformationNeed] = Field(
+        default_factory=list, max_length=16,
+        description="Optional changed requested-content needs; [] for inferred basic output columns.",
+    )
+    partial_reason: str = Field(default="", max_length=220)
 
 
 class BrowserDecision(BaseModel):
@@ -139,6 +208,7 @@ class BrowserDecision(BaseModel):
     evidence: str = Field(max_length=220)
     purpose: Literal["navigate", "set_field", "submit_search", "collect", "other"] = "other"
     requirements: list[BrowserRequirement] = Field(default_factory=list, max_length=3)
+    collection_goal: BrowserCollectionGoal | None = None
     expected_change: str = Field(default="", max_length=140)
     pause_reason: Literal[
         "none",
@@ -173,7 +243,12 @@ VALIDATION_CODES = {
     "too_short",
     "validation_error",
 }
-VALIDATION_FIELDS = set(BrowserDecision.model_fields) | set(BrowserRequirement.model_fields)
+VALIDATION_FIELDS = (
+    set(BrowserDecision.model_fields)
+    | set(BrowserRequirement.model_fields)
+    | set(BrowserCollectionGoal.model_fields)
+    | set(BrowserInformationNeed.model_fields)
+)
 
 
 def safe_validation_issues(error):
@@ -600,8 +675,11 @@ AGENT_OBSERVATION = r"""focus => {
      for(const option of options) optionOwners.set(option,field);
    }
    const optionPrimary=e=>{
+     // Accessible names often concatenate a primary label and its subtitle.
+     // A rendered row boundary is useful; an arbitrary inline span/bold split
+     // is not. Keep an unstructured name whole rather than inventing a city.
      const lines=(e.innerText||'').split(/\n/).map(clean).filter(Boolean);
-     return clean(e.getAttribute('aria-label')||lines[0]||label(e));
+     return clean((lines.length>1?lines[0]:'')||e.getAttribute('aria-label')||e.innerText||label(e));
    };
    // Association comes from the actual native form, not a label/model guess.
    const nativeForm=e=>e.form||e.closest('form');
@@ -615,6 +693,9 @@ AGENT_OBSERVATION = r"""focus => {
       const rect=e.getBoundingClientRect();
       return {id:String(i),tag:e.tagName,role:e.getAttribute('role')||'',type:e.type||'',
         form_scope:nativeForm(e)?String(nativeForms.indexOf(nativeForm(e))):null,
+        widget_scope:counterGroups.some(group=>group.contains(e))?'counter':
+          popupScopes.some(scope=>scope.contains(e)&&
+            scope.matches('[role="listbox"],[role="grid"],[role="menu"]'))?'choice':'',
         submits_form:!!e.form && ['BUTTON','INPUT'].includes(e.tagName) &&
           ['submit','image'].includes(e.type),
         name:e.name||'',label:label(e)||(counter?counter.direction+' '+counter.label:''),
@@ -644,6 +725,7 @@ AGENT_OBSERVATION = r"""focus => {
         date:e.getAttribute('data-date')||e.getAttribute('datetime')||''};
     });
   const root=document.querySelector('main,[role="main"]')||document.body;
+  if(!root) throw new Error('AGENT_DOM_NOT_READY');
   const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),chunks=[];
   let node,length=0;
   while((node=walker.nextNode()) && length<12000) {
@@ -658,15 +740,34 @@ AGENT_OBSERVATION = r"""focus => {
     '[itemscope],[data-testid*="card"]')].filter(e=>visible(e)&&!e.closest(excluded)&&
       e.querySelector('a[href]')&&clean(e.innerText).length>=40);
   const resultText=chunks.join(' ');
-  const emptyResults=new RegExp('\\b(?:no (?:properties|hotels|results|stays) '+
+  const priceContexts=[];
+  for(const e of records.filter(e=>!records.some(n=>n!==e&&e.contains(n)))) {
+    const text=clean(e.innerText);
+    const matches=[...text.matchAll(/\b(?:price\s+from|starting\s+(?:at|from)|\d{1,3}\s+nights?|\d{1,3}\s+adults?|\d{1,3}\s+rooms?)\b/gi)];
+    if(matches.length) {
+      const first=matches[0].index,last=matches[matches.length-1].index;
+      priceContexts.push(text.slice(Math.max(0,first-25),Math.min(text.length,last+120)).slice(0,500));
+    }
+    if(priceContexts.length>=12) break;
+  }
+  const emptyResults=new RegExp('\\b(?:no search results|no (?:properties|hotels|results|stays) '+
     '(?:found|available|match)|we (?:couldn.t|could not) find any '+
     '(?:properties|hotels|results))\\b','i');
+  // Fresh page headings can establish the returned destination when a SPA no
+  // longer renders its destination input. Card headlines and form echoes cannot.
+  const resultHeadings=[...root.querySelectorAll('h1,h2,[role="heading"]')]
+    .filter(e=>visible(e)&&!e.closest(excluded+', [aria-hidden="true"]')&&
+      !e.closest('article,li,[role="listitem"],[data-testid*="card"],'+
+        '[itemtype$="/Hotel"],[itemtype$="/Product"],[itemtype$="/Article"]'))
+    .map(e=>({text:clean(e.innerText),level:Number(e.getAttribute('aria-level')||
+      (/^H[12]$/.test(e.tagName)?e.tagName.slice(1):0))}))
+    .filter(e=>[1,2].includes(e.level)&&e.text.length>0&&e.text.length<=240).slice(0,8);
   const results={record_count:records.filter(e=>!records.some(n=>n!==e&&e.contains(n))).length,
     busy:[...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],[role="status"]')]
       .some(e=>visible(e)&&!e.closest(excluded)&&
         (e.getAttribute('aria-busy')==='true'||e.getAttribute('role')==='progressbar'||
           /\bloading\b/i.test(clean(e.innerText)+' '+label(e)))),
-    no_results:emptyResults.test(resultText)};
+    no_results:emptyResults.test(resultText),price_contexts:priceContexts,headings:resultHeadings};
   return {title:document.title,text:chunks.join(' ').slice(0,12000),controls,
     results,
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
@@ -691,6 +792,7 @@ class DOMBrowserTools:
         secrets=(),
         *,
         visual_enabled=False,
+        user_pause=lambda: False,
     ):
         self.page, self.approved_origin = page, approved_origin
         self.capture_page, self.permitted, self.restricted = capture, permitted, restricted
@@ -699,10 +801,13 @@ class DOMBrowserTools:
         self.pages = []
         self.collection_context = None
         self.visual_enabled = visual_enabled
+        self.user_pause = user_pause
         self.focus = "auto"
         self.navigation_stack = []
 
     def guard(self):
+        if self.user_pause():
+            raise WebsiteError("You paused the browser agent. Review the tab before resuming.")
         if not self.permitted() or self.page.is_closed():
             raise WebsiteError(
                 "Browser agent cancelled, browser closed or account session expired."
@@ -756,6 +861,7 @@ class DOMBrowserTools:
                 "document_id": hashlib.sha256(self.page.url.encode()).hexdigest(),
                 "frames": snapshots,
                 "results": snapshots[0].get("results", {}) if snapshots else {},
+                "stay_url_values": url_stay_values(self.page.url),
                 "captured_urls": [display_url(p["url"]) for p in self.pages],
             },
             self.secrets,
@@ -924,6 +1030,22 @@ class DOMBrowserTools:
             and previous.get("browser_task_context") != self.collection_context
         )
         if previous and not refresh:
+            if previous.get("source_kind") == "page" and kind in {"index", "detail"}:
+                if kind == "index" and any(p.get("source_kind") == "index" for p in self.pages):
+                    raise WebsiteError("An index is already retained. Keep this as a detail/page.")
+                if (
+                    kind == "detail"
+                    and sum(p.get("source_kind") == "detail" for p in self.pages) >= 5
+                ):
+                    raise WebsiteError(
+                        "Five detail pages are already retained. Finish or review them."
+                    )
+                previous["source_kind"] = kind
+                if kind == "detail":
+                    previous["requested_url"] = previous["url"]
+                    index = next((p for p in self.pages if p.get("source_kind") == "index"), None)
+                    if index:
+                        previous["parent_url"] = index["url"]
             return {"status": "already_captured", "url": display_url(self.page.url)}
         if len(self.pages) >= MAX_PAGES and not refresh:
             raise WebsiteError("Six source pages captured. Finish or review the existing captures.")
@@ -937,7 +1059,48 @@ class DOMBrowserTools:
             if hashlib.sha256(self.page.url.encode()).hexdigest() == self.collection_context.get(
                 "result_document_id"
             ) and display_url(captured["url"]) == display_url(self.page.url):
-                captured["browser_task_context"] = copy.deepcopy(self.collection_context)
+                context = copy.deepcopy(self.collection_context)
+                earlier = context.get("result_scope") or {}
+                if earlier.get("source") == "returned_page" and earlier.get("requested"):
+                    try:
+                        fresh = self.observe()
+                    except PlaywrightError:
+                        # Retain source content, but never promote stale controls
+                        # if the final passive read failed. No automatic retry.
+                        context["result_scope"] = {
+                            **earlier,
+                            "status": "mismatch" if earlier.get("status") == "mismatch" else "unverified",
+                            "capture_refresh": "unavailable",
+                        }
+                    else:
+                        if (
+                            fresh.get("document_id") != context["result_document_id"]
+                            or hashlib.sha256(self.page.url.encode()).hexdigest() != context["result_document_id"]
+                        ):
+                            raise WebsiteError("The result document changed during capture. Review the current page before collecting again.")
+                        scope = observed_result_scope(earlier["requested"], fresh)
+                        scope["contradictions"] = (
+                            list(earlier.get("contradictions") or []) + scope["contradictions"]
+                        )[:24]
+                        if (
+                            earlier.get("status") == "mismatch" or scope["status"] == "mismatch"
+                            or any(isinstance(issue, dict) and issue.get("code") != "catalog_starting_price"
+                                   for issue in scope["contradictions"])
+                        ):
+                            scope["status"] = "mismatch"
+                        elif scope["contradictions"]:
+                            scope["status"] = "unverified"
+                        context["result_scope"] = reconcile_captured_result_scope(
+                            scope, captured.get("blocks", []), document_id=fresh["document_id"],
+                        )
+                scope = context.get("result_scope") or {}
+                verified = scope.get("status") == "verified"
+                context.update(
+                    requested_stay_verified=verified,
+                    source_preview_only=bool(scope.get("requested")) and not verified,
+                )
+                captured["browser_task_context"] = context
+                self.collection_context = copy.deepcopy(context)
         if not refresh and any(p["url"] == captured["url"] for p in self.pages):
             return {"status": "already_captured", "url": display_url(captured["url"])}
         captured["source_kind"] = kind
@@ -1198,8 +1361,12 @@ DECISION_FAILURES = {
     "No action ran from this decision; no automatic retry.",
     "connection": "The model service could not be reached. No action ran from this decision. "
     "Check the connection before resuming; no automatic retry.",
-    "authentication": "The provider rejected authentication or account access. "
-    "Check your configured API connection; no action ran from this decision.",
+    "authentication": "OpenAI rejected the API key or account access. Open API connection, "
+    "check that your key is active and re-paste the complete key. If expired, revoked or "
+    "invalid, replace it with another active OpenAI API key. Save / replace connection, "
+    "cancel this browser and start a fresh workflow; Resume retains the old connection. "
+    "If an active key still fails, check project/account permissions and IP restrictions. "
+    "No action ran from this decision; no automatic retry.",
     "rate_limit": "The provider rate-limited this decision. This is not proof of an empty "
     "account balance. No action ran; wait and review diagnostics before resuming.",
     "quota": "The provider explicitly reported insufficient quota. Check API billing/access. "
@@ -1547,6 +1714,78 @@ def rendered_results_ready(observation):
     )
 
 
+def safe_browser_diagnostics(value):
+    """Keep only bounded browser categories; never persist raw exception text."""
+    if not isinstance(value, dict):
+        return None
+    code = value.get("code")
+    operation = value.get("operation")
+    if code not in {
+        "navigation_context",
+        "detached_frame",
+        "dom_not_ready",
+        "browser_closed",
+        "browser_crashed",
+        "browser_timeout",
+        "browser_error",
+        "script_type_error",
+        "script_reference_error",
+        "script_syntax_error",
+    } or operation not in {"observe", "submit_action", "post_submit_observe", "result_wait"}:
+        return None
+    attempts = value.get("recovery_attempts", 0)
+    return {
+        "code": code,
+        "operation": operation,
+        "transient": value.get("transient") is True,
+        "recovery_attempts": attempts
+        if isinstance(attempts, int) and not isinstance(attempts, bool) and 0 <= attempts <= 4
+        else 0,
+        "recovered": value.get("recovered") is True,
+    }
+
+
+def browser_error_diagnostics(error, operation, *, recovery_attempts=0, recovered=False):
+    """Classify locally. Only known navigation races permit a passive re-read."""
+    text = str(error).casefold()
+    if "target closed" in text or "has been closed" in text or "browser closed" in text:
+        code = "browser_closed"
+    elif "crash" in text:
+        code = "browser_crashed"
+    elif (
+        "execution context was destroyed" in text
+        or "cannot find context with specified id" in text
+    ):
+        code = "navigation_context"
+    elif (
+        "frame was detached" in text
+        or "frame has been detached" in text
+        or "detached frame" in text
+    ):
+        code = "detached_frame"
+    elif "agent_dom_not_ready" in text:
+        code = "dom_not_ready"
+    elif "typeerror:" in text:
+        code = "script_type_error"
+    elif "referenceerror:" in text:
+        code = "script_reference_error"
+    elif "syntaxerror:" in text:
+        code = "script_syntax_error"
+    elif isinstance(error, PlaywrightTimeout):
+        code = "browser_timeout"
+    else:
+        code = "browser_error"
+    return safe_browser_diagnostics(
+        {
+            "code": code,
+            "operation": operation,
+            "transient": code in {"navigation_context", "detached_frame", "dom_not_ready"},
+            "recovery_attempts": recovery_attempts,
+            "recovered": recovered,
+        }
+    )
+
+
 def foreground_form_widget(observation):
     """Do not interrupt a foreground calendar/dialog/counter with a local fill."""
     return any(
@@ -1569,17 +1808,23 @@ class BrowserAgent:
         decider,
         instructions,
         *,
+        output_fields=None,
+        collection_goal_required=False,
         progress=lambda _: None,
         max_calls=MAX_CALLS,
         max_seconds=MAX_SECONDS,
     ):
         self.tools, self.decider, self.instructions = tools, decider, instructions
+        self.output_fields = list(output_fields or [])
+        self.collection_goal_required = collection_goal_required
         self.progress, self.max_calls, self.max_seconds = progress, max_calls, max_seconds
         self.calls, self.elapsed, self.history = 0, 0.0, []
         self.run_id = uuid4().hex
         self.started = None
         self.seen_actions = {}
         self.task = TaskLedger(instructions)
+        if self.output_fields:
+            self.task.set_output_fields(self.output_fields)
         self.finish_rejections = 0
         self.requirement_rejections = 0
         self.unsubmitted_transition_watch = None
@@ -1600,6 +1845,8 @@ class BrowserAgent:
         self.decision_diagnostics = []
         self.counter_diagnostics = None
         self.failure = None
+        self.browser_diagnostics = None
+        self.last_observation = None
         self.phase = "observe"
         self.report = {
             "run_id": self.run_id,
@@ -1618,6 +1865,40 @@ class BrowserAgent:
             "visual_policy": "adaptive",
         }
 
+    def capture_failed(self, error, entry):
+        """Stop once on source capture failure; no model-funded retry loop."""
+        code = getattr(error, "code", "capture_failed")
+        if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,60}", code):
+            code = "capture_failed"
+        facts = getattr(error, "capture_diagnostics", None)
+        guidance = (
+            str(error)
+            if isinstance(error, WebsiteError)
+            else (
+                "Rendered source capture failed. Review page loading and capture diagnostics "
+                "before resuming; no extraction ran and no capture retry was attempted."
+            )
+        )
+        self.failure = {
+            "code": code,
+            "stage": "capture",
+            "call": self.calls,
+            "no_action_from_failed_decision": False,
+            **({"capture_diagnostics": copy.deepcopy(facts)} if isinstance(facts, dict) else {}),
+        }
+        self.history.append(
+            {
+                **entry,
+                "status": "capture_failed",
+                "guidance": guidance,
+                **(
+                    {"capture_diagnostics": copy.deepcopy(facts)} if isinstance(facts, dict) else {}
+                ),
+            }
+        )
+        self.publish("paused", guidance)
+        return {"status": "paused"}
+
     def timed(self, phase, callback, *args, **kwargs):
         started = time.monotonic()
         try:
@@ -1629,6 +1910,7 @@ class BrowserAgent:
             self.phase_calls[phase] = self.phase_calls.get(phase, 0) + 1
 
     def publish(self, status, guidance):
+        self.task.note_sources(self.tools.pages)
         self.report.update(
             status=status,
             guidance=guidance,
@@ -1647,6 +1929,7 @@ class BrowserAgent:
             runtime_actions=self.runtime_actions,
             decision_diagnostics=copy.deepcopy(self.decision_diagnostics),
             failure=copy.deepcopy(self.failure),
+            browser_diagnostics=copy.deepcopy(self.browser_diagnostics),
             counter_diagnostics=copy.deepcopy(self.counter_diagnostics),
             performance={
                 "phase_seconds": {k: round(v, 3) for k, v in self.phase_seconds.items()},
@@ -1661,11 +1944,65 @@ class BrowserAgent:
         return self.max_seconds - self.elapsed - (time.monotonic() - self.started)
 
     def guard(self):
+        if getattr(self.tools, "user_pause", lambda: False)():
+            raise WebsiteError("You paused the browser agent. Review the tab before resuming.")
         self.tools.guard()
         if self.remaining() <= 0:
             raise WebsiteError(
                 "Browser agent time limit reached. Captures remain available for review."
             )
+
+    def observe_browser(self, operation="observe", *, max_seconds=1.2, callback=None):
+        """Recover a navigation race with passive reads, never a click or paid call."""
+        deadline = time.monotonic() + max(0, min(max_seconds, self.remaining()))
+        attempts = 0
+        previous_error = None
+        while True:
+            try:
+                # restricted() may itself read a navigating document. Keep its
+                # check inside recovery, but never catch its WebsiteError denial.
+                self.guard()
+                result = self.timed(
+                    "observe",
+                    callback if callback is not None else lambda _: self.tools.observe(),
+                    max(0, min(deadline - time.monotonic(), self.remaining())),
+                )
+            except PlaywrightError as exc:
+                self.browser_diagnostics = browser_error_diagnostics(
+                    exc, operation, recovery_attempts=attempts
+                )
+                if (
+                    not self.browser_diagnostics["transient"]
+                    or attempts >= 4
+                    or time.monotonic() >= deadline
+                ):
+                    raise
+                previous_error = exc
+                attempts += 1
+                page = getattr(self.tools, "page", None)
+                if page is not None:
+                    try:
+                        page.wait_for_timeout(
+                            max(0, min(150, int((deadline - time.monotonic()) * 1000)))
+                        )
+                    except PlaywrightError as wait_error:
+                        self.browser_diagnostics = browser_error_diagnostics(
+                            wait_error, operation, recovery_attempts=attempts
+                        )
+                        raise
+                continue
+            if previous_error is not None:
+                self.browser_diagnostics = browser_error_diagnostics(
+                    previous_error, operation, recovery_attempts=attempts, recovered=True
+                )
+            elif self.browser_diagnostics and not self.browser_diagnostics["recovered"]:
+                # A resumed run can recover on its first passive read. Retain
+                # the safe original category without carrying a stale failure.
+                self.browser_diagnostics = {
+                    **self.browser_diagnostics,
+                    "recovered": True,
+                }
+            return result
 
     def run(self):
         self.started = time.monotonic()
@@ -1676,12 +2013,25 @@ class BrowserAgent:
 
         def observe(state):
             self.phase = "observe"
-            self.guard()
             self.publish("observing", "Inspecting the current page and visible controls.")
             if self.task.request_error:
                 self.publish("paused", self.task.request_error)
                 return {"status": "paused"}
-            observation = self.timed("observe", self.tools.observe)
+            observation = self.observe_browser()
+            wait = getattr(self.tools, "wait_for_results", None)
+            if wait and (
+                self.task.pending_submission
+                and self.task.pending_submission.get("dispatch_status") != "not_dispatched"
+                or self.task.submission and not rendered_results_ready(observation)
+            ):
+                self.publish(
+                    "verifying", "Waiting for the attempted Search; it will not be repeated."
+                )
+                observation = self.observe_browser(
+                    "result_wait",
+                    max_seconds=5,
+                    callback=lambda remaining: wait(observation, max_seconds=remaining),
+                )
             if self.pending_autocomplete:
                 settle = getattr(self.tools, "settle_autocomplete", None)
                 if settle:
@@ -1689,6 +2039,11 @@ class BrowserAgent:
                         "observe", settle, observation, self.pending_autocomplete
                     )
                 self.pending_autocomplete = None
+            if any(f.get("password_or_code_visible") for f in observation.get("frames", [])):
+                self.publish("paused", "Finish sign-in/MFA in this browser, then resume the agent.")
+                return {"status": "paused"}
+            self.last_observation = copy.deepcopy(observation)
+            self.task.note_sources(self.tools.pages)
             self.task.observe(observation)
             if self.pending_effect:
                 before, index = self.pending_effect
@@ -1739,15 +2094,27 @@ class BrowserAgent:
                 )
                 self.publish("paused", guidance)
                 return {"status": "paused"}
-            if any(f.get("password_or_code_visible") for f in observation.get("frames", [])):
-                self.publish("paused", "Finish sign-in/MFA in this browser, then resume the agent.")
-                return {"status": "paused"}
             return {"status": "running", "observation": observation}
 
         def decide(state):
             self.phase = "decide"
             self.guard()
             observation = state["observation"]
+            if (
+                len(self.tools.pages) >= MAX_PAGES and not self.task.pending_submission
+                and not self.task.completion_problem()
+            ):
+                self.task.partial_reason = (
+                    "Six-page source limit reached. Only retained sources can be reviewed; "
+                    "additional relevant records or requested fields may remain unavailable."
+                )
+                return {
+                    "decision": BrowserDecision(
+                        action="finish", control_id=None, value="retained_sources",
+                        explanation="Hand off the retained partial sources without another capture.",
+                        evidence="The existing six-page collection limit has been reached.",
+                    ).model_dump(), "decision_origin": "runtime",
+                }
             # Known literal text and an actual editable form field need no new
             # interpretation. Suggestion choice remains the model's job.
             if (
@@ -1791,7 +2158,16 @@ class BrowserAgent:
             # listing request has a complete, uniquely associated native form,
             # submitting and handing off its rendered results are runtime work.
             # No paid decision is needed to choose a catalogue detour instead.
-            if self.task.collection_mode == "listing_results":
+            local_search = self.task.collection_mode in {"listing_results", "search_results"} or (
+                self.task.collection_mode == "linked_details"
+                and (self.collection_goal_required or self.task.collection_goal)
+            )
+            if self.task.pending_submission:
+                raise WebsiteError(
+                    self.task.completion_problem()
+                    or "Search is awaiting a response; do not resubmit."
+                )
+            if local_search:
                 candidates = self.task.submission_candidates
                 document = observation.get("document_id", observation.get("url"))
                 if len(candidates) == 1:
@@ -1811,19 +2187,23 @@ class BrowserAgent:
                         "Search was already attempted but its response is unconfirmed. "
                         "Inspect the browser before resuming; no automatic resubmission."
                     )
-                if self.task.pending_submission and self.local_submission_attempts:
-                    raise WebsiteError(
-                        "Search is awaiting a visible response after the bounded loading wait. "
-                        "Inspect the browser and resume when results appear; do not resubmit."
-                    )
-                if self.task.submission and not self.task.completion_problem():
+                if (
+                    self.task.collection_mode != "linked_details"
+                    and (not self.collection_goal_required or self.task.collection_goal)
+                    and (not self.output_fields or self.task.collection_goal)
+                    and self.task.submission
+                    and not self.task.completion_problem()
+                ):
                     if rendered_results_ready(observation):
+                        preview_only = self.task.source_preview_ready()
                         decision = BrowserDecision(
                             action="finish",
                             control_id=None,
                             value="page",
-                            explanation="Pass rendered search results to extraction and filters.",
-                            evidence="Search transitioned; records or an empty result appeared.",
+                            explanation="Capture a source preview; requested stay scope remains unverified."
+                            if preview_only else "Pass returned stay results to extraction and filters.",
+                            evidence="Search transitioned; records appeared, but independently observed dates/occupancy are unverified."
+                            if preview_only else "Search transitioned and the returned scope was independently checked.",
                         )
                         return {"decision": decision.model_dump(), "decision_origin": "runtime"}
                     if observation.get("results", {}).get("busy"):
@@ -1837,6 +2217,8 @@ class BrowserAgent:
                 )
             payload = {
                 "task": redact(self.instructions, getattr(self.tools, "secrets", ())),
+                "requested_output_fields": list(self.output_fields),
+                "collection_goal_required": self.collection_goal_required,
                 "reference_date": self.task.reference_date.isoformat(),
                 "observation": state["observation"],
                 "task_checklist": self.task.snapshot(),
@@ -1987,12 +2369,23 @@ class BrowserAgent:
             if observation_refresh:
                 entry["requested_action"] = "pause"
                 entry["continuation"] = "observation_refresh"
+            declaration_stage = "collection_goal"
             try:
+                information_notes = self.task.declare_collection_goal(
+                    decision.collection_goal, state["observation"]
+                )
+                if information_notes:
+                    entry["information_need_notes"] = information_notes[:3]
+                declaration_stage = "form_requirements"
                 self.task.declare(decision.requirements, state["observation"])
             except WebsiteError as exc:
                 self.requirement_rejections += 1
                 self.history.append(
-                    {**entry, "status": "requirement_rejected", "guidance": str(exc)}
+                    {**entry, "status": "requirement_rejected", "guidance": str(exc),
+                     "declaration_stage": declaration_stage,
+                     "information_need_fields": [item.field for item in
+                         decision.collection_goal.information_needs][:16]
+                     if decision.collection_goal else []}
                 )
                 if self.requirement_rejections >= 3:
                     self.publish(
@@ -2005,9 +2398,19 @@ class BrowserAgent:
                 return {"status": "running"}
             self.requirement_rejections = 0
             self.task.observe(state["observation"])
+            if (
+                decision.action == "capture"
+                and self.task.collection_mode == "linked_details"
+                and decision.value in {"", "page"}
+                and not any(page.get("source_kind") == "index" for page in self.tools.pages)
+            ):
+                # The first retained source is the actual current index, not a
+                # fabricated detail page. This also reclassifies an already
+                # retained page without another capture/network/model call.
+                decision = decision.model_copy(update={"value": "index"})
             if decision.action == "fill" and entry["decision_origin"] == "runtime":
                 previous = self.tools.references.get(decision.control_id, (None, None, {}))[2]
-                fresh = self.timed("observe", self.tools.observe)
+                fresh = self.observe_browser()
                 self.guard()
                 latest = self.tools.references.get(decision.control_id, (None, None, {}))[2]
                 self.task.observe(fresh)
@@ -2028,6 +2431,7 @@ class BrowserAgent:
                             "name",
                             "label",
                             "form_scope",
+                            "widget_scope",
                             "value",
                             "readonly",
                             "enabled",
@@ -2044,8 +2448,16 @@ class BrowserAgent:
                     )
                     return {"status": "running"}
                 state = {**state, "observation": fresh}
+            if (
+                decision.action == "finish" and decision.value == "retained_sources"
+                and entry["decision_origin"] == "runtime" and self.tools.pages
+            ):
+                self.report["collection_outcome"] = "partial_information"
+                self.history.append({**entry, "status": "source_limit_partial_handoff"})
+                self.publish("ready", "Partial retained sources are ready. " + self.task.partial_reason)
+                return {"status": "ready"}
             if decision.action == "finish" and entry["decision_origin"] == "runtime":
-                fresh = self.timed("observe", self.tools.observe)
+                fresh = self.observe_browser()
                 self.guard()
                 self.task.observe(fresh)
                 if (
@@ -2074,7 +2486,15 @@ class BrowserAgent:
                     raise WebsiteError(
                         "The agent reported readiness without visible evidence. Review the page."
                     )
-                problem = self.task.completion_problem()
+                self.task.note_sources(self.tools.pages)
+                problem = (
+                    "Declare collection_goal with a quote from the user's request on your "
+                    "next action. Choose the depth needed for the requested fields; no "
+                    "separate planning call or human input is needed."
+                    if self.collection_goal_required and not self.task.collection_goal
+                    else self.task.completion_problem()
+                    or self.task.collection_problem(state["observation"]["url"], decision.value)
+                )
                 if problem:
                     self.finish_rejections += 1
                     self.history.append(
@@ -2086,17 +2506,111 @@ class BrowserAgent:
                     self.publish("verifying", problem)
                     return {"status": "running"}
                 self.tools.collection_context = self.task.capture_context(state["observation"])
+                preview_only = self.task.source_preview_ready()
+                if preview_only:
+                    self.report["collection_outcome"] = "stay_scope_unverified"
+                empty_search = bool(
+                    self.task.submission
+                    and self.task.submission.get("result_state") == "empty"
+                    and state["observation"].get("results", {}).get("no_results")
+                    and not state["observation"].get("results", {}).get("busy")
+                    and not self.task.completion_problem()
+                    and not preview_only
+                )
+                if empty_search:
+                    self.report["collection_outcome"] = "empty_results"
+                    main_text = state["observation"].get("frames", [{}])[0].get("text", "")
+                    if len(main_text.strip()) < 80:
+                        self.history.append({**entry, "status": "verified_empty_search_results"})
+                        self.publish(
+                            "ready",
+                            "Search completed with an observed empty result. "
+                            "No source records are claimed and no extraction is needed.",
+                        )
+                        return {"status": "ready"}
                 self.publish(
                     "acting", "Capturing rendered source content; extraction and filtering follow."
                 )
-                self.timed(
-                    "capture",
-                    self.tools.capture,
-                    decision.value if decision.value in {"detail", "page"} else "page",
-                )
-                self.history.append({**entry, "status": "source_collection_ready"})
+                try:
+                    self.timed(
+                        "capture",
+                        self.tools.capture,
+                        decision.value if decision.value in {"detail", "page"} else "page",
+                    )
+                except (WebsiteError, PlaywrightError) as exc:
+                    return self.capture_failed(exc, entry)
+                # Capture preparation may expose a result heading that was not
+                # ready at the pre-capture observation. Keep the final report
+                # consistent with that same-document captured source evidence.
+                context = getattr(self.tools, "collection_context", None) or {}
+                if (
+                    self.task.submission
+                    and context.get("result_document_id") == self.task.submission["result_document_id"]
+                ):
+                    scope = context.get("result_scope") or {}
+                    if (
+                        scope.get("source") == "returned_page"
+                        and scope.get("document_id") == context["result_document_id"]
+                    ):
+                        self.task.result_scope = copy.deepcopy(scope)
+                        self.task.submission["result_scope"] = copy.deepcopy(scope)
+                preview_only = self.task.source_preview_ready()
+                if not preview_only and self.report.get("collection_outcome") == "stay_scope_unverified":
+                    self.report.pop("collection_outcome")
+                self.task.note_sources(self.tools.pages)
+                missing_information = self.task.information_coverage()["detail_needed_fields"]
+                if missing_information and not self.task.partial_reason:
+                    can_enrich = (
+                        "linked_details" in self.task.collection_scope["allowed_modes"]
+                        and len(self.tools.pages) < MAX_PAGES
+                        and self.calls < self.max_calls
+                        and self.remaining() > 0
+                        and not preview_only
+                    )
+                    if can_enrich:
+                        self.task.collection_mode = "linked_details"
+                        for field in missing_information:
+                            self.task.information_needs[field]["status"] = "needs_detail"
+                        if self.task.collection_goal:
+                            self.task.collection_goal["mode"] = "linked_details"
+                        if not any(page.get("source_kind") == "index" for page in self.tools.pages):
+                            # Reclassify this retained source, not another fetch.
+                            self.timed("capture", self.tools.capture, "index")
+                        self.task.note_sources(self.tools.pages)
+                        self.history.append({
+                            **entry, "status": "source_retained_information_incomplete",
+                            "missing_fields": missing_information,
+                        })
+                        self.publish(
+                            "verifying", "Starting content retained. Requested information is "
+                            "still missing: " + ", ".join(missing_information)
+                            + ". Continue through relevant same-site detail links, not a new search.",
+                        )
+                        return {"status": "running"}
+                    self.task.partial_reason = (
+                        "Captured sources lack requested information: "
+                        + ", ".join(missing_information)
+                        + ". Current-page restrictions, source limits or unverified search scope "
+                        "prevented further collection."
+                    )[:220]
+                if not self.task.partial_reason:
+                    unavailable = [
+                        field for field in self.task.information_coverage()["missing_fields"]
+                        if self.task.information_needs[field]["status"] == "unavailable"
+                    ]
+                    if unavailable:
+                        self.task.partial_reason = (
+                            "Requested information is not in the captured sources: "
+                            + ", ".join(unavailable)
+                        )[:220]
+                if self.task.partial_reason:
+                    self.report["collection_outcome"] = "partial_information"
+                self.history.append({**entry, "status": "unverified_stay_source_preview"
+                    if preview_only else "source_collection_ready"})
                 self.publish(
-                    "ready", "Source collection ready. Extraction and source validation come next."
+                    "ready", "Source preview captured. Requested stay/pricing scope is unverified; only source-backed preview values may be shown."
+                    if preview_only else "Partial source collection ready. " + self.task.partial_reason
+                    if self.task.partial_reason else "Source collection ready. Extraction and source validation come next."
                 )
                 return {"status": "ready"}
             facts = self.tools.references.get(decision.control_id, (None, None, {}))[2]
@@ -2135,7 +2649,13 @@ class BrowserAgent:
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
+            submitting = False
+            submission_started = False
+            browser_operation = "observe"
             try:
+                scope_problem = self.task.scope_problem(decision, facts)
+                if scope_problem:
+                    raise WebsiteError(scope_problem)
                 if self.task.pending_submission and decision.action not in {
                     "wait",
                     "scroll",
@@ -2146,6 +2666,10 @@ class BrowserAgent:
                         "do not navigate away, change fields or submit again."
                     )
                 submitting = self.task.is_submit(decision, facts)
+                entry["submission_semantics"] = {
+                    "is_actual_submit": submitting,
+                    "model_purpose_ignored": decision.purpose == "submit_search" and not submitting,
+                }
                 before_submit = state["observation"]
                 if submitting:
                     if self.task.pending_submission:
@@ -2155,7 +2679,7 @@ class BrowserAgent:
                         )
                     # Re-check the whole form after inference. The user/site may
                     # change other fields while the Search button stays identical.
-                    fresh = self.timed("observe", self.tools.observe)
+                    fresh = self.observe_browser()
                     latest = self.tools.references.get(decision.control_id, (None, None, {}))[2]
                     if fresh.get("document_id") != state["observation"].get("document_id") or any(
                         latest.get(key) != facts.get(key)
@@ -2169,6 +2693,7 @@ class BrowserAgent:
                             "text",
                             "href",
                             "form_scope",
+                            "widget_scope",
                         )
                     ):
                         raise WebsiteError(
@@ -2293,15 +2818,65 @@ class BrowserAgent:
                     )
                     self.publish("paused", guidance)
                     return {"status": "paused"}
+                if decision.action == "fill":
+                    same_value = isinstance(facts.get("value"), str) and (
+                        facts["value"] == decision.value
+                    )
+                    committed_destination = any(
+                        check["field"] == "destination"
+                        and check.get("status") == "verified"
+                        and check.get("control_id") == decision.control_id
+                        and " ".join(str(check["expected"]).casefold().split())
+                        == " ".join(decision.value.casefold().split())
+                        for check in self.task.checks
+                    )
+                    if same_value or committed_destination:
+                        # Even a same-text fill can erase a combobox's committed
+                        # selection. Do not invalidate proof for an action not run.
+                        self.unsubmitted_transition_watch = None
+                        note = (
+                            "Destination is already verified; its selected canonical label "
+                            "was preserved. Continue with the remaining fields."
+                            if committed_destination
+                            else "The field already contains this value. No fill ran; "
+                            "inspect/select its owned suggestion or continue other fields."
+                        )
+                        self.history.append({
+                            **entry, "status": "fill_skipped", "expected": decision.value,
+                            "observed": facts.get("value"), "guidance": note,
+                        })
+                        self.publish("verifying", note)
+                        return {"status": "running"}
                 self.task.before_action(facts, decision, state["observation"])
-                if submitting and entry["decision_origin"] == "runtime":
+                if submitting:
+                    submission_started = self.task.begin_submission(
+                        before_submit,
+                        entry["source_url"],
+                        control=facts,
+                        action=decision.action,
+                        decision_origin=entry["decision_origin"],
+                    )
+                    if not submission_started:
+                        raise WebsiteError("Search could not start from the current verified form.")
+                    # Both runtime and model dispatches consume the one actual
+                    # Search attempt; an exception is never permission to click again.
                     self.local_submission_attempts.add(
                         (
                             before_submit.get("document_id", before_submit.get("url")),
                             facts.get("form_scope"),
                         )
                     )
+                    browser_operation = "submit_action"
+                    self.publish(
+                        "acting", "Attempting the verified Search once; its response is unconfirmed."
+                    )
                 outcome = self.timed("action", self.tools.execute, decision)
+                if submitting and self.task.pending_submission:
+                    self.task.pending_submission["dispatch_status"] = (
+                        "action_completed"
+                        if outcome.get("status") in {"action_performed", "value_verified"}
+                        else "outcome_unknown"
+                    )
                 if (
                     decision.action == "fill"
                     and facts.get("selection_required")
@@ -2321,7 +2896,7 @@ class BrowserAgent:
                             if item.get("id") in option_ids
                         ),
                     }
-                if (
+                if not submitting and (
                     decision.purpose == "set_field"
                     or decision.action in {"fill", "select", "check"}
                     or facts.get("counter")
@@ -2330,14 +2905,29 @@ class BrowserAgent:
                     self.task.pending_submission = None
                 self.task.remember_action(facts, outcome, decision, state["observation"])
                 if submitting and outcome["status"] in {"action_performed", "value_verified"}:
-                    after = self.timed("observe", self.tools.observe)
+                    browser_operation = "post_submit_observe"
+                    after = self.observe_browser(browser_operation)
                     wait = getattr(self.tools, "wait_for_results", None)
-                    if wait and self.task.collection_mode == "listing_results":
+                    if wait and (
+                        self.task.collection_mode in {"listing_results", "search_results"}
+                        or self.task.collection_mode == "linked_details"
+                        and (self.collection_goal_required or self.task.collection_goal)
+                    ):
                         self.publish("verifying", "Waiting briefly for rendered search results.")
-                        after = self.timed(
-                            "observe", wait, after, max_seconds=max(0, min(5, self.remaining()))
+                        browser_operation = "result_wait"
+                        after = self.observe_browser(
+                            browser_operation,
+                            max_seconds=5,
+                            callback=lambda remaining: wait(after, max_seconds=remaining),
                         )
-                    observed = self.task.submitted(before_submit, after, entry["source_url"])
+                    if any(f.get("password_or_code_visible") for f in after.get("frames", [])):
+                        guidance = "Finish sign-in/MFA in this browser, then resume the agent."
+                        self.history.append(
+                            {**entry, "status": "submission_unconfirmed", "guidance": guidance}
+                        )
+                        self.publish("paused", guidance)
+                        return {"status": "paused"}
+                    observed = self.task.confirm_pending_submission(after)
                     outcome = {
                         **outcome,
                         "status": "search_transition_observed"
@@ -2346,19 +2936,80 @@ class BrowserAgent:
                         "note": "Observed a search page transition; listing availability "
                         "and record values still require source review."
                         if observed
-                        else "Search produced no observed page change. Do not finish; "
-                        "inspect the page before another action.",
+                        else "Search was attempted; its response is still unconfirmed. "
+                        "Wait or inspect the page; do not submit again.",
                     }
             except WebsiteError as exc:
+                if decision.action == "capture":
+                    return self.capture_failed(exc, entry)
+                if submission_started:
+                    if browser_operation == "submit_action" and self.task.pending_submission:
+                        self.task.pending_submission["dispatch_status"] = "not_dispatched"
+                        guidance = (
+                            "Search was not dispatched. Review the stale/disabled control "
+                            "or start a fresh session; no automatic retry."
+                        )
+                    else:
+                        guidance = str(exc)
+                    self.history.append(
+                        {**entry, "status": "submission_unconfirmed", "guidance": guidance}
+                    )
+                    self.publish("paused", guidance)
+                    return {"status": "paused"}
                 outcome = {"status": "not_completed", "guidance": str(exc)}
-            except PlaywrightError:
+            except PlaywrightError as exc:
+                if decision.action == "capture":
+                    return self.capture_failed(None, entry)
+                if (
+                    browser_operation == "submit_action"
+                    or not self.browser_diagnostics
+                    or self.browser_diagnostics["recovered"]
+                ):
+                    self.browser_diagnostics = browser_error_diagnostics(exc, browser_operation)
+                if submission_started:
+                    if self.task.pending_submission and browser_operation == "submit_action":
+                        self.task.pending_submission["dispatch_status"] = "outcome_unknown"
+                    guidance = (
+                        "Search was attempted, but its dispatch/response could not be confirmed. "
+                        "Inspect the browser, then resume for a passive re-check; "
+                        "Search will not be repeated automatically."
+                    )
+                    self.history.append(
+                        {
+                            **entry,
+                            "status": "submission_unconfirmed",
+                            "guidance": guidance,
+                            "browser_diagnostics": copy.deepcopy(self.browser_diagnostics),
+                        }
+                    )
+                    self.failure = {
+                        "code": "browser_timeout"
+                        if isinstance(exc, PlaywrightTimeout)
+                        else "browser_error",
+                        "stage": browser_operation,
+                        "call": self.calls,
+                        "no_action_from_failed_decision": False,
+                        "browser_diagnostics": copy.deepcopy(self.browser_diagnostics),
+                    }
+                    self.publish("paused", guidance)
+                    return {"status": "paused"}
                 # Do not leak provider/page/credential exception text or retry a click blindly.
                 outcome = {
                     "status": "outcome_unknown",
                     "guidance": "Browser action did not confirm completion. "
                     "Inspect before choosing another action.",
                 }
-            self.history.append({**entry, **redact(outcome, getattr(self.tools, "secrets", ()))})
+            self.history.append(
+                {
+                    **entry,
+                    **redact(outcome, getattr(self.tools, "secrets", ())),
+                    **(
+                        {"browser_diagnostics": copy.deepcopy(self.browser_diagnostics)}
+                        if submitting and self.browser_diagnostics
+                        else {}
+                    ),
+                }
+            )
             self.pending_effect = (copy.deepcopy(state["observation"]), len(self.history) - 1)
             self.publish(
                 "verifying",
@@ -2382,6 +3033,31 @@ class BrowserAgent:
                     {"status": "running"}, config={"recursion_limit": self.max_calls * 3 + 15}
                 )
         except Exception as exc:
+            budget_exhausted = isinstance(exc, WebsiteError) and str(exc).startswith((
+                "Browser agent time limit reached.", "Browser agent model-call limit reached."
+            ))
+            safe_retained_handoff = (
+                self.phase == "decide" and self.last_observation
+                and not any(frame.get("password_or_code_visible") for frame in self.last_observation.get("frames", []))
+                and not self.task.completion_problem()
+                and not getattr(self.tools, "user_pause", lambda: False)()
+            )
+            if budget_exhausted and safe_retained_handoff:
+                try:
+                    self.tools.guard()
+                except (WebsiteError, PlaywrightError):
+                    safe_retained_handoff = False
+            if budget_exhausted and self.tools.pages and not self.task.pending_submission and safe_retained_handoff:
+                self.task.partial_reason = (
+                    str(exc) + " Requested information may be incomplete; retained sources only."
+                )[:220]
+                self.report["collection_outcome"] = "partial_information"
+                self.failure = None
+                self.publish(
+                    "ready", "Source collection stopped at its existing budget. "
+                    "Partial captured sources will be extracted for review; no more navigation calls.",
+                )
+                return copy.deepcopy(self.report)
             if isinstance(exc, DecisionFailure):
                 code, detail = exc.code, str(exc)
             elif isinstance(exc, APIError):
@@ -2396,6 +3072,8 @@ class BrowserAgent:
                     "do not assume a previous click failed or repeat it blindly. "
                     "No automatic retry."
                 )
+                if not self.browser_diagnostics or self.browser_diagnostics["recovered"]:
+                    self.browser_diagnostics = browser_error_diagnostics(exc, "observe")
             elif isinstance(exc, WebsiteError):
                 code, detail = "task_paused", str(exc)
             else:
@@ -2405,6 +3083,11 @@ class BrowserAgent:
                 "stage": self.phase,
                 "call": self.calls,
                 "no_action_from_failed_decision": self.phase == "decide",
+                **(
+                    {"browser_diagnostics": copy.deepcopy(self.browser_diagnostics)}
+                    if isinstance(exc, PlaywrightError) and self.browser_diagnostics
+                    else {}
+                ),
             }
             self.publish("paused", detail)
         finally:

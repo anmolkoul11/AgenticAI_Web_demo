@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-10-12.2";
+const UI_VERSION = "2026-10-17.1";
 let instanceId = null, connectionBlocked = false;
 const connectionPanel = document.createElement("section");
 connectionPanel.className = "notice"; connectionPanel.hidden = true; connectionPanel.setAttribute("role", "alert");

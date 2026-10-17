@@ -1,5 +1,200 @@
 # Progress
 
+## Connection recovery and categorized source details - 2026-10-17, verification pending
+
+OpenAI authentication/access failures now explain checking an active, complete
+key, re-pasting it under API connection, replacing an expired/revoked/invalid key,
+and starting a fresh browser workflow after saving. A 401 does not establish
+expiry specifically; active-key account/project/IP restrictions remain possible.
+Connection-save guidance explains that paused agents retain the old connection.
+No key inspection, automatic connectivity check or retry was added.
+
+The latest user1 Element record's six supplemental quotes were correctly bound
+to the hotel; combined amenities evidence had failed source validation, while
+expanded title/review representations remained visible as additional text.
+Additional source details now have generic categories, preserve literal wording
+and qualifiers, and keep URLs/block references under View source. Exact mapped
+titles with a new-window suffix are suppressed in this drawer only. Location
+subscores and richer review descriptors remain separate from the overall rating.
+Missing output fields and saved historical exports are not silently filled or
+rewritten; unknown wording has a fallback category. UI/backend `2026-10-17.1`;
+agent prompt, extraction/price rules and paid budgets unchanged. Regression
+fixtures authored, not run; no tests, validators, imports/startup, browser or API
+calls. See [SOURCE_DETAILS_AND_CONNECTION_RECOVERY.md](SOURCE_DETAILS_AND_CONNECTION_RECOVERY.md).
+
+## Captured returned-stay handoff - verification pending
+
+User1 run `2bdc45cf` successfully searched/extracted, but kept destination unknown
+despite a captured New York results H1. That stale scope blocked every combined
+nightly comparison. Capture now refreshes independent returned-page fields once,
+then reconciles strict same-document page-level result headings with literal
+block evidence. Mismatches/contradictions and missing values remain blocking;
+original prices are never selected. Agent/report scope stays consistent with the
+captured source, and diagnostic wording no longer equates unknown room scope with
+ambiguous price labels. UI/backend `2026-10-16.4`, agent v20.4; pricing contract
+v2 and model budgets unchanged. Fixtures authored, not run; no tests, validators,
+imports/startup, live browser or API calls. See
+[CAPTURED_STAY_HANDOFF_FIX.md](CAPTURED_STAY_HANDOFF_FIX.md).
+
+## Committed destination read-back loop - 2026-10-16, verification pending
+
+The supplied user1 trace repeatedly selected New York, then rejected the site's
+qualified location label and overwrote it with the short requested city. Search
+was never attempted despite valid decisions. Observation now preserves complete
+visible primary suggestion wording; committed option/read-back evidence survives
+unrelated form-index changes. Redundant fills cannot erase verified selection,
+and compact context respects explicit selection guidance. Exact ownership,
+read-back, ambiguity and submission checks remain. UI/backend `2026-10-16.3`,
+agent v20.3; no new paid calls or retry budgets. Fixtures authored, not run; no
+tests, validators, imports/startup, browser or API calls. See
+[DESTINATION_COMMITMENT_FIX.md](DESTINATION_COMMITMENT_FIX.md).
+
+## Grouped source-aware result presentation - 2026-10-16, verification pending
+
+Cards/full preview now group source-appropriate fields and distinguish current,
+nightly, total and original prices. Equivalent price observations merge only in
+the display; raw facts and selected comparisons stay unchanged. Missing fields
+are expandable, with separately labelled record-bound captured wording where
+available. The generic layout retains unfamiliar fields rather than assuming a
+hotel/news schema. Historical runs receive a read-only view from retained source
+blocks; original exports/proposals are not rewritten. UI/backend `2026-10-16.2`;
+no new model calls or pricing-rule changes. Fixtures authored, not run; no tests,
+validators, imports/startup, browser or API calls. See
+[GROUPED_RESULT_PRESENTATION.md](GROUPED_RESULT_PRESENTATION.md).
+
+## Multiple displayed-price relationships - 2026-10-16, verification pending
+
+The next user1 capture retained nightly/current/original amounts, but flattened
+labels and omitted strike status blocked every nightly comparison. Collector v6
+retains bounded literal amount relationships, extractor v15 requests distinct price
+roles, and pricing v2 selects an independently supported current nightly amount
+without discarding other observed quotes or inventing a fee explanation. Preview
+and flat exports retain all price observations; workflow guidance names actual
+blockers. Save rechecks the same evidence. UI/backend `2026-10-16.1`; browser agent
+remains v20.2. Tests were authored, not run; no app/browser/model calls were made.
+See [MULTI_PRICE_EVIDENCE.md](MULTI_PRICE_EVIDENCE.md).
+
+## Capture and numeric evidence integrity - 2026-10-15, verification pending
+
+The latest user1 run reached results, but a text-typed price schema caused 17
+comma-formatted amounts to be cleared; eight other amounts were absent from the
+retained capture, including West Side YMCA whose price the user confirmed live.
+This checkpoint reconciles
+numeric dependencies, retains literal number evidence, captures rendered record
+values more completely, and separates known currency/returned scope from amount
+verification. Fresh results headings can verify the returned city without using
+pre-submit proof. No fixed hotel schema or extra model calls were added. UI/backend
+`2026-10-15.3`, agent v20.2, extractor v14 and collector v5. Regression fixtures were
+authored, not run; no application/browser startup or API calls were performed.
+See [CAPTURE_INTEGRITY_FIX.md](CAPTURE_INTEGRITY_FIX.md) for limitations and manual checks.
+
+## Keep source browser open for verification - 2026-10-15, verification pending
+
+All successful managed-browser capture paths now hand one copied snapshot to the
+extraction worker while the original browser remains on its owning thread for
+manual verification. A separate Close browser action does not cancel extraction
+or saving. The compact verification panel survives Results/Save/job selection;
+manual browsing never updates captured data. Logout, session expiry, native window
+closure and server shutdown clean up retained browser resources. Original network
+mode and collection/model limits remain unchanged. Frontend/backend versions are
+`2026-10-15.2`; browser-agent version remains `browser-agent-v20.1`. Regression
+fixtures were authored but not run. No tests, static validators, imports, app or
+browser startup, or model calls ran. See [BROWSER_VERIFICATION.md](BROWSER_VERIFICATION.md).
+
+## Optional collection-metadata rejection fix - 2026-10-15, verification pending
+
+The new Booking trace submitted Search but rejected capture, and NYTimes rejected
+all capture/finish actions before retaining any page. Optional inferred information
+fields were incorrectly treated as hard browser prerequisites. Agent v20.1 ignores
+unsupported optional hints with bounded diagnostics, preserves the valid core goal,
+and commits declaration changes atomically. Real form values, request scope, source
+checks and budgets remain enforced. Existing post-search capture can now proceed
+without corrective model calls for optional metadata. Frontend/backend versions
+are `2026-10-15.1`. No tests, static validators, application startup, browsers or
+model calls ran. See [COLLECTION_METADATA_FIX.md](COLLECTION_METADATA_FIX.md).
+
+## Dynamic fields and needs-driven collection - 2026-10-14, verification pending
+
+The user1 audit found missing values at several stages: homepage-only news
+collection, forced empty news columns, fused numeric labels, nested bed-list
+ownership and article-only checks applied to hotel descriptions. Extractor v13
+infers source-appropriate fields inside the existing call; explicit fields and
+rule dependencies remain, while entirely empty inferred columns are omitted by
+local projection. Preview/save/export share the resulting contract. Collector v4
+retains coherent records, rendered text boundaries and separate live-update groups.
+Agent v20 carries requested information needs in its existing decisions and follows
+record links only when needed and permitted. Existing budgets remain unchanged.
+
+This checkpoint incorporates the previously staged pricing correction below.
+Both UI versions are `2026-10-14.3`. New tests were authored, not executed; no tests,
+static validation, application imports/startup, browser or model calls ran. See
+[DYNAMIC_FIELDS_GUIDE.md](DYNAMIC_FIELDS_GUIDE.md) for manual scenarios and commands.
+
+## Returned stay and combined-nightly pricing - 2026-10-14, verification pending
+
+The inspected user1 run filled and submitted the hotel search but saved city
+catalogue prices for one night/two adults rather than the requested stay. Revision
+v19 separates returned stay scope from pre-submit proof. Extractor v12 preserves
+displayed prices and approximate preferences; shared application checks compare
+only source-bound pricing, label combined/per-room/average bases and disclose taxes.
+Unknown or mismatched pricing remains a read-only preview. Save rechecks source
+inputs; historical exports are not rewritten. Collector v3 retains a selected
+currency label as explicit evidence. Both UI versions are `2026-10-14.2`.
+
+Regression fixtures were authored but not executed. No tests, static validation,
+application imports/startup, browsers or API calls ran. Model/account configuration
+and paid-call budgets are unchanged. See [PRICING_SCOPE_FIX.md](PRICING_SCOPE_FIX.md)
+for user-run verification and pricing semantics.
+
+## Search observation recovery - 2026-10-14, verification pending
+
+The latest user1 Booking trace verified all five form fields and attempted the real
+Search button, then paused on a browser observation error. No source capture or
+extraction ran. Search bookkeeping was recorded after the first post-click read,
+so that error left the checklist incorrectly reporting no attempt. The precise
+browser exception was not retained; the subsequent ten-minute expiry was secondary.
+
+Revision v18.1 retains attempted-but-unconfirmed submission before risky dispatch,
+uses bounded passive recovery for recognized transient navigation observations,
+and reports safe operation/error/recovery diagnostics. It never repeats Search or
+a model decision during recovery and keeps existing consent, budgets, sign-in,
+source validation and review-before-save. Frontend/backend UI versions are both
+`2026-10-14.1`. No tests, static validation commands, browsers or API calls ran for
+this checkpoint. See [SEARCH_HANDOFF_FIX.md](SEARCH_HANDOFF_FIX.md) for user-run
+scenarios and optional regression commands.
+
+## Search submission and source integrity - 2026-10-13, verification pending
+
+The latest two user1 website jobs confirmed three shared faults: widget Done was
+misclassified as Search; long evidence links and heading-first capture exhausted
+the source budget before prices; ordinary headline requests wandered into site
+search. Revision v18 uses actual submission semantics and starting-page-first
+collection scope. Collector v2 balances coherent record bundles, preserves bounded
+record identifiers, and prioritizes opened detail bodies. Source validation repairs
+only uniquely bound URLs. Extractor v11 independently checks explicit price/rating
+bounds and units/basis; unresolved criteria remain read-only source previews, not
+matched/saved records. Capture failures pause with specific diagnostics, and a
+confirmed empty search skips extraction. No new paid routing call or model change.
+
+Frontend/backend versions are both `2026-10-13.2`. Static checks only; tests, token
+comparisons and live hotel/news acceptance remain with the user. See
+[SOURCE_WORKFLOW_FIXES.md](SOURCE_WORKFLOW_FIXES.md) for commands and scenarios.
+
+## Single-run Website Studio workflow - 2026-10-13, verification pending
+
+The user confirmed the v1.1 fixes worked and created `backend_update_v1.2`.
+This checkpoint connects the existing browser-agent-to-extraction chain to one
+initial Run workflow action. Manual search/link/current-page tools are retained
+under Advanced, rather than invoked in sequence. Requested sign-in/MFA waits for
+the user; agent pauses keep the same budgets. Final preview approval is retained
+before saving. Generic collection intent is carried by the existing model decision
+instead of an additional paid router. The configured model, compact navigation
+context and full-source extraction separation remain unchanged.
+
+Frontend and backend UI versions advance together to `2026-10-13.1` and the
+agent prompt reports v17. Static verification only; tests and live comparisons
+remain with the user. See [UNIFIED_WORKFLOW_GUIDE.md](UNIFIED_WORKFLOW_GUIDE.md).
+
 ## Native submit visibility regression - 2026-10-13, rerun pending
 
 User verification reported 382 passes and one failure: the smaller form context

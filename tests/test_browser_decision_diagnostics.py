@@ -397,6 +397,14 @@ def test_api_errors_do_not_leak_provider_body_or_retry(
     assert model.last_decision["http_status"] == status
     assert "fixture-only-key" not in str(failure.value)
     assert "private-body" not in json.dumps(model.last_decision)
+    if expected == "authentication":
+        guidance = str(failure.value)
+        assert "API connection" in guidance and "re-paste the complete key" in guidance
+        assert "active" in guidance and "expired, revoked or invalid" in guidance
+        assert "another active OpenAI API key" in guidance
+        assert "start a fresh workflow" in guidance and "Resume retains the old connection" in guidance
+        assert "permissions and IP restrictions" in guidance
+        assert "No action ran from this decision; no automatic retry" in guidance
 
 
 @pytest.mark.parametrize(
