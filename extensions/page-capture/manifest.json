@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Agentic Studio Page Capture",
-  "version": "0.3.2",
-  "description": "Review one page and hand it to your signed-in local Agentic Studio.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "name": "Agentic Studio Browser Companion",
+  "version": "0.4.4",
+  "description": "Run a reviewed information-retrieval workflow in your selected tab with your local Agentic Studio.",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel"],
+  "host_permissions": ["http://localhost:8120/*", "http://127.0.0.1:8120/*"],
+  "background": {"service_worker": "worker.js"},
+  "side_panel": {"default_path": "sidepanel.html"},
   "action": {"default_popup": "popup.html"}
 }

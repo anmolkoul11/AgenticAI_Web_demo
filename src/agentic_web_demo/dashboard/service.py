@@ -174,6 +174,7 @@ class DashboardService:
                         for key in (
                             "job_id",
                             "kind",
+                            "source",
                             "framework",
                             "status",
                             "created_at",
@@ -185,7 +186,7 @@ class DashboardService:
                 continue
         return jobs
 
-    def submit(self, kind, framework, operation, plan_id=None):
+    def submit(self, kind, framework, operation, plan_id=None, *, source=None):
         with self.lock:
             if self.busy or not self.gate.acquire(blocking=False):
                 raise RuntimeError("Another job is active")
@@ -199,6 +200,8 @@ class DashboardService:
                 stages=[],
                 plan_id=plan_id,
             )
+            if source is not None:
+                job["source"] = source
             try:
                 self.write(job)
                 self.pool.submit(self.work, job, operation)

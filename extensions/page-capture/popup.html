@@ -1,12 +1,21 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Agentic Studio Capture</title>
 <link rel="stylesheet" href="popup.css"><script src="capture_dom.js" defer></script><script src="popup.js" defer></script></head>
-<body><h1>Capture this page</h1><p id="status" role="status">Checking the selected tab...</p>
+<body><h1>Browser companion</h1><button id="open-agent">Use this tab with agent</button><p id="status" role="status">Checking the selected tab...</p>
 <button id="capture" hidden>Capture visible content</button>
 <pre id="preview" tabindex="0"></pre>
 <label id="consent-label" hidden><input id="consent" type="checkbox">I reviewed this content and am authorized to transfer it. It contains no secrets.</label>
 <button id="keep" hidden>Keep this capture for transfer</button>
+<section id="handoff" hidden aria-labelledby="handoff-title">
+<h2 id="handoff-title">Send your snapshot</h2>
+<p id="pending-status" role="status"></p>
+<label id="dashboard-choice-label" hidden>Dashboard account
+<select id="dashboard-choice" aria-label="Dashboard account"></select></label>
+<p id="dashboard-account"></p>
+<button id="find-dashboard" hidden>Check dashboard tabs again</button>
+<button id="open-dashboard" hidden>Open dashboard to send</button>
+</section>
 <button id="send" hidden>Send to displayed dashboard account</button>
 <button id="clear">Discard capture</button>
-<p>Content stays in extension session memory for up to 10 minutes (expiry checked on use). No background collection or model calls. Review sensitive information before transfer. Then switch to your dashboard tab and click this extension again.</p>
+<p>Snapshots stay in extension session memory for up to 10 minutes (expiry checked on use). Keeping a snapshot does not send it. Review the displayed dashboard account, confirm transfer, then click Send. Extraction is a separate dashboard action; no model call is made here.</p>
 </body></html>

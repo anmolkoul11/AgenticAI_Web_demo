@@ -1,8 +1,10 @@
 "use strict";
 let webSelected = null, webTimer = null, webProposal = null, webRevision = null;
 let webCapture = null, receivingCapture = false;
+let webSubmitting = false;
 let webPollEpoch = 0;
 const webForm = $("web-form");
+webForm.dataset.busy = "false";
 webForm.closest(".card").classList.add("custom-form-card");
 $("web-status").closest(".card").classList.add("custom-review-card");
 const sourceChoices = document.createElement("div");
@@ -10,10 +12,8 @@ sourceChoices.className = "source-choices";
 sourceChoices.setAttribute("role", "group");
 sourceChoices.setAttribute("aria-label", "Choose how to collect information");
 const sourceOptions = [
-  {value: "browser", number: "01", title: "Open a website", note: "Interactive pages, searches and sign-in"},
-  {value: "capture", number: "02", title: "Use my browser", note: "Capture an open Chrome or Edge tab"},
-  {value: "public", number: "03", title: "Read public pages", note: "Up to three HTML pages without a browser"},
-  {value: "paste", number: "04", title: "Paste content", note: "Use source text you already have"},
+  {value: "browser", number: "01", title: "Open a new browser", note: "Automated workflow in a separate session"},
+  {value: "extension", number: "02", title: "Use my current tab", note: "Automated workflow through Browser Companion"},
 ];
 for (const option of sourceOptions) {
   const button = document.createElement("button");
@@ -32,6 +32,7 @@ for (const option of sourceOptions) {
   sourceChoices.append(button);
 }
 const sourceSelectors = $("web-framework").closest(".form-grid");
+const sourceAlternatives = $("web-source-alternatives");
 sourceSelectors.before(sourceChoices);
 const sourceGuide = document.createElement("p");
 sourceGuide.className = "source-guide";
@@ -176,6 +177,10 @@ $("web-urls").closest("label").after(requestLabel);
 const primaryInputs = document.createElement("div"); primaryInputs.className = "source-primary-grid";
 $("web-urls").closest("label").before(primaryInputs);
 primaryInputs.append($("web-urls").closest("label"), requestLabel);
+// Both existing-tab paths use this one address input. The extension determines
+// the actual selected/captured tab; typing an address never starts automation.
+primaryInputs.after($("web-existing-tab-setup"), $("web-extension-preview"));
+primaryInputs.after($("web-url-help"));
 // Keep required permissions visible; optional configuration is folded away.
 const normalPermission = $("web-normal-confirm-label");
 normalPermission.lastChild.textContent = "I allow unrestricted browser networking and will supervise this session. Third-party scripts, redirects, frames, WebSockets, popups, service workers and downloads may send data to third parties or local network services.";
@@ -213,24 +218,33 @@ $("web-status").after(previewResultsButton);
 function updateSourceChoice() {
   const selected = $("web-source").value;
   const automatic = automaticWorkflowSelected();
+  const extension = selected === "extension";
+  sourceAlternatives.open = !["browser", "extension"].includes(selected);
+  webForm.classList.toggle("extension-agent-mode", extension);
+  $("web-extension-agent-help").hidden = !extension;
+  $("web-create").hidden = extension;
+  $("web-browser-start-note").hidden = selected !== "browser";
   for (const button of sourceChoices.querySelectorAll("button")) {
     button.setAttribute("aria-pressed", String(button.dataset.source === selected));
   }
   $("web-create").textContent = selected === "browser" ?
     automatic ? "Run workflow" : "Open website for manual collection" : "Create a preview";
+  updateSourceInputs();
   $("web-workflow-options").hidden = !automatic;
   $("web-workflow-options").disabled = !automatic;
   $("web-manual-mode-label").hidden = selected !== "browser";
   $("web-manual-mode").disabled = selected !== "browser" || $("web-framework").value !== "langgraph";
   $("web-request").required = automatic;
   $("web-request-optional").textContent = automatic ? "Required for automation" : "Optional";
-  $("web-consent-text").textContent = automatic ?
+  $("web-consent-text").textContent = selected === "capture" ?
+    "I approve paid extraction of this received snapshot. No browser navigation or agent actions will run. I will review results before saving." : automatic ?
     "I approve up to 30 paid agent decisions (5 active minutes), followed by paid extraction of up to 6 captured pages. No reservation or payment. I will review results before saving." :
     "I approve reading the supplied content and a paid extraction call. Manual search navigation, link discovery or browser-agent actions require separate approval.";
   const guidance = {
     browser: automatic ? "Your request guides search, navigation and collection in one run. Preview first; save after review." :
       "Open the website, then choose an action under Advanced tools. CrewAI supports this manual collection path.",
-    capture: "Send the reviewed page from Chrome or Edge using the extension.",
+    capture: "Extract this page only: send a reviewed snapshot from Browser Companion, then extract it here. No form filling, search or navigation.",
+    extension: "Use the same automated workflow in your existing tab. Start in the Browser Companion side panel; review and save here.",
     public: "Read up to three public HTML pages from one website.",
     paste: "Paste authorized content and its original page address.",
   };
@@ -240,6 +254,48 @@ function updateSourceChoice() {
       " Normal networking." : " Restricted networking.";
   }
   if (!webSelected) renderWorkflow();
+}
+function updateSourceInputs() {
+  const source = $("web-source").value;
+  const extension = source === "extension", snapshot = source === "capture";
+  const captured = snapshot && !!webCapture;
+  const website = $("web-urls");
+  website.required = !extension;
+  // Only a received snapshot has an immutable source address. Before receipt,
+  // this same box is the editable website opener, not an empty locked field.
+  website.readOnly = captured;
+  if (captured) website.value = webCapture.url;
+  website.placeholder = source === "public" ? "https://example.org/page - one URL per line" : "https://example.org/";
+  $("web-url-label-text").textContent = captured ? "Captured page address (read-only)" :
+    extension ? "Website to open (optional)" : source === "public" ? "Website addresses" :
+    source === "paste" ? "Original source address" : "Website address";
+  $("web-url-help").textContent = captured ?
+    "This address belongs to the received snapshot. Discard the capture to choose another website; editing a URL would not capture new content." :
+    extension ? "Already on the website? Switch to that tab and open Browser Companion to start the workflow. Otherwise enter one HTTPS address and open it below." :
+    snapshot ? "Enter one HTTPS address to open, or use an existing website tab. This option does not fill forms or navigate automatically." :
+    source === "public" ? "Up to three explicit HTTPS pages on the same website. No automatic pagination." :
+    source === "paste" ? "Use the page address that belongs to the text you paste below." :
+    "One HTTPS starting website. The dashboard opens a separate automated browser for this option.";
+  requestLabel.hidden = extension;
+  $("web-existing-tab-setup").hidden = !(extension || snapshot);
+  $("web-open-normal-browser").hidden = captured;
+  $("web-tab-next-step").textContent = extension ?
+    "Next: on the website tab, open Browser Companion → Use this tab with agent. Enter the task and start the workflow there; opening a tab alone does not run the agent." :
+    captured ? "Capture received. Review its text, enter any instructions and approve extraction below." :
+    "Next: on the website tab, open Browser Companion, capture the current page and send it to this signed-in dashboard. No paid call runs until you approve extraction here.";
+  $("web-extension-preview").hidden = !snapshot;
+  $("web-capture-state").textContent = captured ?
+    "Capture received. Review the source text and links, then approve extraction. Only this snapshot will be processed; no paid call has run yet." :
+    "Waiting for a page capture. Opening a website is not a capture. Use Browser Companion on its tab, review the page text and send it here.";
+  $("web-discard-capture").disabled = !webCapture;
+  $("web-create").disabled = webSubmitting || extension || snapshot && !webCapture;
+  if (snapshot) $("web-create").textContent = captured ? "Extract received snapshot · paid API" : "Waiting for page capture";
+  $("web-create-help").hidden = !snapshot;
+  $("web-create-help").textContent = webSubmitting ?
+    "Another workflow is active. Finish or cancel it before extracting a new snapshot." : captured ?
+    "Ready to extract this snapshot. Review the two permission checkboxes above, then choose Extract received snapshot. No live browser actions will run." :
+    "Extraction unlocks after Browser Companion confirms Send to displayed dashboard account. Keeping a capture or opening a website alone does not send it.";
+  $("web-show-capture-steps").hidden = !snapshot || captured;
 }
 function automaticWorkflowSelected() {
   return $("web-source").value === "browser" && $("web-framework").value === "langgraph" &&
@@ -324,8 +380,8 @@ function renderWorkflow(job = null, browser = null) {
     return [item.slice(0, position), item.slice(position + 1)];
   }));
   const captured = result.captured_pages || proposal.captured_pages || [];
-  const browserSource = proposal.source ? proposal.source === "browser" :
-    (browser?.state && browser.state !== "closed") || $("web-source").value === "browser";
+  const browserSource = job?.source === "extension" || (proposal.source ? ["browser", "extension"].includes(proposal.source) :
+    (browser?.state && browser.state !== "closed") || $("web-source").value === "browser");
   const hasExtraction = started.has("extract_content") || trace.has("extract_content");
   const hasReview = started.has("review_content") || trace.has("review_content");
   const inspectFailed = trace.get("inspect_website") === "failed";
@@ -376,7 +432,7 @@ function renderWorkflow(job = null, browser = null) {
     if (activity.stage === "capture" && browserSource) states.browse = "done";
   }
   const evidence = {
-    setup: job ? `Source accepted. ${proposal.source || $("web-source").value} method selected.` :
+    setup: job ? `Source accepted. ${proposal.source || job.source || $("web-source").value} method selected.` :
       "No run started yet. Choose a source and describe your request.",
     browse: execution ? "Source inspection happened in the approved proposal. Open that job in history for its evidence." :
       browser?.guidance || (browserSource ?
@@ -1161,41 +1217,81 @@ function clearWebCapture() {
   webCapture = null;
   $("web-capture-preview").textContent = "No extension capture received.";
   $("web-consent").checked = false;
+  updateSourceInputs();
 }
 window.addEventListener("message", async event => {
   if (event.source !== window || event.origin !== location.origin ||
       event.data?.type !== "agentic-capture-ready-v1" ||
       typeof event.data.capture_id !== "string" ||
-      !/^[a-f0-9-]{36}$/.test(event.data.capture_id) || !signedIn || connectionBlocked) return;
-  if (receivingCapture || $("web-create").disabled) {
-    webText("web-status", "Another operation is active. Send the capture again after it finishes."); return;
+      !/^[a-f0-9-]{36}$/.test(event.data.capture_id)) return;
+  const transferId = event.data.transfer_id;
+  if (transferId !== undefined && (typeof transferId !== "string" ||
+      !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(transferId))) return;
+  const acknowledge = (ok, reason) => {
+    if (!transferId) return; // Older snapshot popups did not request a receipt.
+    window.postMessage({type: "agentic-capture-received-v1", transfer_id: transferId,
+      capture_id: event.data.capture_id, ok, ...(reason ? {reason} : {})}, location.origin);
+  };
+  if (!signedIn || connectionBlocked) { acknowledge(false, "dashboard_not_ready"); return; }
+  if (receivingCapture || webSubmitting) {
+    webText("web-status", "Another operation is active. Finish it before transferring a snapshot.");
+    acknowledge(false, "dashboard_busy"); return;
   }
   receivingCapture = true;
   try {
+    // Another dashboard tab may have changed the cookie/CSRF session since the
+    // last heartbeat. Check before consuming this single-use inbox capture.
+    if (typeof checkConnection === "function") await checkConnection();
+    if (!signedIn || connectionBlocked) { acknowledge(false, "dashboard_not_ready"); return; }
     const capture = await api(`/api/custom/captures/${event.data.capture_id}/claim`, {});
-    if (!signedIn || connectionBlocked) return;
+    if (!signedIn || connectionBlocked) { acknowledge(false, "dashboard_not_ready"); return; }
     webCapture = capture;
     document.querySelector('[data-view="custom"]').click();
     $("web-source").value = "capture"; $("web-source").onchange();
+    setStudioStep("source");
     $("web-urls").value = capture.url;
     $("web-capture-preview").textContent = JSON.stringify(capture, null, 2);
+    // Recompute the snapshot-only CTA after rendering. Receipt never starts a
+    // paid call, and must not inherit the automated-browser workflow controls.
+    updateSourceInputs();
     webText("web-status", "Browser capture received. Review its text below, enter optional instructions, and explicitly consent to extraction. No model call has run.");
-  } catch (error) { webText("web-status", error.message); }
+    acknowledge(true);
+  } catch (error) { webText("web-status", error.message); acknowledge(false, "capture_claim_failed"); }
   finally { receivingCapture = false; }
 });
+window.addEventListener("message", async event => {
+  if (event.source !== window || event.origin !== location.origin ||
+      event.data?.type !== "agentic-extension-review-v1" ||
+      typeof event.data.job_id !== "string" ||
+      !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(event.data.job_id) ||
+      !signedIn || connectionBlocked) return;
+  try {
+    // The endpoint verifies this account owns the job. Opening never saves it.
+    await api(`/api/jobs/${event.data.job_id}`);
+    document.querySelector('[data-view="custom"]').click();
+    await customSelect(event.data.job_id);
+  } catch (error) { webText("web-status", error.message); }
+});
 $("web-discard-capture").onclick = clearWebCapture;
+$("web-show-capture-steps").onclick = () => {
+  $("web-capture-steps").open = true;
+  $("web-capture-steps").querySelector("summary").focus({preventScroll: true});
+};
 $("web-open-normal-browser").onclick = () => {
-  const entered = $("web-open-url").value.trim() || $("web-urls").value.trim();
+  const entered = $("web-urls").value.trim();
   let website;
   try {
     website = new URL(entered);
     if (website.protocol !== "https:" || website.username || website.password) throw new Error();
   } catch (_) {
-    webText("web-status", "Enter one full HTTPS website address without embedded credentials, such as https://www.nytimes.com/.");
+    $("web-tab-next-step").textContent = "Enter one full HTTPS website address in the Website address box above, without embedded credentials, such as https://www.booking.com/.";
+    $("web-urls").focus({preventScroll: true});
     return;
   }
   window.open(website.href, "_blank", "noopener,noreferrer");
-  webText("web-status", "The website was sent to a new tab in this browser. Sign in and navigate there, then use the Page Capture extension to send the page back. If no tab appeared, check your browser's pop-up setting.");
+  $("web-tab-next-step").textContent = $("web-source").value === "extension" ?
+    "Website opened in this browser. On that tab, open Browser Companion → Use this tab with agent, enter your task and choose Start workflow. If no tab appeared, check the browser's pop-up setting." :
+    "Website opened in this browser. On that tab, open Browser Companion, capture the page and send the reviewed snapshot here. Then this dashboard's extraction button becomes available. If no tab appeared, check the browser's pop-up setting.";
 };
 function canApproveWeb() {
   return webProposal && $("web-approved").checked &&
@@ -1386,7 +1482,9 @@ retryLinkDiscovery.onclick = () => {
 };
 function webText(id, value) { stableText(document.getElementById(id), value); }
 function webBusy(busy) {
-  $("web-create").disabled = busy;
+  webSubmitting = busy;
+  webForm.dataset.busy = String(busy);
+  updateSourceInputs();
   $("web-execute").disabled = busy || !canApproveWeb();
 }
 $("web-source").onchange = () => {
@@ -1394,8 +1492,6 @@ $("web-source").onchange = () => {
   updateSourceChoice();
   const paste = $("web-source").value === "paste";
   const browser = $("web-source").value === "browser";
-  $("web-extension-preview").hidden = $("web-source").value !== "capture";
-  $("web-urls").readOnly = $("web-source").value === "capture";
   loginChoice.hidden = !browser;
   loginChoice.disabled = !browser;
   $("web-browser-mode-options").hidden = !browser;
@@ -1470,6 +1566,10 @@ $("web-approved").onchange = () => { $("web-execute").disabled = !canApproveWeb(
 $("web-partial-approved").onchange = $("web-approved").onchange;
 $("web-form").onsubmit = async event => {
   event.preventDefault();
+  if ($("web-source").value === "extension") {
+    webText("web-status", "Open the Browser Companion extension on your website tab and start from its side panel. This form does not start a current-tab workflow.");
+    return;
+  }
   if (!modelConfigured) { webText("web-status", "Configure your API key under API connection first."); return; }
   const field = $("web-rule-field").value.trim();
   if (field && !$("web-rule-value").value.trim()) { webText("web-status", "Provide a value for the optional business rule."); return; }
@@ -2019,7 +2119,11 @@ async function customPoll(id, epoch = webPollEpoch) {
     const job = await api(`/api/jobs/${id}`);
     if (webSelected !== id || epoch !== webPollEpoch) return;
     // Commit one coherent frame, never a browser-less intermediate render.
-    const browser = !terminal(job.status) ? await api(`/api/custom/jobs/${id}/browser`) : null;
+    const extension = job.source === "extension";
+    const browser = terminal(job.status) ? null : extension ? {
+      state: job.browser_agent_diagnostics?.status === "paused" ? "agent_paused" : "agent_running",
+      guidance: "Use the extension side panel to inspect the current action, pause, resume or cancel.",
+    } : await api(`/api/custom/jobs/${id}/browser`);
     if (webSelected !== id || epoch !== webPollEpoch) return;
     const result = job.result || {};
     previewQuality = result.proposal || result;
@@ -2046,6 +2150,13 @@ async function customPoll(id, epoch = webPollEpoch) {
     });
     webBusy(!terminal(job.status));
     if (!terminal(job.status)) {
+      if (extension) {
+        $("web-browser-controls").hidden = true;
+        if (!(job.stages || []).some(item => item.stage === "extract_content")) {
+          webText("web-status", `${browser.state === "agent_paused" ? "Paused" : "Working"} in your connected browser tab. Use the extension side panel to inspect actions, pause, resume or cancel. Extraction and review continue here after collection.`);
+        }
+        webTimer = setTimeout(() => customPoll(id, epoch), 1000); return;
+      }
       $("web-browser-controls").hidden = browser.state === "closed" || !!browser.inspection?.active;
       webText("web-browser-status", browser.guidance);
       renderBrowserOptions(browser);

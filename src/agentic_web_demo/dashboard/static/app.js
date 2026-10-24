@@ -1,6 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-10-17.1";
+const UI_VERSION = "2026-10-20.1";
+document.documentElement.dataset.agenticUiVersion = UI_VERSION;
+document.documentElement.dataset.agenticConnection = "loading";
 let instanceId = null, connectionBlocked = false;
 const connectionPanel = document.createElement("section");
 connectionPanel.className = "notice"; connectionPanel.hidden = true; connectionPanel.setAttribute("role", "alert");
@@ -12,6 +14,7 @@ document.querySelector("main").prepend(connectionPanel);
 function connectionWarning(text) {
   if (typeof clearWebCapture === "function") clearWebCapture();
   connectionBlocked = true; clearTimeout(timer);
+  document.documentElement.dataset.agenticConnection = "blocked";
   connectionText.textContent = text; connectionPanel.hidden = false;
   $("api-key").value = ""; $("password").value = ""; $("register-password").value = "";
   $("web-login-password").value = ""; $("web-login-user").value = "";
@@ -29,6 +32,10 @@ async function checkConnection() {
       connectionWarning("The server restarted. Refresh and sign in again, then re-enter your session API key if needed. Check job history before retrying any work.");
     } else if (signedIn && !session.authenticated) {
       connectionWarning("Your session expired. Refresh and sign in again. Your saved account and jobs are unchanged; re-enter your API key if needed.");
+    } else if (signedIn && csrf && session.csrf !== csrf) {
+      connectionWarning("Your dashboard sign-in changed in another tab. Refresh this dashboard before transferring content or starting work.");
+    } else if (signedIn && currentUsername && session.username !== currentUsername) {
+      connectionWarning("The dashboard account changed in another tab. Refresh and review the signed-in account before continuing.");
     } else if (connectionBlocked) {
       connectionText.textContent = "The server is reachable again. Refresh to reconnect, then check job history before retrying. No work was automatically resubmitted.";
     }
@@ -38,7 +45,7 @@ async function checkConnection() {
   }
 }
 let csrf = "", selected = null, timer = null, records = [], decisions = [], signedIn = false, currentJob = null;
-let activeView = "custom", isAdmin = false, modelConfigured = false, recordsLoaded = false;
+let activeView = "custom", isAdmin = false, modelConfigured = false, recordsLoaded = false, currentUsername = null;
 const statusLabels = {queued: "Queued", running: "Running", awaiting_review: "Review needed", completed: "Completed", needs_input: "Needs information", unsupported: "Unsupported request", policy_rejected: "Outside search policy", failed: "Failed", interrupted: "Interrupted"};
 const stageLabels = {plan_request: "Interpret request", validate_plan: "Validate search", extract: "Sign in & extract", save: "Save records", export: "Export results", evaluate: "Evaluate rules", publish: "Publish events", receive: "Receive events", verify: "Verify receipts"};
 function setBadge(element, text, tone = "neutral") { element.textContent = text; element.dataset.tone = tone; }
@@ -76,6 +83,7 @@ function futureDate(days) {
 }
 const labels = {check_in: "Check-in date", check_out: "Check-out date", city: "City", min_price: "Minimum nightly price", max_price: "Maximum nightly price", min_rating: "Minimum rating", currency: "Currency", rating_scale: "Rating scale", price_basis: "Price basis"};
 function authPage() {
+  document.documentElement.dataset.agenticConnection = connectionBlocked ? "blocked" : signedIn ? "ready" : "signed_out";
   $("auth-shell").hidden = signedIn;
   const registration = location.hash === "#register";
   $("login-panel").hidden = signedIn || registration;
@@ -150,6 +158,7 @@ async function workspace() {
   signedIn = true; authPage();
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   const cfg = await api("/api/config");
+  currentUsername = cfg.username;
   isAdmin = cfg.role === "admin"; modelConfigured = cfg.model_configured;
   $("admin-nav").hidden = !isAdmin;
   $("account-label").hidden = false; $("account-label").textContent = cfg.username;

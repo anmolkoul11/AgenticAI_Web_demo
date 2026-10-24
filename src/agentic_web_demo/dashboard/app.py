@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import secrets
 import socket
 import threading
@@ -28,10 +29,11 @@ from agentic_web_demo.dashboard.accounts import Accounts
 from agentic_web_demo.dashboard.credential_store import CredentialUnavailable
 from agentic_web_demo.dashboard.service import Approval, PlanInput
 from agentic_web_demo.exports import CONTENT_TYPES, ExportError, build_export
+from agentic_web_demo.extension_channel import ExtensionRuns
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-10-17.1"
+UI_VERSION = "2026-10-20.1"
 
 
 class CustomApproval(BaseModel):
@@ -86,6 +88,7 @@ def create_app(settings=None, service=None):
             while True:
                 await asyncio.sleep(30)
                 accounts.prune()
+                extension_runs.prune()
                 with capture_lock:
                     for key, item in list(captures.items()):
                         if item[0] < time.monotonic() or accounts.get(item[1]) is None:
@@ -98,6 +101,7 @@ def create_app(settings=None, service=None):
             reaper.cancel()
             with suppress(asyncio.CancelledError):
                 await reaper
+            extension_runs.close()
             accounts.close()
 
     app = FastAPI(
@@ -120,6 +124,8 @@ def create_app(settings=None, service=None):
     export_gate = threading.BoundedSemaphore(2)
     captures = {}
     capture_lock = threading.Lock()
+    extension_runs = ExtensionRuns(instance_id)
+    app.state.extension_runs = extension_runs
 
     def active(request):
         return accounts.get(request.session.get("sid"))
@@ -168,7 +174,9 @@ def create_app(settings=None, service=None):
         if request.method == "POST":
             body = bytearray()
             limit = (
-                320000
+                400000
+                if re.fullmatch(r"/api/extension/runs/[a-f0-9]{32}/result", request.url.path)
+                else 320000
                 if request.url.path in {"/api/custom/plans", "/api/custom/captures"}
                 else 16000
             )
@@ -194,6 +202,13 @@ def create_app(settings=None, service=None):
         current = active(request)
         if current is None or accounts.profile(current.user_id)["role"] != "admin":
             raise HTTPException(403, "Administrator access required.")
+
+    from agentic_web_demo.extension_api import register_extension_routes
+
+    register_extension_routes(
+        app, manager=extension_runs, accounts=accounts, active=active,
+        user_service=user_service, guard=guard,
+    )
 
     @app.exception_handler(CredentialUnavailable)
     async def credential_unavailable(request, exc):
@@ -445,6 +460,8 @@ def create_app(settings=None, service=None):
 
     @app.post("/api/custom/plans", dependencies=[Depends(guard)], status_code=202)
     def custom_plan(request: Request, values: WebsiteInput):
+        if values.source == "extension":
+            raise HTTPException(400, "Start current-tab automation from the connected extension side panel.")
         current = active(request)
         if current is None:
             raise HTTPException(401, "Sign in again.")

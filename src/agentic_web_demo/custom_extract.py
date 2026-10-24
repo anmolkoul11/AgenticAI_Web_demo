@@ -140,7 +140,7 @@ class BrowserLogin(Strict):
 
 class WebsiteInput(Strict):
     framework: Literal["langgraph", "crewai"] = "langgraph"
-    source: Literal["browser", "public", "paste", "capture"] = "public"
+    source: Literal["browser", "public", "paste", "capture", "extension"] = "public"
     workflow_mode: Literal["manual", "automatic"] = "manual"
     agent_confirmed: bool = False
     agent_visual_confirmed: bool = False
@@ -166,7 +166,7 @@ class WebsiteInput(Strict):
     @model_validator(mode="after")
     def validate_source(self):
         if self.workflow_mode == "automatic":
-            if self.source != "browser" or self.framework != "langgraph":
+            if self.source not in {"browser", "extension"} or self.framework != "langgraph":
                 raise ValueError("Automatic workflow requires a LangGraph browser source")
             if not self.instructions.strip():
                 raise ValueError("Add a complete task before running the automatic workflow")
@@ -187,6 +187,12 @@ class WebsiteInput(Strict):
                 raise ValueError("Capture requires its original source URL and no pasted text")
         elif self.capture is not None:
             raise ValueError("Do not mix captured and other sources")
+        if self.source == "extension" and (
+            len(self.urls) != 1 or not self.urls[0].startswith("https://")
+            or self.page_text or self.workflow_mode != "automatic"
+            or self.agent_visual_confirmed
+        ):
+            raise ValueError("Extension source requires one HTTPS tab and a DOM-only automatic task")
         if self.source == "browser":
             if len(self.urls) != 1 or not self.urls[0].startswith("https://") or self.page_text:
                 raise ValueError("Browser source requires one HTTPS URL and no pasted text")

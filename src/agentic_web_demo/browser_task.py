@@ -1030,6 +1030,14 @@ class TaskLedger:
                     }
         if action != "click" or outcome.get("status") != "action_performed":
             return
+        calendar = outcome.get("calendar")
+        if isinstance(calendar, dict) and calendar.get("status") not in {
+            "selected", "already_selected"
+        }:
+            # A changed calendar is not necessarily a selected date. Keep the
+            # year only after explicit selection read-back; this is still not
+            # verification of the requested form summary or result availability.
+            return
         text = " ".join(str(facts.get(k, "")) for k in ("date", "label", "text"))
         try:
             dates = requested_dates(text)
@@ -1083,13 +1091,19 @@ class TaskLedger:
             # pending attempt must survive temporary/default loading fields.
             self.checks = [self.verify(item, observation) for item in self.requirements.values()]
         self.visible_date_choices = []
+        date_groups = {}
         pending_dates = {
             item["expected"]: item["field"]
             for item in self.checks
             if item["field"] in {"check_in", "check_out"} and item["status"] != "verified"
         }
-        for control in controls(observation):
-            if control.get("tag") in {"INPUT", "SELECT", "TEXTAREA"}:
+        for index, control in enumerate(controls(observation)):
+            owner = control.get("date_owner_id")
+            if control.get("tag") in {"INPUT", "SELECT", "TEXTAREA"} and not (
+                isinstance(owner, str) and owner
+                and control.get("tag") == "INPUT"
+                and control.get("type") in {"checkbox", "radio", "button"}
+            ):
                 continue
             if control.get("enabled", True) is False:
                 continue
@@ -1100,14 +1114,30 @@ class TaskLedger:
             except WebsiteError:
                 continue
             if len(dates) == 1 and dates[0] in pending_dates:
-                self.visible_date_choices.append(
-                    {
-                        "field": pending_dates[dates[0]],
-                        "date": dates[0],
-                        "control_id": control.get("id"),
-                        "label": control.get("label", ""),
-                    }
+                choice = {
+                    "field": pending_dates[dates[0]],
+                    "date": dates[0],
+                    "control_id": control.get("id"),
+                    "label": control.get("label", ""),
+                }
+                # Only an observed gridcell ancestor proves these controls
+                # belong to the same day. Do not merge equal dates in separate
+                # widgets, frames, or older observations without ownership.
+                key = (
+                    (str(control.get("id", "")).partition(":")[0], owner, dates[0])
+                    if isinstance(owner, str) and owner else ("unowned", index)
                 )
+                priority = (
+                    0 if control.get("tag") in {"BUTTON", "INPUT"}
+                    else 1 if control.get("role") in {"button", "checkbox", "radio"} else 2
+                )
+                date_groups.setdefault(key, []).append((priority, index, choice))
+        canonical = []
+        for group in date_groups.values():
+            best = min(item[0] for item in group)
+            # Equally actionable choices remain ambiguous, never guessed.
+            canonical.extend(item for item in group if item[0] == best)
+        self.visible_date_choices = [item[2] for item in sorted(canonical, key=lambda item: item[1])]
         if self.submission and self.submission["result_document_id"] == document:
             results = observation.get("results", {})
             if not results.get("busy") and results.get("no_results"):
