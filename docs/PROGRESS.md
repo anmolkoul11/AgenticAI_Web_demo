@@ -1,5 +1,107 @@
 # Progress
 
+## Current-tab lifecycle, counter preflight and source UX - 2026-10-20, verification pending
+
+Two primary workflow choices now distinguish **Open a new browser** from **Use my
+current tab**. Snapshot/public/paste collection moved to Advanced collection options;
+snapshot is explicitly **Extract this page only**, with no navigation implied.
+The shared agent/extraction/review/save pipeline and internal source values remain.
+
+Explicit Start/Resume activates the bound website tab/window; actual page visibility
+and focus are retained as safe diagnostics, not trusted-input claims. Counter
+preflight now compares exact keys/typed values independent of JSON property order,
+focuses/rechecks the verified actuator, and reports a structural rejection reason
+without clicking stale controls. The supplied run proves preflight rejection, but
+not which individual fact changed; the new evidence distinguishes those cases.
+
+Lifecycle work preserves a healthy bound website/dashboard across sequential tasks,
+restores panel polling after hiding, and guards late replies from older runs.
+Unknown Start/Resume delivery is reconciled through read-only status, never a paid
+request replay. Session/account/CSRF/server checks and paid budgets are unchanged.
+An expired/revoked session still requires explicit reconnection.
+
+Extension `0.4.4`, UI/backend `2026-10-20.1`. Focused regressions and manual acceptance
+scenarios authored; no tests, validators, application/browser startup or paid model
+calls executed. Live acceptance remains for the user.
+
+## Current-tab calendar selection and snapshot readiness - 2026-10-19, verification pending
+
+The selected-tab adapter still uses the shared agent, task ledger, extraction and
+review pipeline; it does not claim Playwright-equivalent native input. Calendar
+observations now retain the actual day-cell ownership link. Requested-date choices
+prefer a uniquely actionable child only within that cell, preserving independent
+calendars and ambiguous ties. Extension date clicks dispatch once, then wait briefly
+for selection/change read-back. A changed widget alone does not establish a selected
+date or supply full-year evidence. Final form/result checks remain required.
+
+Snapshot mode's gray extraction button was waiting for received capture data by
+design, not starting an agent. Added an accessible waiting/busy/ready explanation,
+an enabled **Show snapshot transfer steps** action, explicit extraction-only consent,
+and readiness refresh after receipt. Separate-browser startup text is hidden for
+current-tab modes. A snapshot cannot fill forms; **Agent in my tab** is that path.
+
+Extension `0.4.3`, matching UI/backend `2026-10-19.3`. Focused calendar and snapshot
+regression fixtures were authored, not executed. No tests, validators, application
+or browser startup, live websites or paid model calls were run. User verification
+is still required; no live end-to-end success is claimed.
+
+## Extension reconnect and snapshot receipt - 2026-10-19, verification pending
+
+Fixed the stale-connection recovery path: an old paused run no longer prevents
+explicit reconnect, and session/CSRF/account/backend/UI failures are distinguished
+instead of all being labelled session_changed. Loaded dashboard readiness is
+checked as well as backend authentication. Reconnect never restarts a paid run or
+replays a command, and fresh-binding ownership protects against late old replies.
+Same-session stale-run cleanup uses a newly validated relay; changed sessions do
+not acquire old-run control. Backend auth, same-origin and CSRF checks remain.
+
+Snapshot Keep now shows a visible receiving-account review and explicit Send in
+the same popup. Multiple dashboards require selection. Success requires a
+correlated receipt after the dashboard claims and renders its Source preview,
+not merely a POST or message dispatch. Kept content survives popup reopen;
+uncertain sends are preserved without automatic replay. Preview receipt is free;
+extraction remains separately approved. UI/backend `2026-10-19.2`, extension
+`0.4.2`. Fixtures authored and historical permission assertions updated, not run;
+no tests, validators, imports/startup, browsers or model calls executed.
+
+## Current-tab interaction and source setup recovery - 2026-10-19, verification pending
+
+The latest extension job `41baf1f2` recorded five valid model decisions and no
+Search attempt; it does not establish an API/key/schema failure. Its saved
+diagnostics lack the DOM needed to prove why destination suggestions stalled.
+Confirmed executor gaps are corrected: editable clicks explicitly focus the
+field, synthetic input/change events cross open shadow roots, and detached
+fields cannot falsely report a verified value. Versioned executor caching avoids
+retaining old injected code after update. No trusted-input, selector, model,
+loop, paid-budget or automatic-retry expansion was added.
+
+The dashboard now presents one website address for existing-tab paths. A snapshot
+locks its exact source only after receipt; discard restores editing. Snapshot-only
+capture and current-tab agent startup have distinct labels and next-step guidance.
+Value-free autocomplete focus/association/count diagnostics are visible in the
+side panel and persisted for investigation, not added to model context. UI/backend
+`2026-10-19.1`, extension `0.4.1`. Regression fixtures authored, not run; no tests,
+validators, imports/startup, browsers or model calls executed. See
+[EXTENSION_BROWSER_AGENT.md](EXTENSION_BROWSER_AGENT.md).
+
+## Agent in an existing browser tab - 2026-10-18, verification pending
+
+Added a separate Chrome/Edge extension side-panel path, leaving Playwright and
+one-page capture intact. A selected-tab DOM adapter reuses the existing LangGraph
+agent, compact navigation context, full source capture, price/source validation,
+preview, reviewed save/export and optional event rules. The local backend keeps
+the API key and model budgets; the signed-in dashboard relays authenticated,
+session/instance-bound commands. No new provider or second planner was added.
+
+The panel offers explicit start, pause/resume, collection, cancel and dashboard
+review. The website tab stays open. Login/MFA/CAPTCHA remain manual; top-frame,
+same-origin DOM automation does not guarantee website acceptance. No screenshots
+or broad site-access permission in this first version. Uncertain delivered actions
+are not automatically replayed. UI/backend version `2026-10-18.1`, extension
+`0.4.0`; regression fixtures authored, not executed. No tests, validators,
+imports/startup, browsers or model calls run. See
+[EXTENSION_BROWSER_AGENT.md](EXTENSION_BROWSER_AGENT.md) for setup and manual checks.
+
 ## Connection recovery and categorized source details - 2026-10-17, verification pending
 
 OpenAI authentication/access failures now explain checking an active, complete

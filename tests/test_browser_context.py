@@ -820,6 +820,30 @@ def test_typed_autocomplete_focus_commits_owned_option_not_refill_or_old_history
     assert "do not refill verified fields" in focus["hint"]
 
 
+def test_value_free_autocomplete_diagnostics_do_not_increase_model_context():
+    values = payload([
+        {"id": "0:field", "tag": "INPUT", "role": "combobox", "type": "text",
+         "name": "destination", "label": "Destination", "value": "New York",
+         "selection_required": True, "expanded": "true", "option_ids": ["0:choice"]},
+        {"id": "0:choice", "tag": "LI", "role": "option", "label": "New York",
+         "option_primary": "New York"},
+    ], requirements=[{
+        "field": "destination", "expected": "New York", "application": "form",
+        "status": "pending", "control_id": "0:field", "next_action": "select_option",
+    }])
+    baseline = build_navigation_context(values)
+    values["observation"]["frames"][0]["autocomplete_diagnostics"] = {
+        "field_count": 1, "visible_listbox_count": 1, "visible_option_count": 1,
+        "owned_option_count": 1,
+        "fields": [{"control_id": "field", "focused": True, "expanded": "true",
+                    "controlled_popup_count": 1, "visible_controlled_popup_count": 1,
+                    "owned_option_count": 1, "association": "explicit_aria"}],
+    }
+    assert build_navigation_context(values) == baseline
+    assert baseline["interaction_focus"]["phase"] == "choose_option"
+    assert baseline["interaction_focus"]["control_ids"] == ["0:choice"]
+
+
 @pytest.mark.parametrize("next_action", ["open_suggestions", "wait_suggestions"])
 def test_qualified_destination_readback_does_not_override_selection_guidance(next_action):
     values = payload(

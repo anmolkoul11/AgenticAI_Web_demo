@@ -1,5 +1,9 @@
 # Capture from your normal Chrome or Edge
 
+For agent-driven navigation in your existing tab, see
+[Use my current tab](EXTENSION_BROWSER_AGENT.md). This guide covers the separate
+manual, single-page capture option; both use Browser Companion version 0.4.4.
+
 Implementation checkpoint: browser/runtime and test-suite validation still pending.
 No assistant-run tests, live sites, browser launches or paid calls were performed.
 
@@ -10,15 +14,19 @@ No assistant-run tests, live sites, browser launches or paid calls were performe
 2. In Chrome open `chrome://extensions`; in Edge open `edge://extensions`.
 3. Enable Developer mode, choose **Load unpacked**, and select
    `D:\Projects\AgenticAI_Web_demo\extensions\page-capture`.
-4. Pin **Agentic Studio Page Capture** to the toolbar. Install only this reviewed local
+4. Pin **Agentic Studio Browser Companion** to the toolbar. Install only this reviewed local
    extension; no web-store publication is included in this checkpoint.
 
 ## Use it
 
-1. Open **Website Studio -> Use my browser** in the same Chrome or Edge where you installed
+1. Open **Website Studio → Advanced collection options → Extract this page only**
+   in the same Chrome or Edge where you installed
    the extension. Enter the HTTPS address and select **Open website in this browser**.
    This opens a normal tab in that browser; the dashboard does not proxy its traffic,
    automate sign-in, or receive website credentials. You can also open the URL yourself.
+   Snapshot extraction cannot start until the page has been captured and received.
+   Use **Show snapshot transfer steps** for setup guidance. For automatic searching and form
+   filling in a current tab, choose **Use my current tab** instead.
 2. In that same browser, open content you are authorized to process. Sign in yourself if
    required. Open the actual article/listings, not an access-denied page. The extension
    does not solve verification, bypass paywalls, or follow links automatically.
@@ -26,17 +34,24 @@ No assistant-run tests, live sites, browser launches or paid calls were performe
    (text, link destinations and source URL). Forms, input values, hidden content and iframes
    are excluded, but visible personal information can remain. Do not transfer secrets.
 4. Check the authorization checkbox and choose **Keep this capture for transfer**.
-5. Switch to your signed-in dashboard tab and open the extension again. Check the displayed
-   destination account and source preview. Confirm, then **Send to displayed dashboard account**.
-6. In **Custom Website**, the source switches to **Capture from my Chrome / Edge** and shows
+5. A **Send your snapshot** section appears in that same popup. Check the receiving
+   dashboard account and address. If several dashboard tabs are open, select the
+   intended account explicitly. Check the new transfer-confirmation checkbox,
+   then **Send to displayed dashboard account**. Keeping alone does not send it.
+   If no signed-in, up-to-date dashboard is available, use **Open dashboard**, sign
+   in/refresh there, then reopen the extension and check dashboard tabs again.
+6. In **Website Studio**, Advanced collection options opens with **Extract this page only** and shows
    the received snapshot. No model call has happened. You can discard it without API cost.
+   The extension reports success only after this Source preview acknowledges receipt.
 7. Choose LangGraph or CrewAI, enter optional instructions, and confirm both permissions.
-   Select **Inspect & preview extraction**. This makes the normal paid model request.
+   Select **Extract received snapshot**. This makes the normal paid model request.
 8. Review source evidence, filters, warnings and rejected fields. Partial results require
    an additional checkbox before **Approve & save snapshot**. Downloads and optional events
    include only accepted records. If none survive, no approvable proposal is created.
-9. After transfer, use **Discard capture** in the extension to remove its temporary copy.
-   It is retained briefly to allow retrying a failed handoff, not silently resent.
+9. A confirmed transfer clears its temporary extension copy. An interrupted or
+   unconfirmed send stays visible but is not automatically sent again. Check the
+   dashboard before recapturing. Closing and reopening the popup preserves a kept
+   snapshot until its expiry; reloading the extension can clear its session storage.
 
 Example instruction: "Extract the visible article headlines and their link URLs. Include
 authors and publication dates only when present; otherwise leave them empty. Do not summarize."
@@ -62,7 +77,8 @@ reuse and model-processing permission. Successful viewing alone is not authoriza
 
 ## Security and retention
 
-The extension requests only activeTab, scripting and storage; no all-sites host permissions,
+The extension requests activeTab, scripting, storage and sidePanel, plus exact
+loopback dashboard host permissions on port 8120; no all-sites host permissions,
 cookies, history, background capture, remote code or API-key access. Capture contents can
 still be sensitive: review before keeping and sending. Captures are held in extension
 session storage, not sync/local disk storage. Ten-minute expiry is checked on use; discard
@@ -73,7 +89,8 @@ session and CSRF protection. The account and session must match what the popup d
 There is no public cross-origin receiver, wildcard CORS permission or persistent pairing token.
 The inbox has 20 slots globally, a ten-minute lifetime, session-bound one-time claims and
 periodic cleanup. Logout/revocation makes old claims inaccessible. A refreshed dashboard
-loses unsent preview data; resend the still-valid extension capture if necessary.
+loses unsaved preview data. Check the extension's transfer status before recapturing;
+an uncertain POST is never automatically repeated.
 
 After submitting extraction, proposals and rejected-field diagnostics persist in the account's
 local job/proposal files, as with existing workflows. Rejected values are never promoted into

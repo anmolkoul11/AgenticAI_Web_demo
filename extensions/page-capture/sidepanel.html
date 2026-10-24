@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agentic Studio · Current tab</title><link rel="stylesheet" href="sidepanel.css"><script src="sidepanel.js" defer></script></head>
+<body>
+  <header><span class="eyebrow">AGENTIC STUDIO</span><h1>Your tab. One workflow.</h1><p>Search and collect in your existing browser session. Review before saving.</p></header>
+  <main>
+    <section class="card" aria-labelledby="connection-title"><h2 id="connection-title">1. Connect your tab</h2><p id="connection">Open the website, finish any sign-in, then connect. Keep one signed-in dashboard tab open at localhost:8120.</p><p id="account" class="muted"></p><div class="buttons"><button id="connect" type="button">Connect website tab</button><button id="disconnect" type="button" class="secondary" hidden>Disconnect</button></div></section>
+    <p id="error" role="alert" hidden></p>
+    <form id="task-form" class="card" aria-labelledby="task-title">
+      <h2 id="task-title">2. Describe your task</h2>
+      <label>What information do you need?<textarea id="instructions" rows="4" maxlength="2000" required placeholder="Find hotels in New York for 4 adults and 2 rooms, October 28–30, 2026. Include listing links and displayed nightly and total prices."></textarea></label>
+      <details><summary>Fields, limits &amp; optional rules</summary><label>Maximum records<input id="limit" type="number" min="1" max="50" value="25" required></label><label>Output fields (optional)<input id="fields" maxlength="650" placeholder="name, url, price, currency, rating"></label><p class="muted">Up to 16 lowercase field names. Leave blank to infer useful fields from the source.</p><div class="rule"><label>Rule field<input id="rule-field" maxlength="40" placeholder="rating"></label><label>Condition<select id="rule-op"><option value="gte">At least</option><option value="lte">At most</option><option value="eq">Equals</option><option value="contains">Contains</option></select></label><label>Value<input id="rule-value" maxlength="200" placeholder="8"></label></div><label class="check"><input id="publish" type="checkbox">Publish an event for approved records matching the rules (requires the local message broker).</label></details>
+      <label class="check consent"><input id="consent" type="checkbox" required>I authorize this tab's content to be sent to my configured model: up to 30 paid decisions (5 active minutes), then paid extraction of up to 6 captured pages. No reservations or payments. I will review before saving.</label>
+      <p class="muted">This version uses page text and controls, not screenshots. Complete login, MFA and CAPTCHA yourself. An extension cannot guarantee a website will accept automation.</p>
+      <button id="start" type="submit" disabled>Start workflow</button>
+    </form>
+    <section id="activity" class="card" aria-labelledby="activity-title" hidden>
+      <div class="activity-heading"><span id="spinner" class="spinner" aria-hidden="true" hidden></span><div><h2 id="activity-title">3. Workflow</h2><p id="state" role="status" aria-live="polite">Idle</p></div></div>
+      <p id="guidance"></p><progress id="calls" max="30" value="0" aria-label="Paid navigation decisions used"></progress><p id="usage" class="muted"></p>
+      <div class="buttons"><button id="pause" type="button" class="secondary">Pause</button><button id="resume" type="button" hidden>Resume agent</button><button id="collect" type="button" class="secondary" hidden>Review collected pages</button><button id="cancel" type="button" class="secondary">Cancel</button></div>
+      <p class="muted">Pause takes effect between actions; an in-flight click or model call may finish. Closing this panel is not cancellation. Your website tab stays open.</p>
+      <details><summary>Recent actions &amp; evidence</summary><ol id="actions"></ol></details>
+      <details><summary>Browser control diagnostics</summary><p class="muted">Tab visibility, focus and popup counts only; no field values. Include this section if a form control stalls.</p><pre id="observation-diagnostics"></pre></details>
+      <button id="review" type="button" class="full">Open review / results in dashboard</button><p class="muted">Check missing fields, prices and source evidence there. Saving and optional event publishing require your approval in the dashboard.</p>
+    </section>
+  </main>
+</body>
+</html>

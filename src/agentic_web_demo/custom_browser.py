@@ -367,6 +367,8 @@ class BrowserControl:
             }
             if report.get("counter_diagnostics"):
                 diagnostics["counter_diagnostics"] = copy.deepcopy(report["counter_diagnostics"])
+            if isinstance(report.get("observation_diagnostics"), dict):
+                diagnostics["observation_diagnostics"] = copy.deepcopy(report["observation_diagnostics"])
             checklist = report.get("task_checklist") or {}
             transition = checklist.get("search_transition") or {}
             if isinstance(transition, dict) and "attempted" in transition:

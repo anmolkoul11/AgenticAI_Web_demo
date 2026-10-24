@@ -305,8 +305,10 @@ def test_extension_permissions_are_narrow_and_dom_capture_matches_browser():
     root = Path(__file__).resolve().parents[1]
     folder = root / "extensions" / "page-capture"
     manifest = json.loads((folder / "manifest.json").read_text())
-    assert set(manifest["permissions"]) == {"activeTab", "scripting", "storage"}
-    assert "host_permissions" not in manifest and "content_scripts" not in manifest
+    assert set(manifest["permissions"]) == {"activeTab", "scripting", "storage", "sidePanel"}
+    assert set(manifest["host_permissions"]) == {"http://localhost:8120/*", "http://127.0.0.1:8120/*"}
+    assert "optional_host_permissions" not in manifest and "content_scripts" not in manifest
+    assert not {"cookies", "history", "debugger", "webRequest", "tabs"} & set(manifest["permissions"])
     assert (folder / "capture_dom.js").read_bytes() == (
         root / "src/agentic_web_demo/dashboard/static/capture_dom.js"
     ).read_bytes()

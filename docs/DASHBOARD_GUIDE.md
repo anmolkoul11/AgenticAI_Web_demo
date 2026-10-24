@@ -1,5 +1,16 @@
 # Demo Dashboard MVP
 
+## Agent in your existing Chrome or Edge tab
+
+The primary choices are **Open a new browser** (Playwright) and **Use my current tab**.
+For the current-tab option, open
+Browser Companion on your website tab, start the task in its side panel, then
+return to this dashboard to review and save. Website login/MFA remain manual;
+the configured model, source checks and saved-results workflow are reused. See
+[EXTENSION_BROWSER_AGENT.md](EXTENSION_BROWSER_AGENT.md) for installation and
+manual acceptance scenarios. **Advanced collection options → Extract this page only**
+keeps the separate one-page snapshot path; it does not search or fill forms.
+
 ## v1.2 single-run workflow
 
 Website Studio's browser path now offers **Run workflow**: initial consent,

@@ -352,10 +352,20 @@ def capture_summary(pages):
     ]
 
 
-def plan(service, values, model_settings, *, session_alive=lambda: True):
+def plan(
+    service, values, model_settings, *, session_alive=lambda: True,
+    extension_reader=None, browser_control=None,
+):
     if model_settings is None:
         raise WebsiteError("Configure your account API key before inspecting a custom website.")
-    control = BrowserControl(session_alive) if values.source == "browser" else None
+    if values.source == "extension":
+        if extension_reader is None or browser_control is None:
+            raise WebsiteError("Start an extension workflow from the connected browser side panel.")
+        control = browser_control
+    else:
+        if extension_reader is not None or browser_control is not None:
+            raise WebsiteError("Extension controls require an extension source.")
+        control = BrowserControl(session_alive) if values.source == "browser" else None
 
     def operation(progress):
         context = {}
@@ -366,7 +376,9 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     service.remember_agent_diagnostics(job_id, diagnostics)
                 )
             context["pages"] = (
-                read_browser(values, control, model_settings)
+                extension_reader(values, control, model_settings)
+                if values.source == "extension"
+                else read_browser(values, control, model_settings)
                 if control
                 else (
                     [values.capture.page()]
@@ -1073,7 +1085,7 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                 "and model settings. No automatic retry; the provider may have incurred usage.",
             }
         finally:
-            if control:
+            if control and values.source != "extension":
                 control.on_agent_diagnostics = None
                 # A retained verification browser has its own owning thread.
                 # Finishing extraction must not close it or hide its Close action.
@@ -1082,6 +1094,8 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
                     forget_browser()
                 elif control.worker_closed.is_set():
                     forget_browser()
+            elif control:
+                control.on_agent_diagnostics = None
 
     def forget_browser():
         with service.lock:
@@ -1090,8 +1104,11 @@ def plan(service, values, model_settings, *, session_alive=lambda: True):
 
     # Hold the same lock used by job startup so the control is registered before the worker runs.
     with service.lock:
-        job_id = service.submit("custom-plan", values.framework, operation)
-        if control:
+        job_id = service.submit(
+            "custom-plan", values.framework, operation,
+            **({"source": "extension"} if values.source == "extension" else {}),
+        )
+        if control and values.source != "extension":
             control.on_closed = forget_browser
             service.browser_controls[job_id] = control
     return job_id
@@ -1420,4 +1437,7 @@ def execute(service, plan_id, approval, *, accept_partial=False):
                 "The approval is consumed; no automatic replay.",
             }
 
-    return service.submit("custom-execute", proposal["framework"], operation, plan_id)
+    return service.submit(
+        "custom-execute", proposal["framework"], operation, plan_id,
+        **({"source": "extension"} if proposal.get("source") == "extension" else {}),
+    )

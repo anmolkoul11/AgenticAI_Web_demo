@@ -663,17 +663,42 @@ AGENT_OBSERVATION = r"""focus => {
      (e.getAttribute('aria-haspopup')||comboOwner(e).getAttribute('aria-haspopup'))==='listbox'||
      controlled(e).some(n=>n.matches('[role="listbox"]')||n.querySelector('[role="option"]'))));
    const listboxes=popupScopes.filter(e=>e.matches('[role="listbox"]'));
-   const optionOwners=new Map(),optionsFor=new Map();
+   const optionOwners=new Map(),optionsFor=new Map(),optionAssociations=new Map();
    for(const field of combos) {
      let boxes=controlled(field);
+     let association=boxes.length?'explicit_aria':'unresolved';
      if(!boxes.length && combos.length===1 && listboxes.length===1 &&
-       (field.getAttribute('aria-expanded')||comboOwner(field).getAttribute('aria-expanded'))==='true')
+       (field.getAttribute('aria-expanded')||comboOwner(field).getAttribute('aria-expanded'))==='true') {
        boxes=listboxes;
+       association='single_expanded_listbox';
+     }
      const options=elements.filter(e=>e!==field&&boxes.some(box=>box.contains(e))&&
        e.matches('[role="option"],button,a[href],[role="button"]'));
      optionsFor.set(field,options);
+     optionAssociations.set(field,association);
      for(const option of options) optionOwners.set(option,field);
    }
+   // Value-free diagnostics distinguish missing/hidden choices from an input
+   // event or association failure. They stay out of compact model context.
+   let activeElement=document.activeElement;
+   while(activeElement?.shadowRoot?.activeElement)
+     activeElement=activeElement.shadowRoot.activeElement;
+   const autocompleteDiagnostics={field_count:combos.length,
+     visible_listbox_count:listboxes.length,
+     visible_option_count:raw.filter(e=>e.getAttribute('role')==='option').length,
+     owned_option_count:optionOwners.size,
+     fields:combos.slice(0,8).map(field=>{
+       const declared=controlled(field);
+       const expanded=field.getAttribute('aria-expanded')||
+         comboOwner(field).getAttribute('aria-expanded')||'';
+       return {control_id:field.getAttribute('data-agentic-loop-id'),
+         focused:field===activeElement,
+         expanded:['true','false'].includes(expanded)?expanded:'',
+         controlled_popup_count:declared.length,
+         visible_controlled_popup_count:declared.filter(visible).length,
+         owned_option_count:(optionsFor.get(field)||[]).length,
+         association:optionAssociations.get(field)};
+     })};
    const optionPrimary=e=>{
      // Accessible names often concatenate a primary label and its subtitle.
      // A rendered row boundary is useful; an arbitrary inline span/bold split
@@ -722,7 +747,9 @@ AGENT_OBSERVATION = r"""focus => {
           e.getAttribute('aria-disabled')!=='true',readonly:!!e.readOnly,
         options:e.tagName==='SELECT'?[...e.options].slice(0,50).map(o=>({value:o.value,
           label:clean(o.textContent),disabled:o.disabled})):[],
-        date:e.getAttribute('data-date')||e.getAttribute('datetime')||''};
+        date:e.getAttribute('data-date')||e.getAttribute('datetime')||'',
+        date_owner_id:elements.includes(e.closest('[role="gridcell"]'))?
+          e.closest('[role="gridcell"]').getAttribute('data-agentic-loop-id'):null};
     });
   const root=document.querySelector('main,[role="main"]')||document.body;
   if(!root) throw new Error('AGENT_DOM_NOT_READY');
@@ -769,6 +796,7 @@ AGENT_OBSERVATION = r"""focus => {
           /\bloading\b/i.test(clean(e.innerText)+' '+label(e)))),
     no_results:emptyResults.test(resultText),price_contexts:priceContexts,headings:resultHeadings};
   return {title:document.title,text:chunks.join(' ').slice(0,12000),controls,
+    autocomplete_diagnostics:autocompleteDiagnostics,
     results,
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
       text:clean(e.innerText).slice(0,800)})),
@@ -804,6 +832,16 @@ class DOMBrowserTools:
         self.user_pause = user_pause
         self.focus = "auto"
         self.navigation_stack = []
+
+    @property
+    def current_url(self):
+        """The current document URL; adapters can supply a non-Playwright tab."""
+        return self.page.url
+
+    @property
+    def current_document_id(self):
+        """Match the identity used by this tool's fresh observation."""
+        return hashlib.sha256(self.page.url.encode()).hexdigest()
 
     def guard(self):
         if self.user_pause():
@@ -852,6 +890,8 @@ class DOMBrowserTools:
                 if item.get("form_scope") is not None:
                     item["form_scope"] = f"{offset}:form:{item['form_scope']}"
                 item["option_ids"] = [f"{offset}:{i}" for i in item.get("option_ids", [])]
+                if item.get("date_owner_id") is not None:
+                    item["date_owner_id"] = f"{offset}:{item['date_owner_id']}"
                 self.references[item["id"]] = (frame, local_id, dict(item))
                 item["href"] = display_url(item["href"]) if item["href"] else ""
             snapshots.append(data)
@@ -1022,7 +1062,7 @@ class DOMBrowserTools:
         if kind not in {"index", "detail", "page"}:
             raise WebsiteError("Capture role must be index, detail or page.")
         previous = next(
-            (p for p in self.pages if display_url(p["url"]) == display_url(self.page.url)), None
+            (p for p in self.pages if display_url(p["url"]) == display_url(self.current_url)), None
         )
         refresh = bool(
             previous
@@ -1046,7 +1086,7 @@ class DOMBrowserTools:
                     index = next((p for p in self.pages if p.get("source_kind") == "index"), None)
                     if index:
                         previous["parent_url"] = index["url"]
-            return {"status": "already_captured", "url": display_url(self.page.url)}
+            return {"status": "already_captured", "url": display_url(self.current_url)}
         if len(self.pages) >= MAX_PAGES and not refresh:
             raise WebsiteError("Six source pages captured. Finish or review the existing captures.")
         if kind == "index" and any(p.get("source_kind") == "index" for p in self.pages):
@@ -1056,9 +1096,9 @@ class DOMBrowserTools:
         captured = self.capture_page()
         self.guard()
         if self.collection_context:
-            if hashlib.sha256(self.page.url.encode()).hexdigest() == self.collection_context.get(
+            if self.current_document_id == self.collection_context.get(
                 "result_document_id"
-            ) and display_url(captured["url"]) == display_url(self.page.url):
+            ) and display_url(captured["url"]) == display_url(self.current_url):
                 context = copy.deepcopy(self.collection_context)
                 earlier = context.get("result_scope") or {}
                 if earlier.get("source") == "returned_page" and earlier.get("requested"):
@@ -1075,7 +1115,7 @@ class DOMBrowserTools:
                     else:
                         if (
                             fresh.get("document_id") != context["result_document_id"]
-                            or hashlib.sha256(self.page.url.encode()).hexdigest() != context["result_document_id"]
+                            or self.current_document_id != context["result_document_id"]
                         ):
                             raise WebsiteError("The result document changed during capture. Review the current page before collecting again.")
                         scope = observed_result_scope(earlier["requested"], fresh)
