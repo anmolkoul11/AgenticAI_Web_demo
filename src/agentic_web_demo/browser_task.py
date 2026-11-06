@@ -382,6 +382,8 @@ class TaskLedger:
         self.checks = []
         self.submission = None
         self.pending_submission = None
+        self.unresolved_form_fields = []
+        self.last_validation_rejection = None
         self.date_choices = {}
         self.destination_selections = {}
         self.visible_date_choices = []
@@ -1052,6 +1054,7 @@ class TaskLedger:
         if self.document_id is not None and self.document_id != document:
             self.date_choices.clear()
             self.destination_selections.clear()
+            self.last_validation_rejection = None
             if self.submission and self.submission["result_document_id"] != document:
                 self.submission = None
                 self.result_scope = None
@@ -1154,6 +1157,7 @@ class TaskLedger:
                 self.date_choices.clear()
                 self.destination_selections.clear()
                 self.checks = [self.verify(item, observation) for item in self.requirements.values()]
+        self.unresolved_form_fields = self.required_form_fields(observation)
         self.submission_candidates = self.find_submission_candidates(observation)
         return self.snapshot()
 
@@ -1192,6 +1196,137 @@ class TaskLedger:
             "only after its own form is verified.",
         }
         self.submission = None
+        return True
+
+    def required_form_fields(self, observation, control=None):
+        """Visible missing/invalid inputs belonging to the retrieval form.
+
+        These are website requirements, not values invented from the request.
+        Keep a separate checklist so a newly revealed field cannot disappear
+        behind already-verified destination/date/occupancy counts.
+        """
+        available = controls(observation)
+        retrieval_scopes = {
+            (identity(item)["frame"], item.get("form_scope") or "")
+            for item in available
+            if not widget_control(item)
+            and item.get("enabled", True) is not False
+            and (item.get("tag") in {"BUTTON", "INPUT"} or item.get("role") == "button")
+            and re.search(
+                r"^(?:search|find)\b|^(?:show|see|view)\s+(?:\d+\s+)?"
+                r"(?:hotels|stays|results|availability)\b",
+                str(item.get("label") or item.get("text") or "").strip(), re.I,
+            )
+        }
+        scopes = {(identity(control)["frame"], control.get("form_scope") or "")} if control is not None else retrieval_scopes
+        result = []
+        for item in available:
+            frame = identity(item)["frame"]
+            owned = (frame, item.get("form_scope") or "") in scopes
+            # Portalled widgets can lack an HTML form owner. Adopt their
+            # required inputs only when the observed frame has one search form.
+            unowned_widget = (
+                not item.get("form_scope")
+                and item.get("widget_scope") in {"counter", "choice", "dialog"}
+                and len({scope for owner, scope in retrieval_scopes if owner == frame}) == 1
+                and bool(scopes & retrieval_scopes)
+            )
+            if (
+                not (owned or unowned_widget)
+                or item.get("enabled", True) is False
+                or item.get("readonly") is True
+                or not item.get("id")
+                or item.get("tag") not in {"INPUT", "SELECT", "TEXTAREA"}
+                and item.get("role") not in {"combobox", "textbox", "checkbox", "radio", "spinbutton"}
+                or item.get("type") in {"hidden", "button", "submit", "image", "reset"}
+            ):
+                continue
+            placeholder_label = str(item.get("selected_label") or "")
+            visible_required = (
+                item.get("selection_placeholder") is True
+                and re.search(r"\b(?:required|needed)\b", placeholder_label, re.I)
+                and not re.search(r"\b(?:optional|not|no|if)\b", placeholder_label, re.I)
+            )
+            # Some portals declare a requirement in the placeholder instead of
+            # the HTML required attribute. Explicit wording is evidence; a
+            # generic optional "Select..." prompt alone is not.
+            required = item.get("required") is True or bool(visible_required)
+            missing = item.get("value_missing") is True or item.get("selection_placeholder") is True
+            if required and "value_missing" not in item and item.get("type") in {"checkbox", "radio"}:
+                missing = missing or item.get("selected") != "true"
+            elif required and "value_missing" not in item and not str(item.get("value", "")).strip():
+                missing = True
+            invalid = item.get("invalid") is True
+            if not (invalid or required and missing):
+                continue
+            result.append({
+                "control_id": item["id"],
+                "label": str(item.get("label") or item.get("name") or "Required field")[:180],
+                "form_scope": item.get("form_scope"),
+                "required": required,
+                "invalid": invalid,
+                "value_missing": missing,
+                "validation_message": str(item.get("validation_message") or "")[:240],
+            })
+            if len(result) >= 12:
+                break
+        return result
+
+    def required_form_problem(self, observation, control=None):
+        fields = self.required_form_fields(observation, control)
+        if not fields:
+            return None
+        names = ", ".join(dict.fromkeys(item["label"] for item in fields[:4]))
+        return (
+            "The website still requires: " + names + ". Complete these fields before Search. "
+            "Use values from the request; if a value was not provided, enter it in the website "
+            "and press Resume. No missing value should be guessed."
+        )
+
+    def reject_pending_submission(self, after, outcome):
+        """Release only an explicitly prevented, same-form submit preflight.
+
+        A timeout, unchanged page or an invalid field observed after a click is
+        not proof of rejection and must retain the unknown-response guard.
+        """
+        pending = self.pending_submission
+        validation = outcome.get("validation") if isinstance(outcome, dict) else None
+        if (
+            not pending or not isinstance(validation, dict)
+            or outcome.get("status") != "validation_blocked"
+            or outcome.get("submitted") is not False
+            or outcome.get("dispatch_status") != "not_dispatched"
+        ):
+            return False
+        before = pending["before"]
+        provenance = pending.get("submission_provenance", {})
+        submit = provenance.get("control", {})
+        scope = submit.get("form_scope")
+        fields = validation.get("fields")
+        if (
+            before.get("document_id", before.get("url")) != after.get("document_id", after.get("url"))
+            or not isinstance(scope, str) or not scope
+            or validation.get("form_scope") != scope
+            or not isinstance(fields, list) or not fields
+        ):
+            return False
+        unresolved = self.required_form_fields(after, submit)
+        reported = [item for item in fields[:12] if isinstance(item, dict)]
+        if not any(
+            item.get("control_id") == current["control_id"]
+            or item.get("label") and normalized(item["label"]) == normalized(current["label"])
+            for item in reported for current in unresolved
+        ):
+            return False
+        self.last_validation_rejection = {
+            "dispatch_status": "not_dispatched",
+            "status": "validation_blocked",
+            "form_scope": scope,
+            "fields": copy.deepcopy(unresolved),
+            "submission_provenance": copy.deepcopy(provenance),
+        }
+        self.pending_submission = None
+        self.unresolved_form_fields = unresolved
         return True
 
     def find_submission_candidates(self, observation):
@@ -1253,6 +1388,8 @@ class TaskLedger:
                     re.I,
                 )
             ):
+                continue
+            if self.required_form_fields(observation, control):
                 continue
             frame_id = identity(control)["frame"]
             associated = [
@@ -1706,10 +1843,13 @@ class TaskLedger:
         """Record dispatch intent before interacting; this is not proof of a click."""
         if self.pending_submission or self.submission:
             return False
+        if self.required_form_fields(before, control):
+            return False
         required = {r["name"] for r in self.requirements.values() if r["application"] == "form"}
         checked = {c["field"] for c in self.checks if c["status"] == "verified"}
         if not required <= checked:
             return False
+        self.last_validation_rejection = None
         self.pending_submission = {
             "dispatch_status": "attempted",
             "before": copy.deepcopy(before),
@@ -1796,6 +1936,8 @@ class TaskLedger:
         return {
             "requirements": copy.deepcopy(self.checks),
             "pending_fields": self.pending(),
+            "unresolved_form_fields": copy.deepcopy(self.unresolved_form_fields),
+            "validation_rejection": copy.deepcopy(self.last_validation_rejection),
             "search_submitted": bool(self.submission or self.collection_search),
             "search_response_pending": bool(
                 self.pending_submission
@@ -1825,15 +1967,19 @@ class TaskLedger:
             "search_transition": {
                 "attempted": bool(
                     self.pending_submission or self.submission or self.collection_search
+                    or self.last_validation_rejection
                 ),
                 "confirmed": bool(self.submission or self.collection_search),
                 "attempt_status": "transition_confirmed"
                 if self.submission or self.collection_search
                 else "attempted_unconfirmed"
                 if self.pending_submission
+                else "validation_blocked"
+                if self.last_validation_rejection
                 else "not_attempted",
                 "dispatch_status": (
-                    self.submission or self.pending_submission or self.collection_search or {}
+                    self.submission or self.pending_submission or self.collection_search
+                    or self.last_validation_rejection or {}
                 ).get("dispatch_status", "not_attempted"),
                 "result_document_id": (self.submission or self.collection_search)[
                     "result_document_id"
@@ -1843,7 +1989,8 @@ class TaskLedger:
                 "scope": "form_values_and_submission_only",
                 "submission_provenance": copy.deepcopy(
                     (
-                        self.submission or self.pending_submission or self.collection_search or {}
+                        self.submission or self.pending_submission or self.collection_search
+                        or self.last_validation_rejection or {}
                     ).get("submission_provenance", {})
                 ),
             },
@@ -1861,6 +2008,12 @@ class TaskLedger:
             return (
                 "Search was attempted but its dispatch/response is not confirmed yet. Wait and "
                 "inspect the results, or pause; do not submit again or finish."
+            )
+        if self.unresolved_form_fields and not self.submission:
+            names = ", ".join(dict.fromkeys(item["label"] for item in self.unresolved_form_fields[:4]))
+            return (
+                "The website still requires: " + names + ". Complete the missing website "
+                "fields and press Resume. No missing value should be guessed."
             )
         if self.pending() and not (
             self.source_preview_ready()

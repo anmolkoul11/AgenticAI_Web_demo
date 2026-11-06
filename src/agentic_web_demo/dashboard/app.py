@@ -33,7 +33,7 @@ from agentic_web_demo.extension_channel import ExtensionRuns
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-10-20.1"
+UI_VERSION = "2026-11-06.2"
 
 
 class CustomApproval(BaseModel):
@@ -266,6 +266,7 @@ def create_app(settings=None, service=None):
         current = active(request)
         return {
             "authenticated": current is not None,
+            "model_configured": current is not None and current.model_settings is not None,
             "csrf": request.session["csrf"],
             "username": current.username if current else None,
             "ui_version": UI_VERSION,

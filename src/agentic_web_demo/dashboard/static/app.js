@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-10-20.1";
+const UI_VERSION = "2026-11-06.2";
 document.documentElement.dataset.agenticUiVersion = UI_VERSION;
 document.documentElement.dataset.agenticConnection = "loading";
 let instanceId = null, connectionBlocked = false;
@@ -20,8 +20,10 @@ function connectionWarning(text) {
   $("web-login-password").value = ""; $("web-login-user").value = "";
   $("admin-password").value = "";
   $("consent").checked = false; $("approved").checked = false; $("execute").disabled = true;
+  renderApiConnectionStatus();
 }
 async function checkConnection() {
+  const modelStateRevision = modelConnectionRevision;
   try {
     const response = await fetch("/api/session", {cache: "no-store", signal: AbortSignal.timeout(5000)});
     if (!response.ok) throw new Error("unavailable");
@@ -38,6 +40,10 @@ async function checkConnection() {
       connectionWarning("The dashboard account changed in another tab. Refresh and review the signed-in account before continuing.");
     } else if (connectionBlocked) {
       connectionText.textContent = "The server is reachable again. Refresh to reconnect, then check job history before retrying. No work was automatically resubmitted.";
+    } else if (signedIn && modelStateRevision === modelConnectionRevision &&
+        typeof session.model_configured === "boolean" &&
+        (!modelConnectionKnown || session.model_configured !== modelConfigured)) {
+      setModelConnectionState(session.model_configured);
     }
     instanceId = session.instance_id;
   } catch (_) {
@@ -46,9 +52,41 @@ async function checkConnection() {
 }
 let csrf = "", selected = null, timer = null, records = [], decisions = [], signedIn = false, currentJob = null;
 let activeView = "custom", isAdmin = false, modelConfigured = false, recordsLoaded = false, currentUsername = null;
+let modelConnectionKnown = false;
+let modelConnectionRevision = 0;
+const API_SETUP_MESSAGE = "No API key is set for this session. Open API connection, paste your key, choose a model and select Save / replace connection.";
 const statusLabels = {queued: "Queued", running: "Running", awaiting_review: "Review needed", completed: "Completed", needs_input: "Needs information", unsupported: "Unsupported request", policy_rejected: "Outside search policy", failed: "Failed", interrupted: "Interrupted"};
 const stageLabels = {plan_request: "Interpret request", validate_plan: "Validate search", extract: "Sign in & extract", save: "Save records", export: "Export results", evaluate: "Evaluate rules", publish: "Publish events", receive: "Receive events", verify: "Verify receipts"};
 function setBadge(element, text, tone = "neutral") { element.textContent = text; element.dataset.tone = tone; }
+function renderApiConnectionStatus() {
+  const missing = signedIn && !connectionBlocked && modelConnectionKnown && !modelConfigured;
+  $("api-setup-notice").hidden = !missing;
+  $("api-connection-state").hidden = !missing;
+  if (!modelConnectionKnown) return;
+  setBadge($("model-badge"), modelConfigured ? "API key · configured, unverified" : "API key · setup required", modelConfigured ? "active" : "warning");
+  $("model-help").hidden = $("mode").value !== "model-assisted" || modelConfigured;
+  $("key-status").textContent = modelConfigured ?
+    "API key configured for this session. Provider access has not been verified." : API_SETUP_MESSAGE;
+}
+function setModelConnectionState(configured) {
+  const changed = !modelConnectionKnown || modelConfigured !== configured;
+  modelConnectionRevision += 1;
+  modelConfigured = configured === true; modelConnectionKnown = true;
+  renderApiConnectionStatus();
+  if (changed && typeof updateSourceChoice === "function") updateSourceChoice();
+}
+function openApiConnection() {
+  showView("connection", true);
+  $("api-key").focus({preventScroll: true});
+}
+function requireModelConnection() {
+  if (connectionBlocked) { message("Refresh the application to reconnect before continuing."); return false; }
+  if (modelConfigured) return true;
+  renderApiConnectionStatus();
+  message(API_SETUP_MESSAGE);
+  openApiConnection();
+  return false;
+}
 function statusTone(status) {
   if (status === "completed") return "success";
   if (["running", "queued"].includes(status)) return "active";
@@ -89,6 +127,7 @@ function authPage() {
   $("login-panel").hidden = signedIn || registration;
   $("register-panel").hidden = signedIn || !registration;
   $("password").value = ""; $("register-password").value = "";
+  renderApiConnectionStatus();
   if (!signedIn) (registration ? $("register-user") : $("username")).focus();
 }
 window.addEventListener("hashchange", () => { message(); authPage(); });
@@ -159,16 +198,15 @@ async function workspace() {
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   const cfg = await api("/api/config");
   currentUsername = cfg.username;
-  isAdmin = cfg.role === "admin"; modelConfigured = cfg.model_configured;
+  isAdmin = cfg.role === "admin"; setModelConnectionState(cfg.model_configured);
   $("admin-nav").hidden = !isAdmin;
   $("account-label").hidden = false; $("account-label").textContent = cfg.username;
   $("account-label").title = `${cfg.username} · ${cfg.role}`;
-  setBadge($("model-badge"), modelConfigured ? "API key · configured, unverified" : "API key · optional", modelConfigured ? "active" : "neutral");
   $("model-help").hidden = $("mode").value !== "model-assisted" || modelConfigured;
   if (modelConfigured) $("model-id").value = cfg.model;
   showView(activeView);
   $("configuration").textContent = `Signed in: ${cfg.username} · Target: ${cfg.target} · Model: ${cfg.model} · Hotel price and rating rules come from each approved request.`;
-  $("key-status").textContent = cfg.model_configured ? `${cfg.model}: session key configured, access not verified.` : "No API key for this session. Guided forms are available.";
+  $("key-status").textContent = modelConfigured ? `${cfg.model}: session key configured, access not verified.` : API_SETUP_MESSAGE;
   $("storage-status").textContent = `${cfg.secure_storage_label}. Saved key: ${cfg.credential_saved ? "yes" : "no"}. ${cfg.credential_notice || ""}`;
   $("remember-key").disabled = !cfg.secure_storage_available;
   $("remember-key").checked = false;
@@ -382,6 +420,7 @@ $("clear-key").onclick = async () => {
 };
 $("plan-form").onsubmit = async event => {
   event.preventDefault(); message();
+  if ($("mode").value === "model-assisted" && !requireModelConnection()) return;
   $("min-price").setCustomValidity("");
   if ($("mode").value === "structured" && $("check-out").value <= $("check-in").value) {
     $("check-out").setCustomValidity("Check-out must be later than check-in."); $("check-out").reportValidity(); return;
@@ -411,7 +450,12 @@ $("execute").onclick = async () => {
 $("approved").onchange = () => { $("execute").disabled = !$("approved").checked; };
 $("all-cities").onchange = () => { $("city").disabled = $("all-cities").checked; };
 $("mode").onchange = modeChanged;
-$("open-connection").onclick = () => { showView("connection", true); $("api-key").focus({preventScroll: true}); };
+$("open-connection").onclick = $("api-setup-open").onclick = openApiConnection;
+$("create").addEventListener("click", event => {
+  if ($("mode").value === "model-assisted" && !modelConfigured) {
+    event.preventDefault(); requireModelConnection();
+  }
+});
 $("example-request").onclick = () => {
   $("request").value = `Find hotels in Boston from ${futureDate(7)} to ${futureDate(9)}, priced at most USD 200 per night including taxes, with a rating of at least 4 out of 5. Search only the local demo portal.`;
   $("consent").checked = false; $("request").focus();

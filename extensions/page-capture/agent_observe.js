@@ -167,6 +167,30 @@ globalThis.agenticObserve = focus => {
       .join(' ')||
     (e.labels&&[...e.labels].map(n=>n.textContent).join(' '))||
     e.getAttribute('placeholder')||e.innerText||e.getAttribute('title')||e.name).slice(0,240);
+  const validation=e=>{
+    const required=!!e.required||e.getAttribute('aria-required')==='true';
+    const option=e.tagName==='SELECT'&&!e.multiple?e.selectedOptions?.[0]:null;
+    const optionLabel=clean(option?.textContent);
+    const selectionPlaceholder=e.tagName==='SELECT'&&!e.multiple&&(!option||
+      option.disabled||option.hidden||
+      (!clean(option.value)&&! /^(?:any|all|none|no preference)\b/i.test(optionLabel))||
+      /^(?:please\s+)?(?:select|choose)(?:\s+(?:an?\s+)?(?:option|value|age|one))?[\s.…:]*$|\b(?:age|value)\s+(?:needed|required)\b/i.test(optionLabel));
+    const nativeInvalid=e.willValidate===true&&e.validity?.valid===false;
+    const valueMissing=e.validity?.valueMissing===true||(required&&
+      e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select')&&
+      !clean(e.value));
+    const errorIds=clean(e.getAttribute('aria-errormessage')).split(' ').filter(Boolean);
+    const errorText=errorIds.map(id=>e.getRootNode().getElementById?.(id)||
+      document.getElementById(id)).filter(n=>n&&visible(n)&&!n.closest('[inert]'))
+      .map(n=>clean(n.textContent)).join(' ');
+    const valueControl=e.matches('input,textarea,select,[role="combobox"],[role="spinbutton"],'+
+      '[role="checkbox"],[role="radio"]')||e.isContentEditable||required||e.hasAttribute('aria-invalid');
+    return {required,...(valueControl?{invalid:nativeInvalid||e.getAttribute('aria-invalid')==='true',
+      value_missing:valueMissing,selection_placeholder:selectionPlaceholder,
+      ...(e.tagName==='SELECT'?{selected_label:optionLabel.slice(0,240)}:{}),
+      ...(nativeInvalid||errorText?{validation_message:clean([nativeInvalid?e.validationMessage:'',errorText]
+        .join(' ')).slice(0,240)}:{})}:{})};
+  };
   const candidates=query('input,textarea,select,button,a[href],'+
     '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],'+
     '[role="spinbutton"],[role="checkbox"],[role="radio"],[contenteditable="true"]')
@@ -176,8 +200,9 @@ globalThis.agenticObserve = focus => {
   // physically rendered, recognized quantity actuators without exposing other
   // accessibility-hidden controls/text or inert/credential controls.
   const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e));
+  const validations=new Map(raw.map(e=>[e,validation(e)]));
   // Give search-form widgets priority even when background links exhaust the
-  // inventory. An open calendar/counter popup still has the highest priority.
+  // inventory. Unresolved value fields precede foreground widget choices.
   const formScopes=query('form,[role="search"]').filter(visible);
   const popupScopes=query('[role="dialog"],[role="listbox"],[role="grid"],[role="menu"]')
     .filter(visible);
@@ -191,7 +216,9 @@ globalThis.agenticObserve = focus => {
     }
   }
   // Foreground popups/calendar/options take priority over background navigation.
-  const priority=e=>popupScopes.some(scope=>scope.contains(e)) ? 0 :
+  const priority=e=>validations.get(e).invalid||validations.get(e).value_missing||
+    validations.get(e).selection_placeholder ? -1 :
+    popupScopes.some(scope=>scope.contains(e)) ? 0 :
     counters.get(e)||counterGroups.some(group=>group.contains(e)) ? 0 :
     e.getAttribute('role')==='option' ? 1 :
     formScopes.some(scope=>scope.contains(e)) ? (focus==='form'?0:2) :
@@ -296,17 +323,32 @@ globalThis.agenticObserve = focus => {
            (editable(e)?comboOwner(e).getAttribute('aria-haspopup'):'')||'',
          ...(combos.includes(e)?{selection_required:true,
            option_ids:(optionsFor.get(e)||[]).map(n=>n.getAttribute('data-agentic-loop-id'))}:{}),
+         ...(e.tagName==='SELECT'&&validations.get(e).selection_placeholder?{selection_required:true}:{}),
          ...(optionOwners.has(e)?{option_primary:optionPrimary(e)}:{}),
-        editable:!!e.isContentEditable,required:!!e.required||e.getAttribute('aria-required')==='true',
+        editable:!!e.isContentEditable,...validations.get(e),
         rect:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},
         href:e.tagName==='A'?e.href:'',enabled:!e.disabled&&
           e.getAttribute('aria-disabled')!=='true',readonly:!!e.readOnly,
         options:e.tagName==='SELECT'?[...e.options].slice(0,50).map(o=>({value:o.value,
-          label:clean(o.textContent),disabled:o.disabled})):[],
+          label:clean(o.textContent),disabled:o.disabled||o.closest('optgroup')?.disabled===true,
+          selected:o.selected,hidden:o.hidden})):[],
         date:e.getAttribute('data-date')||e.getAttribute('datetime')||'',
         date_owner_id:elements.includes(e.closest('[role="gridcell"]'))?
           e.closest('[role="gridcell"]').getAttribute('data-agentic-loop-id'):null};
     });
+  const unresolved=controls.filter(e=>e.enabled&&(e.invalid||e.value_missing||e.selection_placeholder));
+  const validationAlerts=query('[role="alert"],[aria-live="assertive"]')
+    .filter(e=>visible(e)&&!e.closest('[inert],[aria-hidden="true"]')&&
+      (nativeForm(e)||popupScopes.some(scope=>scope.contains(e))||counterGroups.some(scope=>scope.contains(e))))
+    .slice(0,4).map(e=>({text:clean(e.innerText).slice(0,240),
+      form_scope:nativeForm(e)?String(nativeForms.indexOf(nativeForm(e))):null,
+      control_ids:elements.filter(field=>e.id&&
+        clean(field.getAttribute('aria-errormessage')).split(' ').includes(e.id))
+        .map(field=>field.getAttribute('data-agentic-loop-id'))})).filter(e=>e.text);
+  const formValidation={unresolved_count:unresolved.length,fields:unresolved.slice(0,12)
+    .map(e=>({control_id:e.id,label:e.label,form_scope:e.form_scope,required:e.required,
+      invalid:e.invalid,value_missing:e.value_missing,selection_placeholder:e.selection_placeholder,
+      validation_message:e.validation_message})),alerts:validationAlerts};
   const root=document.querySelector('main,[role="main"]')||document.body;
   if(!root) throw new Error('AGENT_DOM_NOT_READY');
   const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),chunks=[];
@@ -353,6 +395,7 @@ globalThis.agenticObserve = focus => {
     no_results:emptyResults.test(resultText),price_contexts:priceContexts,headings:resultHeadings};
   return {title:document.title,text:chunks.join(' ').slice(0,12000),controls,
     autocomplete_diagnostics:autocompleteDiagnostics,
+    form_validation:formValidation,
     results,
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
       text:clean(e.innerText).slice(0,800)})),

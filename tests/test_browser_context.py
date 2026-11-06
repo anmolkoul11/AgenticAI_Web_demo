@@ -61,6 +61,31 @@ def size(value):
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
+def test_new_required_child_age_survives_focused_context_before_widget_confirmation():
+    age = {"id": "0:9", "tag": "SELECT", "name": "age", "label": "Age of child 1",
+           "value": "", "required": True, "value_missing": True, "invalid": True,
+           "selection_placeholder": True, "selected_label": "Age needed",
+           "widget_scope": "counter", "form_scope": "0:form:0",
+           "options": [{"value": "", "label": "Age needed", "disabled": True},
+                       {"value": "7", "label": "7 years old"}]}
+    values = payload([age, {"id": "0:10", "tag": "BUTTON", "label": "Done"}], pending=[])
+    values["task"] = "Find hotels for 5 adults, 1 child and 4 rooms."
+    values["task_checklist"]["unresolved_form_fields"] = [
+        {"control_id": "0:9", "label": "Age of child 1", "required": True,
+         "value_missing": True, "invalid": True}
+    ]
+    baseline = copy.deepcopy(values)
+    result = build_navigation_context(values, max_chars=6500, observation_chars=3500)
+    assert result["interaction_focus"]["phase"] == "complete_required_fields"
+    assert result["interaction_focus"]["control_ids"] == ["0:9"]
+    projected = next(item for item in all_controls(result) if item["id"] == "0:9")
+    assert projected["selection_placeholder"] is True and projected["invalid"] is True
+    assert projected["selected_label"] == "Age needed"
+    assert projected["options"][1]["value"] == "7"
+    assert result["task_checklist"]["unresolved_form_fields"][0]["label"] == "Age of child 1"
+    assert values == baseline
+
+
 def test_collection_goal_and_capture_memory_fit_navigation_context_without_mutation():
     values = payload([], pending=[])
     values["task"] = "Find sports content and open relevant pages for their context."

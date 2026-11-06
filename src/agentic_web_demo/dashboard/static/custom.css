@@ -191,6 +191,10 @@
 .journey-action{padding:12px;margin:9px 0}.journey-action .micro{font-size:11px;margin-bottom:8px}
 .custom-review-card details{margin-top:10px}
 .custom-review-card>button.secondary{margin:0 0 10px}
+.api-setup-notice{display:flex;align-items:center;justify-content:space-between;gap:16px;border-left:4px solid #b47b21}
+.api-setup-notice h2{font-size:15px;margin:0 0 5px}.api-setup-notice p{margin:0;line-height:1.5}
+.api-setup-notice button{flex-shrink:0}.workspace-nav #api-connection-state{color:#754b0b;background:#fff0c9}
+@media(max-width:650px){.api-setup-notice{align-items:stretch;flex-direction:column}.api-setup-notice button{width:100%}}
 .results-card{padding:20px}.results-card .section-heading{margin-bottom:12px}
 @media(max-width:1000px){.flow-steps{grid-template-columns:repeat(4,minmax(0,1fr))}.flow-steps summary{min-height:60px}}
 @media(max-width:650px){.source-primary-grid{grid-template-columns:1fr;gap:0}.source-choices{grid-template-columns:repeat(2,minmax(0,1fr))}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.page-heading h1{font-size:24px}.flow-badge{min-width:0}.workflow-map-header{display:flex}.studio-step-tabs button{font-size:12px}}

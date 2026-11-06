@@ -21,6 +21,8 @@ ERROR_CODES = frozenset({
     "permission_required", "tab_closed", "origin_changed", "delivery_unknown",
     "execution_failed", "payload_too_large", "session_changed", "cancelled",
     "command_timeout",
+    "website_focus_required", "native_input_unavailable", "native_input_detached",
+    "extension_update_required",
 })
 RUN_TTL = 900
 

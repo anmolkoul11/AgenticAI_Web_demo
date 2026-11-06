@@ -1,5 +1,76 @@
 # Progress
 
+## Dynamic required fields before Search - 2026-11-06, verification pending
+
+Agent v20.5 and extension 0.5.2 surface newly required/invalid inputs, including
+dependent child-age selectors, before closing a widget or automatically submitting
+the prepared search. Compact context retains those controls and their actual
+selection/validation state. Missing values require the user's input; ages are
+never guessed. A native preflight rejection is distinct from an unknown Search
+response and may release an attempt only with matching document/form evidence.
+
+Dashboard version: 2026-11-06.2. Regression scenarios were authored, not run;
+manual verification remains pending, including child-age prompts and manual Resume.
+
+## Minimal sign-in and native startup readiness - 2026-11-06, verification pending
+
+Simplified sign-in and registration to compact forms with required inputs,
+validation and account links. Removed the signed-out marketing column and
+secondary explanatory content; authenticated dashboard and API setup notices
+remain available.
+
+Extension `0.5.1` verifies its loaded page executor before a backend Start/Resume,
+and the worker confirms observation readiness from its actual native attachment.
+The adapter retains safe diagnostics even when startup compatibility fails, so
+missing driver/version information no longer produces an empty diagnostics box.
+The reported zero-call pause indicates a missing native readiness marker; the
+precise stale runtime component is unproven from that log. Reload the extension,
+refresh the website and reconnect after updating the dashboard (`2026-11-06.1`).
+
+Regression scenarios were authored but not executed. No tests, validators,
+application/browser startup or paid model calls were run, per user preference.
+
+## Current-tab native input - 2026-10-26, verification pending
+
+Extension `0.5.0` uses browser-level mouse/keyboard input through the debugger
+permission for its existing current-tab action vocabulary. The packaged DOM
+observation/source collectors and shared LangGraph/extraction/review/save pipeline
+remain; this is an executor change, not another agent or larger model budget.
+Start and Resume require a separate control approval for the connected website
+tab. Public key actions remain Enter/Escape, with numeric stepping internal to
+the driver. Browser warnings/DevTools can interrupt attachment; explicit recovery
+must inspect the page first and never replay an uncertain input automatically.
+
+The inspected user1 run `db66ddf8` repeatedly reported Adults 2 → requested 3 →
+observed 2 with zero verified steps. It did not prove a parsing or detached-node
+fault. Native input replaces the synthetic event route, while action evidence
+now exposes before/requested/observed counts, attempt count and dispatch state.
+Adapter capabilities accurately distinguish `native_cdp` input from DOM/text
+observations; screenshots and model-provided arbitrary input remain unavailable.
+
+Dashboard UI/backend version `2026-10-26.1`; the API setup notice is preserved.
+No tests, validators, application/browser startup or model calls were run.
+Reload the extension, review the debugger permission, restart/hard-refresh the
+dashboard, refresh the website and reconnect before manual acceptance. See
+[EXTENSION_BROWSER_AGENT.md](EXTENSION_BROWSER_AGENT.md).
+
+## Visible API setup requirement - 2026-10-25, verification pending
+
+Missing session keys now show a persistent **API connection required** notice
+above the workspace, with a **Set up API connection** button and navigation badge.
+Starting a website workflow or an AI-assisted hotel proposal without a key opens
+the connection form and focuses the key field, retaining entered task details.
+Guided hotel demo forms, existing results and exports remain available without a key.
+
+Saving a connection removes the notice; clearing/forgetting it restores the notice.
+The existing session heartbeat carries only the configured-state boolean so another
+tab's removal is reflected without provider probes, paid retries or automatic starts.
+A configured key is still explicitly unverified, not guaranteed active or funded.
+Dashboard UI/backend version `2026-10-25.1`; extension remains `0.4.4`.
+Regression fixtures authored, not executed. No tests, validators, app startup or
+model calls were run for this change. Restart the dashboard and hard-refresh to
+load matching UI/backend versions; reconnect the extension if it was already bound.
+
 ## Current-tab lifecycle, counter preflight and source UX - 2026-10-20, verification pending
 
 Two primary workflow choices now distinguish **Open a new browser** from **Use my

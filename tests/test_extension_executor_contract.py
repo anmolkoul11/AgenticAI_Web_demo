@@ -17,8 +17,9 @@ def test_extension_permissions_are_selected_tab_and_loopback_scoped():
         "http://localhost:8120/*", "http://127.0.0.1:8120/*"
     }
     assert "activeTab" in manifest["permissions"]
+    assert "debugger" in manifest["permissions"]
     assert "optional_host_permissions" not in manifest
-    assert not {"cookies", "debugger", "webRequest", "tabs"} & set(manifest["permissions"])
+    assert not {"cookies", "webRequest", "tabs"} & set(manifest["permissions"])
     assert manifest["background"]["service_worker"] == "worker.js"
     assert manifest["side_panel"]["default_path"] == "sidepanel.html"
 
@@ -64,6 +65,38 @@ def executor_page(shared_local_page):
 
 def observed(page):
     return page.evaluate("() => __agenticTabExecutor.dispatch('observe', {focus:'form'})")
+
+
+def test_required_child_age_prevents_native_search_input_until_completed(executor_page):
+    page = executor_page
+    page.set_content("""<form onsubmit="event.preventDefault();window.searchCount++">
+      <label>Age of child 1<select name="age" aria-label="Age of child 1" required>
+        <option value="" disabled selected>Age needed</option>
+        <option value="7">7 years old</option></select></label>
+      <button type="submit">Search</button></form>
+      <script>window.searchCount=0</script>""")
+    before = observed(page)
+    search = next(item for item in before["frame"]["controls"] if item["label"] == "Search")
+    packet = {"document_token": before["document_token"], "facts": search,
+              "decision": {"action": "click", "control_id": "0:" + search["id"], "value": ""}}
+    blocked = page.evaluate("packet => __agenticTabExecutor.dispatch('native_begin', packet)", packet)
+    assert "native_step" not in blocked
+    assert blocked["result"]["status"] == "validation_blocked"
+    assert blocked["result"]["submitted"] is False
+    assert blocked["result"]["dispatch_status"] == "not_dispatched"
+    assert blocked["result"]["validation"]["fields"][0]["label"] == "Age of child 1"
+    assert page.evaluate("window.searchCount") == 0
+    page.evaluate("document.querySelector('select').value='7'")
+    after = observed(page)
+    search = next(item for item in after["frame"]["controls"] if item["label"] == "Search")
+    packet.update(document_token=after["document_token"], facts=search,
+                  decision={"action": "click", "control_id": "0:" + search["id"], "value": ""})
+    ready = page.evaluate("packet => __agenticTabExecutor.dispatch('native_begin', packet)", packet)
+    assert ready["native_step"]["kind"] == "click"
+    # This fixture only checks preparation; it never delivers native browser input.
+    page.evaluate("packet => __agenticTabExecutor.dispatch('native_abort', packet)",
+                  {"document_token": after["document_token"], "transaction_id": ready["transaction_id"]})
+    assert page.evaluate("window.searchCount") == 0
 
 
 def test_executor_fill_verifies_readback_and_rejects_changed_control(executor_page):
@@ -592,3 +625,72 @@ def test_executor_newsletter_is_not_a_signin_challenge(executor_page):
 def test_executor_screenshots_are_explicitly_unsupported(executor_page):
     with pytest.raises(Exception, match="unsupported"):
         executor_page.evaluate("() => __agenticTabExecutor.dispatch('viewport_image', {})")
+
+
+@pytest.mark.parametrize("replace_button", [False, True])
+def test_native_counter_transaction_verifies_each_requested_step(executor_page, replace_button):
+    page = executor_page
+    page.set_content("""<main><div>Adults
+      <button aria-label='Decrease Adults'>-</button><output>2</output>
+      <button aria-label='Increase Adults' onclick='window.clicks=(window.clicks||0)+1;
+        document.querySelector("output").textContent++;
+        if(window.replaceButton)this.replaceWith(this.cloneNode(true))'>+</button>
+      </div></main>""")
+    page.evaluate("value => { window.replaceButton=value; }", replace_button)
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"]
+                 if (c.get("counter") or {}).get("direction") == "increase")
+    result = page.evaluate("""async payload=>{
+      let next=await __agenticTabExecutor.dispatch('native_begin',payload), sends=0;
+      while(next.native_step){
+        const step=next.native_step;
+        const args={document_token:payload.document_token,
+          transaction_id:next.transaction_id,step_id:step.id};
+        const fresh=await __agenticTabExecutor.dispatch('native_validate',args);
+        // Simulated browser delivery for this isolated fixture; no CDP is used.
+        document.elementFromPoint(fresh.point.x,fresh.point.y).closest('button').click();
+        sends++;
+        next=await __agenticTabExecutor.dispatch('native_continue',args);
+      }
+      return {result:next.result,sends};
+    }""", {"document_token": observation["document_token"], "facts": field,
+           "decision": {"action": "set_counter", "control_id": field["id"], "value": "4"}})
+    assert result["sends"] == 2
+    assert result["result"]["status"] == "counter_verified"
+    assert result["result"]["observed"] == 4
+    assert result["result"]["steps"] == result["result"]["attempts"] == 2
+    assert result["result"]["dispatched"] is True
+    assert page.evaluate("window.clicks") == 2
+
+
+def test_native_counter_unchanged_result_does_not_claim_success_or_repeat_input(executor_page):
+    page = executor_page
+    page.set_content("""<main><div>Adults
+      <button aria-label='Decrease Adults'>-</button><output>2</output>
+      <button aria-label='Increase Adults'>+</button></div></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"]
+                 if (c.get("counter") or {}).get("direction") == "increase")
+    result = page.evaluate("""async payload=>{
+      const prepared=await __agenticTabExecutor.dispatch('native_begin',payload);
+      const args={document_token:payload.document_token,
+        transaction_id:prepared.transaction_id,step_id:prepared.native_step.id};
+      await __agenticTabExecutor.dispatch('native_validate',args);
+      // Acknowledged input with no UI effect, not a real browser interaction.
+      return (await __agenticTabExecutor.dispatch('native_continue',args)).result;
+    }""", {"document_token": observation["document_token"], "facts": field,
+           "decision": {"action": "set_counter", "control_id": field["id"], "value": "3"}})
+    assert result["status"] == "counter_unconfirmed"
+    assert result["before"] == result["observed"] == 2
+    assert result["expected"] == 3 and result["steps"] == 0
+    assert result["attempts"] == 1 and result["dispatched"] is True
+    assert result["counter_outcome"] == "unchanged_after_input"
+    assert "Each step was read back" not in result["note"]
+
+
+def test_observation_only_advertises_native_input_when_worker_declares_it(executor_page):
+    dom = observed(executor_page)
+    native = executor_page.evaluate("""() => __agenticTabExecutor.dispatch('observe',
+      {focus:'form',input_driver:'native_cdp'})""")
+    assert dom["input_driver"] == "dom"
+    assert native["input_driver"] == "native_cdp"
