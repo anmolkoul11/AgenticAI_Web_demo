@@ -296,6 +296,9 @@ function updateSourceInputs() {
     "Ready to extract this snapshot. Review the two permission checkboxes above, then choose Extract received snapshot. No live browser actions will run." :
     "Extraction unlocks after Browser Companion confirms Send to displayed dashboard account. Keeping a capture or opening a website alone does not send it.";
   $("web-show-capture-steps").hidden = !snapshot || captured;
+  if (!modelConfigured && !extension && !webSubmitting && (!snapshot || captured)) {
+    $("web-create").textContent = "Set up API connection";
+  }
 }
 function automaticWorkflowSelected() {
   return $("web-source").value === "browser" && $("web-framework").value === "langgraph" &&
@@ -1564,13 +1567,16 @@ $("web-manual-mode").onchange = $("web-framework").onchange = () => {
 $("web-source").onchange();
 $("web-approved").onchange = () => { $("web-execute").disabled = !canApproveWeb(); };
 $("web-partial-approved").onchange = $("web-approved").onchange;
+$("web-create").addEventListener("click", event => {
+  if (!modelConfigured) { event.preventDefault(); requireModelConnection(); }
+});
 $("web-form").onsubmit = async event => {
   event.preventDefault();
   if ($("web-source").value === "extension") {
     webText("web-status", "Open the Browser Companion extension on your website tab and start from its side panel. This form does not start a current-tab workflow.");
     return;
   }
-  if (!modelConfigured) { webText("web-status", "Configure your API key under API connection first."); return; }
+  if (!modelConfigured) { requireModelConnection(); return; }
   const field = $("web-rule-field").value.trim();
   if (field && !$("web-rule-value").value.trim()) { webText("web-status", "Provide a value for the optional business rule."); return; }
   const values = {

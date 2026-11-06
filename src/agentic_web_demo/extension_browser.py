@@ -1,8 +1,9 @@
 """Selected-tab transport for the existing browser agent, not another planner.
 
-Only the extension executes page code. This adapter sends bounded commands through
-the signed-in local relay; it never reads a browser profile, cookies or a debugger
-port. The selected tab stays open when its frozen sources are returned.
+Only the extension executes packaged DOM inspections and browser-level input in
+the selected tab. This adapter sends bounded commands through the signed-in local
+relay; it never reads a browser profile, cookies or an open debugger port. The
+selected tab stays open when its frozen sources are returned.
 """
 
 import copy
@@ -61,12 +62,23 @@ def safe_tab_url(value):
 
 def observation_diagnostics(reply):
     """Keep popup/focus counts for debugging, never field values or page text."""
-    frame = reply.get("frame") or {}
+    frame = reply.get("frame")
+    frame = frame if isinstance(frame, dict) else {}
     autocomplete = frame.get("autocomplete_diagnostics")
     if not isinstance(autocomplete, dict):
         autocomplete = {}
     tab_state = reply.get("tab_state")
     tab_state = tab_state if isinstance(tab_state, dict) else {}
+    input_driver = reply.get("input_driver")
+    input_driver = (
+        input_driver
+        if isinstance(input_driver, str) and input_driver in {"native_cdp", "dom"}
+        else "unknown"
+    )
+
+    def version(name):
+        value = reply.get(name)
+        return value if isinstance(value, str) and re.fullmatch(r"[0-9.]{1,20}", value) else "unknown"
 
     def counts(value):
         return {
@@ -92,7 +104,19 @@ def observation_diagnostics(reply):
             **counts(item),
         })
     return {
-        "adapter": "selected_tab_dom",
+        "adapter": (
+            "selected_tab_native_cdp" if input_driver == "native_cdp"
+            else "selected_tab_dom" if input_driver == "dom" else "selected_tab_unknown"
+        ),
+        "observation": "dom",
+        "input": input_driver,
+        "worker_version": version("worker_version"),
+        "input_protocol": reply["input_protocol"]
+        if isinstance(reply.get("input_protocol"), int)
+        and not isinstance(reply["input_protocol"], bool)
+        and 0 <= reply["input_protocol"] <= 100 else "unknown",
+        "native_attached": reply["native_attached"]
+        if isinstance(reply.get("native_attached"), bool) else "unknown",
         "tab_state": {
             **({"visibility": tab_state["visibility"]}
                if isinstance(tab_state.get("visibility"), str)
@@ -100,9 +124,8 @@ def observation_diagnostics(reply):
             **({"has_focus": tab_state["has_focus"]}
                if isinstance(tab_state.get("has_focus"), bool) else {}),
         },
-        "executor_version": reply.get("executor_version")
-        if re.fullmatch(r"[0-9.]{1,20}", str(reply.get("executor_version", ""))) else "unknown",
-        "control_count": len(frame.get("controls", [])),
+        "executor_version": version("executor_version"),
+        "control_count": len(frame["controls"]) if isinstance(frame.get("controls"), list) else 0,
         "autocomplete": {**counts(autocomplete), "fields": fields},
     }
 
@@ -113,17 +136,14 @@ class ExtensionBrowserDecider(OpenAIBrowserDecider):
     def decide(self, payload, timeout):
         focused = copy.deepcopy(payload)
         focused["browser_capabilities"] = {
-            "adapter": "selected_tab_dom",
+            "adapter": "selected_tab_native_cdp",
             "scope": "selected top-level document; cross-origin frames unsupported",
-            "keyboard": "Prefer visible buttons/options. Only native-form Enter and Escape are available; no arrow/Tab sequences.",
+            "observation": "dom",
+            "input": "native_cdp",
+            "keyboard": ["Enter", "Escape"],
             "screenshots": False,
-            "events": "DOM interactions; a website may require trusted input. Pause rather than repeat an unchanged action.",
+            "events": "Browser-level mouse/keyboard input; read-back must verify its effect. Pause rather than repeat an unchanged action.",
         }
-        for frame in (focused.get("observation") or {}).get("frames", []):
-            for item in frame.get("controls", []):
-                if "supported_actions" in item:
-                    item["supported_actions"] = [action for action in item["supported_actions"]
-                                                 if action != "press"]
         return super().decide(focused, timeout)
 
 
@@ -170,6 +190,16 @@ class ExtensionBrowserTools(DOMBrowserTools):
         reply = self.channel.call("observe", {"focus": self.focus})
         if not isinstance(reply, dict):
             raise WebsiteError("The extension returned an invalid page observation.")
+        self.observation_diagnostics = observation_diagnostics(reply)
+        if reply.get("input_driver") != "native_cdp":
+            diagnostics = self.observation_diagnostics
+            raise WebsiteError(
+                "Browser-level input readiness was not confirmed "
+                f"(worker {diagnostics['worker_version']}, "
+                f"executor {diagnostics['executor_version']}, driver {diagnostics['input']}). "
+                "Reload Browser Companion 0.5.2, refresh the website and reconnect. "
+                "No model decision ran from this observation."
+            )
         url = safe_tab_url(reply.get("url", ""))
         token, frame = reply.get("document_token"), reply.get("frame")
         if (
@@ -212,8 +242,27 @@ class ExtensionBrowserTools(DOMBrowserTools):
             # the model receives only its query-free display form.
             references[item["id"]] = (None, local_id, copy.deepcopy(item))
             item["href"] = display_url(item["href"]) if item.get("href") else ""
+        validation = snapshot.get("form_validation")
+        if isinstance(validation, dict):
+            by_id = {item["id"]: item for item in snapshot["controls"]}
+            fields = validation.get("fields")
+            validation["fields"] = []
+            for field in (fields if isinstance(fields, list) else [])[:12]:
+                public_id = "0:" + str(field.get("control_id")) if isinstance(field, dict) else ""
+                if public_id in by_id:
+                    validation["fields"].append({**field, "control_id": public_id,
+                        "form_scope": by_id[public_id].get("form_scope")})
+            alerts = validation.get("alerts")
+            validation["alerts"] = []
+            for alert in (alerts if isinstance(alerts, list) else [])[:4]:
+                if not isinstance(alert, dict):
+                    continue
+                ids, scope = alert.get("control_ids"), str(alert.get("form_scope", ""))
+                validation["alerts"].append({**alert,
+                    "form_scope": "0:form:" + scope if re.fullmatch(r"[0-9]{1,5}", scope) else None,
+                    "control_ids": ["0:" + str(i) for i in (ids if isinstance(ids, list) else [])
+                                    if "0:" + str(i) in by_id]})
         self._url, self.document_token = url, token
-        self.observation_diagnostics = observation_diagnostics(reply)
         self.observed_url = url
         self.references = references
         if not self.navigation_stack or self.navigation_stack[-1] != url:
@@ -304,7 +353,7 @@ class ExtensionBrowserTools(DOMBrowserTools):
                 raise WebsiteError("This link leaves the selected website; review it manually.")
         if decision.action == "press" and decision.value not in {"Enter", "Escape"}:
             raise WebsiteError(
-                "Selected-tab mode supports native-form Enter and Escape only. "
+                "Selected-tab mode supports browser-level Enter and Escape only. "
                 "Use a visible option/button instead of a simulated keyboard sequence."
             )
         try:
@@ -317,11 +366,22 @@ class ExtensionBrowserTools(DOMBrowserTools):
                 "command_timeout", "delivery_unknown", "execution_failed",
                 "origin_changed", "tab_closed", "permission_required",
                 "session_changed", "payload_too_large", "access_restriction",
+                "native_input_unavailable", "native_input_detached",
+                "website_focus_required", "extension_update_required",
             }:
                 # The existing runtime's browser-error path preserves an
                 # attempted Search as outcome_unknown. A WebsiteError here
                 # would incorrectly mark a potentially completed click as
                 # not_dispatched. Reuse that contract without replaying it.
+                if exc.code in {
+                    "native_input_unavailable", "native_input_detached", "website_focus_required",
+                    "extension_update_required",
+                }:
+                    raise PlaywrightError(
+                        "Browser focus or native input was interrupted while processing this action. "
+                        "Its outcome is unknown; inspect the tab before explicitly resuming. "
+                        "No action was replayed."
+                    ) from None
                 raise PlaywrightError(
                     "Selected-tab action acknowledgement was lost. Its outcome is unknown; "
                     "inspect the tab before resuming. No action was replayed."
@@ -331,6 +391,7 @@ class ExtensionBrowserTools(DOMBrowserTools):
             "action_performed", "value_verified", "value_mismatch", "counter_verified",
             "counter_unconfirmed", "counter_step_observed", "waited", "scrolled",
             "returned_to_observed_page",
+            "validation_blocked",
         }:
             raise PlaywrightError(
                 "The extension did not confirm this action. Inspect the tab before resuming; "

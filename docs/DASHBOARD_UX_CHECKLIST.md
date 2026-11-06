@@ -17,6 +17,28 @@ No registration code is required. Anyone who can access the local dashboard can 
 
 Planner semantics are unchanged: the UI displays actual returned guidance and does not invent an explanation for invalid dates or add minimum-price support.
 
+## API connection setup notice
+
+Restart the dashboard and hard-refresh after updating to `2026-10-25.1`.
+
+1. Sign in without a session key. Confirm **API connection required** appears
+   above every workspace section, with **Set up API connection** and a **Setup
+   required** navigation badge. This is not hidden in Follow and review.
+2. Enter a website/task, then select **Set up API connection**. The connection
+   form opens with keyboard focus on the key field; returning to Website Studio
+   retains the task and source. No browser or paid run should start.
+3. Save a connection. The notice disappears, the workflow action returns to its
+   normal label, and no workflow starts until explicitly approved. A configured
+   key is labelled unverified, not promised to be valid or funded.
+4. Clear the session key, or forget the saved key. The notice returns. If another
+   dashboard tab clears the same session's key, the existing heartbeat updates
+   the notice without navigation or automatic retries.
+5. With no key, the guided hotel demo remains available, as do saved results and
+   downloads. AI-assisted proposal creation opens API setup before making a call.
+6. Snapshot transfer remains free. Without a received capture, its extraction
+   button still explains that it is waiting; the workspace setup button remains
+   available. Logout/session-loss notices must not be mislabelled as a missing key.
+
 ## Website Studio visual pass
 
 After restarting and hard-refreshing, check the new Website Studio separately:

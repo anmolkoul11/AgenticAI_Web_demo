@@ -1,12 +1,16 @@
 'use strict';
 
 // The dashboard is the authenticated relay. This worker never receives API keys,
-// reads cookies, installs a debugger, or accepts webpage/external messages.
+// reads cookies, or accepts webpage/external messages. Native input attaches
+// only to the explicitly connected website tab after Start/Resume consent.
+importScripts('native_input.js');
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const INPUT_PROTOCOL = 1;
 const STATE_KEY = 'agentic-browser-workflow-v1';
 const DASHBOARDS = new Set(['http://localhost:8120','http://127.0.0.1:8120']);
 const ACTIVE = new Set(['agent_running']);
 const FINISHED = new Set(['captured','awaiting_review','needs_input','cancelled','failed','completed']);
-const SAFE_ERRORS = new Set(['stale_document','control_changed','unsupported','access_restriction','permission_required','website_focus_required','tab_closed','origin_changed','delivery_unknown','execution_failed','payload_too_large','session_changed']);
+const SAFE_ERRORS = new Set(['stale_document','control_changed','unsupported','access_restriction','permission_required','website_focus_required','native_input_unavailable','native_input_detached','native_input_consent_required','extension_update_required','tab_closed','origin_changed','delivery_unknown','execution_failed','payload_too_large','session_changed','cancelled']);
 const RELAY_ERRORS = new Set(['run_expired','run_unavailable','operation_conflict','model_connection_required']);
 // These errors concern the local relay, not the website or the model. Keep the
 // reason separate so the panel can offer explicit reconnect instead of a futile
@@ -106,20 +110,87 @@ async function selectedTab(state) {
   if (tab.windowId !== b.window_id || new URL(currentUrl).origin !== b.origin) throw new Error('origin_changed');
   return tab;
 }
+async function releaseNative(state) {
+  const tabId = state?.binding?.tab_id;
+  if (Number.isInteger(tabId) && AgenticNativeInput.attachedTabId === tabId) await AgenticNativeInput.detach(tabId);
+}
 async function activateWebsite(state) {
   const tab = await selectedTab(state);
   // This runs only for an explicit Start/Resume, before paid execution. Browser
-  // activation does not grant trusted DOM input or prove the page has focus.
+  // The driver brings this page forward; read actual document focus separately
+  // rather than treating an active tab as proof of keyboard focus.
   try {
     const window = await chrome.windows.update(tab.windowId,{focused:true});
     await chrome.tabs.update(tab.id,{active:true});
     const active = await selectedTab(state);
     if (!window?.focused || active.active !== true) throw new Error('website_focus_required');
-    state.website_activity = {activation_requested:true,tab_active:true,window_focused:true,observation:null};
+    await AgenticNativeInput.attach(tab.id);
+    await AgenticNativeInput.focus(tab.id);
+    const [focus] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:() => {
+      const before = document.hasFocus();
+      window.focus();
+      return {before,has_focus:document.hasFocus(),visibility:document.visibilityState};
+    }});
+    await selectedTab(state);
+    state.website_activity = {activation_requested:true,tab_active:true,window_focused:true,
+      input_driver:'native_cdp',focus_before:focus?.result?.before === true,
+      focus_confirmed:focus?.result?.has_focus === true,observation:focus?.result || null};
+    // Check the packaged page executor before starting/resuming the backend.
+    // A debugger attachment alone does not prove the loaded page script is current.
+    await chrome.scripting.executeScript({target:{tabId:tab.id},files:['agent_observe.js','capture_dom.js','executor.js']});
+    const capabilities = await executorCall(state,'capabilities',{});
+    if (capabilities?.executor_version !== EXTENSION_VERSION || capabilities?.input_protocol !== INPUT_PROTOCOL) throw new Error('extension_update_required');
+    if (AgenticNativeInput.attachedTabId !== tab.id) throw new Error('native_input_detached');
+    state.website_activity.worker_version = EXTENSION_VERSION;
+    state.website_activity.executor_version = capabilities.executor_version;
+    state.website_activity.input_protocol = INPUT_PROTOCOL;
     return active;
   } catch(error) {
-    if (['origin_changed','tab_closed','permission_required'].includes(error?.message)) throw error;
+    await releaseNative(state);
+    if (['origin_changed','tab_closed','permission_required','native_input_unavailable','native_input_detached','extension_update_required'].includes(error?.message)) throw error;
     throw new Error('website_focus_required');
+  }
+}
+async function executorCall(state,operation,payload) {
+  await selectedTab(state);
+  const [answer] = await chrome.scripting.executeScript({target:{tabId:state.binding.tab_id},func:async (operation,payload,expected) => {
+    const executor = globalThis.__agenticTabExecutor;
+    if (executor?.version !== expected.version || executor?.input_protocol !== expected.input_protocol) return {ok:false,error:'extension_update_required'};
+    try { return {ok:true,result:await executor.dispatch(operation,payload)}; }
+    catch(error) { return {ok:false,error:error?.message}; }
+  },args:[operation,payload,{version:EXTENSION_VERSION,input_protocol:INPUT_PROTOCOL}]});
+  if (!answer?.result) throw new Error('delivery_unknown');
+  if (!answer.result.ok) throw new Error(SAFE_ERRORS.has(answer.result.error) ? answer.result.error : 'execution_failed');
+  return answer.result.result;
+}
+async function executeNative(state,payload) {
+  let output = await executorCall(state,'native_begin',payload), stepCount = 0;
+  const transactionId = output?.transaction_id;
+  try {
+    while (output?.native_step) {
+      if (++stepCount > 30 || output.transaction_id !== transactionId) throw new Error('unsupported');
+      const step = output.native_step;
+      const validate = async ({require_focus=false,cleanup=false}={}) => {
+        const tab = await selectedTab(state);
+        if (AgenticNativeInput.attachedTabId !== tab.id) throw new Error('native_input_detached');
+        // Releasing an already-held button/key may finish after cancellation or
+        // DOM replacement. It stays on this same tab/origin, never another page.
+        if (cleanup) return step;
+        if ((await readState()) !== state || state.error || !ACTIVE.has(state.run?.state)) throw new Error('cancelled');
+        const window = await chrome.windows.get(tab.windowId);
+        if (!tab.active || !window.focused) throw new Error('website_focus_required');
+        return executorCall(state,'native_validate',{document_token:payload.document_token,
+          transaction_id:transactionId,step_id:step.id,require_focus});
+      };
+      await AgenticNativeInput.perform(state.binding.tab_id,step,validate);
+      output = await executorCall(state,'native_continue',{document_token:payload.document_token,
+        transaction_id:transactionId,step_id:step.id});
+    }
+    if (!output?.result || typeof output.result !== 'object') throw new Error('execution_failed');
+    return {...output.result,...(stepCount ? {input_method:'native_cdp',native_steps:stepCount}:{})};
+  } catch(error) {
+    try { await executorCall(state,'native_abort',{document_token:payload.document_token,transaction_id:transactionId}); } catch (_) { /* no input or replay during cleanup */ }
+    throw error;
   }
 }
 async function dispatchNavigation(state, rawUrl, expectedToken, originalUrl) {
@@ -148,24 +219,34 @@ async function injectCommand(state,command) {
   if (command.operation === 'viewport_image') throw new Error('unsupported');
   try {
     await chrome.scripting.executeScript({target:{tabId:tab.id},files:['agent_observe.js','capture_dom.js','executor.js']});
-    const [answer] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:async (operation,payload) => {
-      try { return {ok:true,result:await globalThis.__agenticTabExecutor.dispatch(operation,payload)}; }
-      catch(error) { return {ok:false,error:error?.message}; }
-    },args:[command.operation,command.payload || {}]});
-    if (!answer?.result) throw new Error('delivery_unknown');
-    if (!answer.result.ok) throw new Error(SAFE_ERRORS.has(answer.result.error) ? answer.result.error : 'execution_failed');
+    if (command.operation === 'execute') {
+      const result = await executeNative(state,command.payload || {});
+      if (result._navigation_url) {
+        const {_navigation_url,_navigation_from_url,...outcome} = result;
+        await dispatchNavigation(state,_navigation_url,command.payload?.document_token,_navigation_from_url);
+        return outcome;
+      }
+      await selectedTab(state);
+      if (new TextEncoder().encode(JSON.stringify(result)).length > 350000) throw new Error('payload_too_large');
+      return result;
+    }
+    let result = await executorCall(state,command.operation,command.payload || {});
     if (command.operation === 'observe') {
-      const observed = answer.result.result?.tab_state;
+      // Native readiness belongs to this worker, not an echoed page payload.
+      if (AgenticNativeInput.attachedTabId !== tab.id) throw new Error('native_input_detached');
+      result = {...result,input_driver:'native_cdp',native_attached:true,
+        worker_version:EXTENSION_VERSION,input_protocol:INPUT_PROTOCOL};
+      const observed = result.tab_state;
       state.website_activity = {...(state.website_activity || {}),observation:observed && ['visible','hidden'].includes(observed.visibility) && typeof observed.has_focus === 'boolean' ? {visibility:observed.visibility,has_focus:observed.has_focus}:null};
     }
-    if (answer.result.result?._navigation_url) {
-      const { _navigation_url, _navigation_from_url, ...outcome } = answer.result.result;
+    if (result?._navigation_url) {
+      const { _navigation_url, _navigation_from_url, ...outcome } = result;
       await dispatchNavigation(state,_navigation_url,command.payload?.document_token,_navigation_from_url);
-      answer.result.result = outcome;
+      result = outcome;
     }
     await selectedTab(state);
-    if (new TextEncoder().encode(JSON.stringify(answer.result.result)).length > 350000) throw new Error('payload_too_large');
-    return answer.result.result;
+    if (new TextEncoder().encode(JSON.stringify(result)).length > 350000) throw new Error('payload_too_large');
+    return result;
   } catch(error) {
     if (SAFE_ERRORS.has(error?.message)) throw error;
     // A navigation can destroy the isolated world after an action dispatched.
@@ -191,7 +272,7 @@ async function stopFor(state,error) {
   if (['run_expired','run_unavailable'].includes(state.error)) {
     state.run = state.run ? {...state.run,state:'failed',guidance:'The browser workflow expired or is no longer available. Start a fresh workflow; retained dashboard history can still be reviewed.'} : null;
     state.pending = null;
-    if ((await readState()) === state) await writeState(state);
+    if ((await readState()) === state) { await writeState(state); await releaseNative(state); }
     return;
   }
   if (state.run && ACTIVE.has(state.run.state)) {
@@ -201,7 +282,7 @@ async function stopFor(state,error) {
     }
     catch (_) { state.run = {...state.run,state:'agent_paused'}; }
   }
-  if ((await readState()) === state) await writeState(state);
+  if ((await readState()) === state) { await writeState(state); await releaseNative(state); }
 }
 async function pump() {
   if (pumping) return;
@@ -209,7 +290,7 @@ async function pump() {
   let state;
   try {
     state = await readState();
-    if (!state.binding || !state.run || state.error) return;
+    if (!state.binding || !state.run || state.error || state.run.collection_only) return;
     // Durable recovery: repeat only a recorded ACK. A claimed/executing command
     // without an ACK is unknown, not permission to replay an interaction.
     if (state.pending) {
@@ -217,7 +298,12 @@ async function pump() {
       if (!await acknowledge(state,ack)) return;
       if (!ack.ok) { await stopFor(state,new Error(ack.error)); return; }
     }
-    while (state.run && ACTIVE.has(state.run.state) && !state.error) {
+    // Reloading/upgrading the worker never reacquires browser control. Renew
+    // native input explicitly with Resume before claiming any further commands.
+    if (ACTIVE.has(state.run.state) && AgenticNativeInput.attachedTabId !== state.binding.tab_id) {
+      await stopFor(state,new Error('native_input_detached')); return;
+    }
+    while (state.run && ACTIVE.has(state.run.state) && !state.error && !state.run.collection_only) {
       await selectedTab(state);
       if ((await readState()) !== state) break;
       const next = await relay(state,'/api/extension/runs/'+state.run.run_id+'/next','POST',{});
@@ -261,19 +347,23 @@ async function pump() {
       state.pending = {request_id:command.request_id,phase:'ack_ready',ack};
       await writeState(state);
       if (!await acknowledge(state,ack)) break;
-      if (!ack.ok && ['access_restriction','origin_changed','tab_closed','permission_required','delivery_unknown','session_changed'].includes(ack.error)) { await stopFor(state,new Error(ack.error)); break; }
+      // An explicit Collect owns the latest same-run state. Finish the old ACK
+      // without applying its late input outcome to extraction-only continuation.
+      if (state.run?.collection_only) break;
+      if (!ack.ok && ['access_restriction','origin_changed','tab_closed','permission_required','delivery_unknown','session_changed','native_input_unavailable','native_input_detached','website_focus_required','extension_update_required'].includes(ack.error)) { await stopFor(state,new Error(ack.error)); break; }
       state = await readState();
     }
   } catch(error) {
     const latest = await readState();
     // An explicit reconnect may have replaced the old binding while a command
     // was in flight. Never apply that old command/error to the new workflow.
-    if (state?.run?.run_id && latest === state) await stopFor(state,error);
+    if (state?.run?.run_id && latest === state && !latest.run?.collection_only) await stopFor(state,error);
   }
   finally {
     pumping = false;
     const latest = await readState();
-    if (latest !== state && ACTIVE.has(latest.run?.state) && !latest.error) pump();
+    if (latest.error || latest.run?.collection_only || !ACTIVE.has(latest.run?.state)) await releaseNative(latest);
+    if (latest !== state && ACTIVE.has(latest.run?.state) && !latest.error && !latest.run?.collection_only) pump();
   }
 }
 async function connect(message) {
@@ -325,6 +415,7 @@ async function connect(message) {
     throw new Error(available.length ? 'Keep one signed-in local dashboard tab open, then connect again.' : 'Open http://localhost:8120 and sign in, then connect again.');
   }
   const {dashboard,session} = available[0];
+  await releaseNative(old);
   // Explicit reconnect never resumes or replays a command. If the fresh relay
   // proves the exact old account/server/CSRF context, cancel that stale channel
   // to release its job slot. A changed account/session/server is not authority
@@ -350,19 +441,25 @@ async function handle(message) {
       }
       catch(error) { await stopFor(state,error); }
     }
-    pump(); return publicState(await readState());
+    const latest = await readState();
+    if (latest.error || latest.run?.collection_only || !ACTIVE.has(latest.run?.state)) await releaseNative(latest);
+    if (!latest.run?.collection_only) pump();
+    return publicState(latest);
   }
   if (message.operation === 'start') {
     if (!state.binding) throw new Error('Connect the website tab first.');
     if (DASHBOARD_ERRORS.has(state.error)) throw new Error(state.error);
     if (state.run && !FINISHED.has(state.run.state)) throw new Error('Pause or cancel the existing workflow first.');
-    if (!message.agent_confirmed || !message.authorized || !message.allow_model_api || message.agent_visual_confirmed) throw new Error('Review and approve the DOM-only workflow first.');
+    if (!message.agent_confirmed || !message.authorized || !message.allow_model_api || message.agent_visual_confirmed) throw new Error('Review and approve the workflow first.');
+    if (message.native_input_confirmed !== true) throw new Error('native_input_consent_required');
     const tab = await activateWebsite(state);
     const body = {url:websiteUrl(tab.url).href,tab_id:tab.id,instructions:message.instructions,record_limit:message.record_limit,output_fields:message.output_fields || [],business_rules:message.business_rules || [],publish_event:!!message.publish_event,agent_confirmed:true,agent_visual_confirmed:false,authorized:true,allow_model_api:true};
-    const result = await relay(state,'/api/extension/runs','POST',body);
+    let result;
+    try { result = await relay(state,'/api/extension/runs','POST',body); }
+    catch(error) { await releaseNative(state); throw error; }
     // A new run gets a new state object. An old pump must retain its old run ID
     // while its final response/ACK is still in flight.
-    const nextState = {...state,run:{...result,state:'agent_running',guidance:'Starting in the selected tab.'},pending:null,error:null};
+    const nextState = {...state,run:{...result,state:'agent_running',guidance:'Starting in the selected tab.',collection_only:false},pending:null,error:null};
     await writeState(nextState); pump(); return publicState(nextState);
   }
   if (message.operation === 'control') {
@@ -371,19 +468,23 @@ async function handle(message) {
     // An unknown delivery requires explicit user resume; it is never replayed.
     if (message.action === 'resume') {
       if (state.pending) throw new Error('The previous action is still awaiting acknowledgement.');
+      if (message.native_input_confirmed !== true) throw new Error('native_input_consent_required');
       await activateWebsite(state);
     }
     let result;
     try { result = await relay(state,'/api/extension/runs/'+state.run.run_id+'/control','POST',{action:message.action}); }
     catch(error) {
+      if (message.action === 'resume') await releaseNative(state);
       if (message.action !== 'cancel' || !['run_expired','run_unavailable'].includes(error?.message)) throw error;
       const inactive = {...state,run:{...state.run,state:'failed',guidance:'The backend reports this workflow is no longer available; cancellation cannot be independently confirmed. No command was replayed. You can start another workflow.'},pending:null,error:null};
       await writeState(inactive); return publicState(inactive);
     }
-    const controlled = {...state,run:{...state.run,...result},error:null,
+    const collectionOnly = message.action === 'collect' || message.action !== 'resume' && state.run.collection_only === true;
+    const controlled = {...state,run:{...state.run,...result,collection_only:collectionOnly},error:null,
       pending:message.action === 'cancel' ? null:state.pending};
     await writeState(controlled);
-    if (message.action === 'resume' || message.action === 'collect') pump();
+    if (message.action !== 'resume') await releaseNative(controlled);
+    if (message.action === 'resume') pump();
     return publicState(controlled);
   }
   if (message.operation === 'open_review') {
@@ -402,7 +503,7 @@ async function handle(message) {
     if (state.run && !FINISHED.has(state.run.state) && !DASHBOARD_ERRORS.has(state.error)) throw new Error('Cancel the workflow before disconnecting.');
     // A changed dashboard session must never be used to control an old account's
     // run. Drop only our local binding; the old channel is paused/timeout-bound.
-    await writeState({}); return publicState({});
+    await releaseNative(state); await writeState({}); return publicState({});
   }
   throw new Error('Unknown browser companion operation.');
 }
@@ -412,7 +513,7 @@ chrome.runtime.onMessage.addListener((message,sender,sendResponse) => {
   const result = handling.then(() => handle(message)).catch(async error => {
     // Preserve failures from Start/Resume/Open review as well as the command
     // pump. Otherwise the next status poll erased the only recovery clue.
-    if (DASHBOARD_ERRORS.has(error?.message) || ['model_connection_required','website_focus_required','permission_required','tab_closed','origin_changed'].includes(error?.message)) await stopFor(await readState(),error);
+    if (DASHBOARD_ERRORS.has(error?.message) || ['model_connection_required','website_focus_required','native_input_unavailable','native_input_detached','extension_update_required','permission_required','tab_closed','origin_changed'].includes(error?.message)) await stopFor(await readState(),error);
     throw error;
   });
   handling = result.catch(() => {});
@@ -438,3 +539,8 @@ async function updatedTab(tabId,change,tab) {
 }
 chrome.tabs.onRemoved.addListener(tabId => { removedTab(tabId).catch(() => {}); });
 chrome.tabs.onUpdated.addListener((tabId,change,tab) => { updatedTab(tabId,change,tab).catch(() => {}); });
+chrome.debugger.onDetach.addListener(source => {
+  readState().then(state => {
+    if (source.tabId === state.binding?.tab_id && ACTIVE.has(state.run?.state) && !state.error && !state.run?.collection_only) return stopFor(state,new Error('native_input_detached'));
+  }).catch(() => {});
+});

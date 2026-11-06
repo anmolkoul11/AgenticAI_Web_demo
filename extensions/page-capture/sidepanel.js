@@ -21,7 +21,11 @@ const errorLabels = {
   dashboard_unavailable: "The local dashboard cannot be reached. Start the local server and open its signed-in tab, then reconnect. Nothing was automatically resubmitted.",
   dashboard_not_ready: "The dashboard page is loading, signed out or blocked pending refresh. Open it, resolve the displayed notice, then choose Reconnect dashboard.",
   model_connection_required: "Configure your API connection in the signed-in dashboard, then approve and start the workflow again. A server restart may clear a session-only key; this is not a website-login error.",
-  website_focus_required: "The browser could not activate the connected website window. Open that tab, then approve Start or Resume again. No new paid workflow was started by this failed activation.",
+  website_focus_required: "The browser could not confirm focus on the connected website. Inspect that tab and the latest action evidence, then explicitly approve Start or Resume again. Nothing was automatically retried.",
+  native_input_consent_required: "Review the connected website and approve browser-level mouse and keyboard control before Start or Resume. This is separate from the paid-workflow approval.",
+  native_input_unavailable: "Browser-level input could not attach to this website tab. Check the extension's debugger permission and close DevTools or another debugger on this tab, then explicitly approve Start or Resume again. No automatic retry was made; inspect the latest action evidence first.",
+  native_input_detached: "Browser-level input was detached. The last action may have run; inspect the website and action evidence before approving Resume. Cancelling the browser's debugging warning or opening DevTools can detach control. Nothing was automatically replayed.",
+  extension_update_required: "The extension worker and website helper are different versions. In edge://extensions or chrome://extensions, reload Browser Companion 0.5.2 from this project's extensions/page-capture folder, refresh the website, reconnect and start a fresh workflow. Nothing was automatically retried.",
   unsupported: "Connect from the HTTPS website tab, not from the dashboard or a browser settings page. An existing connection keeps its original website tab.",
   permission_required: "Browser access to this tab was lost. Open the extension from the website tab again, then explicitly resume if the run is still available.",
   origin_changed: "The website moved to another origin. Automation paused. Return to the connected site or cancel and connect a new workflow.",
@@ -41,6 +45,10 @@ function showError(value) {
 function render(value, synchronized = false) {
   if (value?.ok === false) { showError(value.error); return; }
   if (Number.isSafeInteger(value?.revision) && value.revision < (current.revision || 0)) return;
+  if (!value?.connection || (current.connection &&
+      (value.connection.tab_id !== current.connection.tab_id || value.connection.username !== current.connection.username))) {
+    byId("native-input-consent").checked = false;
+  }
   if (synchronized) transportError = null;
   current = value || current;
   const connection = current.connection, run = current.run, state = run?.state;
@@ -58,6 +66,8 @@ function render(value, synchronized = false) {
   byId("disconnect").disabled = busy || needsStatus || (live && !needsReconnect);
   byId("start").disabled = busy || needsStatus || !connection || live || needsReconnect;
   byId("instructions").disabled = live && !needsReconnect;
+  byId("native-input-consent").disabled = busy || needsStatus || needsReconnect || !connection ||
+    (live && state !== "agent_paused");
   byId("activity").hidden = !run;
   byId("spinner").hidden = needsReconnect || !runningStates.has(state);
   byId("state").textContent = state ? state.replaceAll("_", " ") : "Idle";
@@ -80,6 +90,14 @@ function render(value, synchronized = false) {
     byId("actions").replaceChildren(...actions.map(action => {
       const li = document.createElement("li");
       li.textContent = `${action.action || "Action"}${action.control ? " — " + action.control : ""}: ${(action.status || "unknown").replaceAll("_", " ")}. ${action.note || action.guidance || action.explanation || ""}`;
+      if (action.action === "set_counter") {
+        const detail = document.createElement("p"); detail.className = "muted";
+        const count = value => Number.isInteger(value) && value >= 0 && value <= 100 ? String(value) : "unconfirmed";
+        const attempts = Number.isInteger(action.attempts) && action.attempts >= 0 && action.attempts <= 10 ? String(action.attempts) : "not reported";
+        const dispatched = action.dispatched === true ? "yes" : action.dispatched === false ? "no" : "not reported";
+        detail.textContent = `Counter: before ${count(action.before)}; requested ${count(action.expected)}; observed ${count(action.observed)}. Input attempts: ${attempts}; dispatched: ${dispatched}.`;
+        li.append(detail);
+      }
       return li;
     }));
   }
@@ -119,9 +137,10 @@ byId("connect").onclick = async () => {
   const [tab] = current.connection?.tab_id != null ? [{id:current.connection.tab_id}] :
     await chrome.tabs.query({active:true,currentWindow:true});
   if (reconnect) byId("consent").checked = false;
+  byId("native-input-consent").checked = false;
   await action("connect", {...(tab?.id == null ? {} : {tab_id:tab.id}),reconnect});
 };
-byId("disconnect").onclick = () => action("disconnect");
+byId("disconnect").onclick = () => { byId("native-input-consent").checked = false; return action("disconnect"); };
 byId("review").onclick = () => action("open_review");
 byId("task-form").onsubmit = async event => {
   event.preventDefault();
@@ -134,18 +153,24 @@ byId("task-form").onsubmit = async event => {
     showError("Provide a valid rule field and value, or leave both blank."); return;
   }
   if (!byId("consent").checked) { showError("Approve the paid workflow before starting."); return; }
+  if (!byId("native-input-consent").checked) { showError("Approve browser-level mouse and keyboard control of the connected website tab before starting."); return; }
   await action("start", {instructions:byId("instructions").value.trim(),record_limit:Number(byId("limit").value),output_fields:fields,
     business_rules:field ? [{field,operator:byId("rule-op").value,value}] : [],publish_event:byId("publish").checked,
-    agent_confirmed:true,agent_visual_confirmed:false,authorized:true,allow_model_api:true});
+    agent_confirmed:true,agent_visual_confirmed:false,authorized:true,allow_model_api:true,native_input_confirmed:true});
   byId("consent").checked = false;
+  byId("native-input-consent").checked = false;
 };
 for (const name of ["pause", "resume", "collect", "cancel"]) {
   byId(name).onclick = async () => {
     if (["resume", "collect"].includes(name) && !byId("consent").checked) {
       showError("Review the selected tab and renew the paid-workflow approval before resuming or collecting."); return;
     }
-    await action("control", {action:name});
+    if (name === "resume" && !byId("native-input-consent").checked) {
+      showError("Review the website tab and renew browser-level mouse and keyboard control approval before resuming."); return;
+    }
+    await action("control", {action:name,...(name === "resume" ? {native_input_confirmed:true} : {})});
     if (["resume", "collect"].includes(name)) byId("consent").checked = false;
+    byId("native-input-consent").checked = false;
   };
 }
 chrome.runtime.onMessage.addListener(message => {

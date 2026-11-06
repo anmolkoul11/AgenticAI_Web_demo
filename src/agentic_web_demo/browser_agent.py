@@ -48,7 +48,7 @@ from agentic_web_demo.stay_scope import (
 MAX_CALLS = 30
 MAX_SECONDS = 300
 MAX_PAGES = 6
-PROMPT_VERSION = "browser-agent-v20.4"
+PROMPT_VERSION = "browser-agent-v20.5"
 SENSITIVE = (
     'input[type="password"],input[type="email"],input[type="tel"],'
     'input[autocomplete="username"],input[autocomplete="one-time-code"],'
@@ -82,7 +82,13 @@ Typed text is not selection. Never reopen an expanded widget or repeat an unchan
 click. Finish the open widget before switching. Use requested visible_date_choices
 before advancing months, check-in then check-out. set_counter uses the requested
 absolute integer on an actual numeric field/stepper, not guessed button order.
-Set all rows then Done/confirm/close and read the summary; confirm_or_close_widget
+After changing a count or choice, inspect newly revealed required fields before
+leaving the widget. A child count may reveal one age selector per child. Use only
+ages supplied by the user, bound to the correct child; never guess an age or use
+a default. If a newly required value is missing, pause with the field name and ask
+the user to fill it in the website, then Resume. Required/invalid fields take
+priority over Done, switching widgets and Search. Set all rows and dependent
+fields then Done/confirm/close and read the summary; confirm_or_close_widget
 means do not change correct counts. Omitted enabled means enabled. Search only
 with all form values verified; awaiting response means wait/inspect, no resubmit
 or edits. No progress means another observed control, focused inspect or one wait;
@@ -611,6 +617,30 @@ AGENT_OBSERVATION = r"""focus => {
       .join(' ')||
     (e.labels&&[...e.labels].map(n=>n.textContent).join(' '))||
     e.getAttribute('placeholder')||e.innerText||e.getAttribute('title')||e.name).slice(0,240);
+  const validation=e=>{
+    const required=!!e.required||e.getAttribute('aria-required')==='true';
+    const option=e.tagName==='SELECT'&&!e.multiple?e.selectedOptions?.[0]:null;
+    const optionLabel=clean(option?.textContent);
+    const selectionPlaceholder=e.tagName==='SELECT'&&!e.multiple&&(!option||
+      option.disabled||option.hidden||
+      (!clean(option.value)&&! /^(?:any|all|none|no preference)\b/i.test(optionLabel))||
+      /^(?:please\s+)?(?:select|choose)(?:\s+(?:an?\s+)?(?:option|value|age|one))?[\s.…:]*$|\b(?:age|value)\s+(?:needed|required)\b/i.test(optionLabel));
+    const nativeInvalid=e.willValidate===true&&e.validity?.valid===false;
+    const valueMissing=e.validity?.valueMissing===true||(required&&
+      e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select')&&
+      !clean(e.value));
+    const errorIds=clean(e.getAttribute('aria-errormessage')).split(' ').filter(Boolean);
+    const errorText=errorIds.map(id=>e.getRootNode().getElementById?.(id)||
+      document.getElementById(id)).filter(n=>n&&visible(n)&&!n.closest('[inert]'))
+      .map(n=>clean(n.textContent)).join(' ');
+    const valueControl=e.matches('input,textarea,select,[role="combobox"],[role="spinbutton"],'+
+      '[role="checkbox"],[role="radio"]')||e.isContentEditable||required||e.hasAttribute('aria-invalid');
+    return {required,...(valueControl?{invalid:nativeInvalid||e.getAttribute('aria-invalid')==='true',
+      value_missing:valueMissing,selection_placeholder:selectionPlaceholder,
+      ...(e.tagName==='SELECT'?{selected_label:optionLabel.slice(0,240)}:{}),
+      ...(nativeInvalid||errorText?{validation_message:clean([nativeInvalid?e.validationMessage:'',errorText]
+        .join(' ')).slice(0,240)}:{})}:{})};
+  };
   const candidates=query('input,textarea,select,button,a[href],'+
     '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],'+
     '[role="spinbutton"],[role="checkbox"],[role="radio"],[contenteditable="true"]')
@@ -620,8 +650,9 @@ AGENT_OBSERVATION = r"""focus => {
   // physically rendered, recognized quantity actuators without exposing other
   // accessibility-hidden controls/text or inert/credential controls.
   const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e));
+  const validations=new Map(raw.map(e=>[e,validation(e)]));
   // Give search-form widgets priority even when background links exhaust the
-  // inventory. An open calendar/counter popup still has the highest priority.
+  // inventory. Unresolved value fields precede foreground widget choices.
   const formScopes=query('form,[role="search"]').filter(visible);
   const popupScopes=query('[role="dialog"],[role="listbox"],[role="grid"],[role="menu"]')
     .filter(visible);
@@ -635,7 +666,9 @@ AGENT_OBSERVATION = r"""focus => {
     }
   }
   // Foreground popups/calendar/options take priority over background navigation.
-  const priority=e=>popupScopes.some(scope=>scope.contains(e)) ? 0 :
+  const priority=e=>validations.get(e).invalid||validations.get(e).value_missing||
+    validations.get(e).selection_placeholder ? -1 :
+    popupScopes.some(scope=>scope.contains(e)) ? 0 :
     counters.get(e)||counterGroups.some(group=>group.contains(e)) ? 0 :
     e.getAttribute('role')==='option' ? 1 :
     formScopes.some(scope=>scope.contains(e)) ? (focus==='form'?0:2) :
@@ -740,17 +773,32 @@ AGENT_OBSERVATION = r"""focus => {
            (editable(e)?comboOwner(e).getAttribute('aria-haspopup'):'')||'',
          ...(combos.includes(e)?{selection_required:true,
            option_ids:(optionsFor.get(e)||[]).map(n=>n.getAttribute('data-agentic-loop-id'))}:{}),
+         ...(e.tagName==='SELECT'&&validations.get(e).selection_placeholder?{selection_required:true}:{}),
          ...(optionOwners.has(e)?{option_primary:optionPrimary(e)}:{}),
-        editable:!!e.isContentEditable,required:!!e.required||e.getAttribute('aria-required')==='true',
+        editable:!!e.isContentEditable,...validations.get(e),
         rect:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},
         href:e.tagName==='A'?e.href:'',enabled:!e.disabled&&
           e.getAttribute('aria-disabled')!=='true',readonly:!!e.readOnly,
         options:e.tagName==='SELECT'?[...e.options].slice(0,50).map(o=>({value:o.value,
-          label:clean(o.textContent),disabled:o.disabled})):[],
+          label:clean(o.textContent),disabled:o.disabled||o.closest('optgroup')?.disabled===true,
+          selected:o.selected,hidden:o.hidden})):[],
         date:e.getAttribute('data-date')||e.getAttribute('datetime')||'',
         date_owner_id:elements.includes(e.closest('[role="gridcell"]'))?
           e.closest('[role="gridcell"]').getAttribute('data-agentic-loop-id'):null};
     });
+  const unresolved=controls.filter(e=>e.enabled&&(e.invalid||e.value_missing||e.selection_placeholder));
+  const validationAlerts=query('[role="alert"],[aria-live="assertive"]')
+    .filter(e=>visible(e)&&!e.closest('[inert],[aria-hidden="true"]')&&
+      (nativeForm(e)||popupScopes.some(scope=>scope.contains(e))||counterGroups.some(scope=>scope.contains(e))))
+    .slice(0,4).map(e=>({text:clean(e.innerText).slice(0,240),
+      form_scope:nativeForm(e)?String(nativeForms.indexOf(nativeForm(e))):null,
+      control_ids:elements.filter(field=>e.id&&
+        clean(field.getAttribute('aria-errormessage')).split(' ').includes(e.id))
+        .map(field=>field.getAttribute('data-agentic-loop-id'))})).filter(e=>e.text);
+  const formValidation={unresolved_count:unresolved.length,fields:unresolved.slice(0,12)
+    .map(e=>({control_id:e.id,label:e.label,form_scope:e.form_scope,required:e.required,
+      invalid:e.invalid,value_missing:e.value_missing,selection_placeholder:e.selection_placeholder,
+      validation_message:e.validation_message})),alerts:validationAlerts};
   const root=document.querySelector('main,[role="main"]')||document.body;
   if(!root) throw new Error('AGENT_DOM_NOT_READY');
   const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),chunks=[];
@@ -797,6 +845,7 @@ AGENT_OBSERVATION = r"""focus => {
     no_results:emptyResults.test(resultText),price_contexts:priceContexts,headings:resultHeadings};
   return {title:document.title,text:chunks.join(' ').slice(0,12000),controls,
     autocomplete_diagnostics:autocompleteDiagnostics,
+    form_validation:formValidation,
     results,
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
       text:clean(e.innerText).slice(0,800)})),
@@ -894,6 +943,26 @@ class DOMBrowserTools:
                     item["date_owner_id"] = f"{offset}:{item['date_owner_id']}"
                 self.references[item["id"]] = (frame, local_id, dict(item))
                 item["href"] = display_url(item["href"]) if item["href"] else ""
+            validation = data.get("form_validation")
+            if isinstance(validation, dict):
+                by_id = {item["id"]: item for item in data["controls"]}
+                fields = validation.get("fields")
+                validation["fields"] = []
+                for field in (fields if isinstance(fields, list) else [])[:12]:
+                    public_id = f"{offset}:{field.get('control_id')}" if isinstance(field, dict) else ""
+                    if public_id in by_id:
+                        validation["fields"].append({**field, "control_id": public_id,
+                            "form_scope": by_id[public_id].get("form_scope")})
+                alerts = validation.get("alerts")
+                validation["alerts"] = []
+                for alert in (alerts if isinstance(alerts, list) else [])[:4]:
+                    if not isinstance(alert, dict):
+                        continue
+                    ids, scope = alert.get("control_ids"), str(alert.get("form_scope", ""))
+                    validation["alerts"].append({**alert,
+                        "form_scope": f"{offset}:form:{scope}" if re.fullmatch(r"[0-9]{1,5}", scope) else None,
+                        "control_ids": [f"{offset}:{i}" for i in (ids if isinstance(ids, list) else [])
+                                        if f"{offset}:{i}" in by_id]})
             snapshots.append(data)
         return redact(
             {
@@ -2711,6 +2780,32 @@ class BrowserAgent:
                     "model_purpose_ignored": decision.purpose == "submit_search" and not submitting,
                 }
                 before_submit = state["observation"]
+                if not submitting and decision.action in {"click", "fill", "select", "press"}:
+                    unresolved = self.task.required_form_fields(state["observation"])
+                    active_scopes = {
+                        self.tools.references.get(field["control_id"], (None, None, {}))[2].get("widget_scope")
+                        for field in unresolved
+                    } & {"counter", "choice", "dialog"}
+                    owned_choices = {
+                        option_id for field in unresolved
+                        for option_id in self.tools.references.get(
+                            field["control_id"], (None, None, {})
+                        )[2].get("option_ids", [])
+                    }
+                    closing = (
+                        decision.action == "press" and decision.value == "Escape"
+                        or decision.action == "click" and re.fullmatch(
+                            r"done|apply|close", str(facts.get("label") or ""), re.I
+                        )
+                    )
+                    if active_scopes and decision.control_id not in owned_choices and (
+                        closing or facts.get("widget_scope") not in active_scopes
+                    ):
+                        guidance = self.task.required_form_problem(state["observation"])
+                        self.history.append({**entry, "status": "required_fields_pending",
+                                             "guidance": guidance})
+                        self.publish("paused", guidance)
+                        return {"status": "paused"}
                 if submitting:
                     if self.task.pending_submission:
                         raise WebsiteError(
@@ -2743,6 +2838,12 @@ class BrowserAgent:
                     if any(f.get("password_or_code_visible") for f in fresh.get("frames", [])):
                         raise WebsiteError("Finish sign-in/MFA before submitting Search.")
                     self.task.observe(fresh)
+                    form_problem = self.task.required_form_problem(fresh, latest)
+                    if form_problem:
+                        self.history.append({**entry, "status": "required_fields_pending",
+                                             "guidance": form_problem})
+                        self.publish("paused", form_problem)
+                        return {"status": "paused"}
                     if entry["decision_origin"] == "runtime" and (
                         len(self.task.submission_candidates) != 1
                         or self.task.submission_candidates[0]["control_id"] != decision.control_id
@@ -2911,6 +3012,18 @@ class BrowserAgent:
                         "acting", "Attempting the verified Search once; its response is unconfirmed."
                     )
                 outcome = self.timed("action", self.tools.execute, decision)
+                if submitting and outcome.get("status") == "validation_blocked":
+                    after = self.observe_browser("submit_validation")
+                    if self.task.reject_pending_submission(after, outcome):
+                        self.local_submission_attempts.discard((
+                            before_submit.get("document_id", before_submit.get("url")),
+                            facts.get("form_scope"),
+                        ))
+                        guidance = self.task.required_form_problem(after, facts)
+                        self.history.append({**entry, **outcome, "guidance": guidance})
+                        self.publish("paused", guidance or
+                                     "Complete the website's required fields, then Resume. Search was not clicked.")
+                        return {"status": "paused"}
                 if submitting and self.task.pending_submission:
                     self.task.pending_submission["dispatch_status"] = (
                         "action_completed"

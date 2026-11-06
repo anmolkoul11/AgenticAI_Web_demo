@@ -1,5 +1,96 @@
 # Use an agent in your normal Chrome or Edge tab
 
+## Newly required form fields - 2026-11-06, verification pending
+
+Extension **0.5.2**, dashboard **2026-11-06.2**, agent prompt **v20.5** observes
+newly revealed required/invalid fields and unresolved select placeholders. These
+fields take priority in compact navigation context and prevent automatic Search
+while incomplete. A dependent field inside an open widget must be completed
+before closing or switching widgets. Values come from the request or the user;
+the agent must never invent a child's age.
+
+For `Edison, November 28–30, 2026, 5 adults, 1 child, 4 rooms`, no age was supplied.
+The expected path is a specific age-field pause, manual age entry on the website,
+then Resume and one Search. Alternatively include `one child aged 7` in a fresh
+request and verify that the agent selects the actual matching option. With two
+children, provide both ages and check both fields. Check the no-children case too.
+
+A native validation preflight can report that Search input was explicitly
+prevented. Only that proof releases the local attempt after field repair. An
+unchanged page or timeout still does not authorize another Search. Old paused
+runs with an unknown attempt should be restarted after upgrading, or completed
+manually and resumed for passive result verification. No tests, validators,
+application/browser startup or paid model calls were run.
+
+## Startup compatibility - 2026-11-06, verification pending
+
+Extension **0.5.1**, dashboard **2026-11-06.1**, checks the loaded website
+executor's version and native-input protocol before Start or Resume reaches the
+backend. Observation readiness is confirmed by the worker's actual attachment,
+instead of relying on a page helper echoing an input-driver flag. An old or mixed
+installation still stops before a model decision; diagnostics now retain the
+worker version, executor version, input driver and protocol when available.
+
+The earlier `native input is not active` message with empty diagnostics proves
+the startup marker was missing, but does not identify which component was stale.
+Current source inspection found that the prior worker and executor agree when
+both are loaded. Reload the unpacked extension from this project's
+`extensions/page-capture` folder, confirm **0.5.1**, refresh the website and
+reconnect a fresh workflow after restarting and refreshing the dashboard.
+
+Manual checks: start once without manually clicking the website; confirm version
+diagnostics and the actual destination/date/occupancy summary, Search and source
+records. A version mismatch must show the upgrade instructions before a backend
+Start/Resume request. No tests, validators, application/browser startup or paid
+calls were run for this change.
+
+## Native browser input - 2026-10-26, verification pending
+
+Extension **0.5.0**, dashboard UI/backend **2026-10-26.1**, replaces synthetic DOM
+clicks/typing in the current-tab agent path with browser-level mouse/keyboard
+input through the extension's `debugger` permission. Observations and source
+capture still use the existing DOM collectors; no screenshots, new model planner,
+additional paid-call budget, cookie export or remote debugging port were added.
+
+**Review this permission change:** `debugger` is a powerful browser permission.
+This implementation attaches only to the already connected website tab after a
+separate **browser-level mouse and keyboard control** approval on Start or Resume.
+It does not attach merely for pairing, status checks or a one-page snapshot.
+The browser can show a debugging warning. Cancelling that warning, opening
+DevTools, closing the website or another debugger taking the tab can interrupt
+input. Inspect the page/action evidence, resolve the conflict and approve Resume
+explicitly; an uncertain action must not be replayed automatically. See the
+[browser debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger).
+
+The public agent actions and decision schema are unchanged. Public `press` is
+still limited to Enter/Escape; native arrow keys used for a numeric input are
+internal counter stepping, not arbitrary model-provided key sequences. The
+packaged executor grounds each action in observed controls and reads its result
+back. Native input does not bypass login, MFA, CAPTCHA, paywalls or access denials,
+and a dispatched click is not proof that search criteria or listing prices match.
+
+Recent counter evidence now separates **before**, **requested**, **observed**,
+**input attempts** and **dispatched**. Unreported values are labelled unconfirmed,
+not inferred from an unchanged UI. Browser diagnostics name the `native_cdp` input
+adapter separately from DOM observation. Capture, extraction, review, saved data
+and event publishing retain the existing workflow.
+
+An old extension worker cannot silently keep using DOM-only input after disk
+files are updated: the backend requires an observation declaring the native
+driver before any new model decision, otherwise it asks for reload/reconnect.
+
+Upgrade manually: restart the dashboard, hard-refresh its tab, reload the unpacked
+extension, review/accept its new debugger permission, refresh the target website
+and reconnect a fresh workflow. The first live acceptance check is New York,
+November 28–30, 2026, 3 adults and 2 rooms **without manually clicking the page
+after Start**. Compare the actual destination/date/occupancy summary, Search
+transition and listings before saving. Then repeat with different counts, pause
+and renew both approvals before Resume, and intentionally detach input to confirm
+that it stops instead of replaying an uncertain action. These checks remain for
+the user: no tests, validators, application/browser startup or model calls were run.
+
+## Earlier implementation checkpoints
+
 Implementation checkpoint: 2026-10-18. Manual verification pending. No tests,
 validators, application startup, live browser sessions or model calls were run
 while implementing this checkpoint, as requested.
@@ -28,7 +119,7 @@ The dashboard now has two primary workflows: **Open a new browser** and
 **Use my current tab**. A one-page snapshot is under **Advanced collection options →
 Extract this page only**; it is not a second way to start browser automation.
 
-Start/Resume explicitly activates the connected website tab/window. This is not a
+In that earlier DOM-only checkpoint, Start/Resume explicitly activated the connected website tab/window. This was not a
 claim of trusted DOM input: actual page visibility/focus is reported separately in
 Browser control diagnostics. Counter preflight compares exact fact keys/values,
 not object property order, then focuses and rechecks the observed actuator before
@@ -99,7 +190,9 @@ event publishing. This is a browser adapter, not another model or planner.
 2. Open `chrome://extensions` (Chrome) or `edge://extensions` (Edge). Enable
    Developer mode, choose **Load unpacked**, and select the repository folder
    `extensions/page-capture`. If it was already installed, click **Reload**.
-   The extension is named **Agentic Studio Browser Companion**, version 0.4.4.
+   The extension is named **Agentic Studio Browser Companion**, version 0.5.0.
+   Review/accept the new debugger permission after this upgrade; the runtime
+   attaches only after your separate Start/Resume control approval.
 3. Open the target public HTTPS website in an ordinary tab. Complete login,
    MFA and any site verification yourself before starting. Do not enter passwords,
    API keys or codes in the task prompt.
@@ -107,13 +200,16 @@ event publishing. This is a browser adapter, not another model or planner.
    tab with agent**. The side panel opens and connects that tab to the signed-in
    dashboard. Confirm the displayed website and dashboard account.
 5. Enter your task, optionally set fields/record limit/rules, check the paid
-   workflow approval and choose **Start workflow**. Pairing itself makes no model
+   workflow and browser-level input approvals, then choose **Start workflow**.
+   Pairing itself makes no model
    call. Existing budgets apply: 30 decisions, five active minutes, up to six
    captured pages, and 1–50 preview records (default 25). These are upper bounds,
    not a promise of full-site coverage.
 6. Follow progress and recent actions in the panel. **Pause** stops between
    actions; an in-flight operation can finish. Complete any required manual
-   interaction in the connected tab. Renew approval before **Resume agent**.
+   interaction in the connected tab. Renew both paid-workflow and browser-level
+   input approvals before **Resume agent**. Collecting retained pages requires
+   only the paid-workflow approval, not renewed input control.
    **Review collected pages** ends navigation and extracts already-retained
    sources; it does not capture new pages or save automatically.
 7. Choose **Open review / results in dashboard**. Review fields, missing values,
@@ -141,9 +237,11 @@ HTTP relay. Existing session/CSRF checks remain, with an exact backend-instance
 binding. No wildcard CORS, debugger port, cookie-reading permission, API-key
 storage in the extension or messages from arbitrary webpages were added.
 
-The worker claims one backend command at a time, runs packaged code in the
-selected tab's isolated extension world and acknowledges it. Commands are DOM
-observations, a grounded action or a bounded source capture. Unknown/lost action
+The worker claims one backend command at a time. Packaged code in the selected
+tab's isolated extension world observes/validates controls and reads action
+results; the debugger-backed driver sends bounded browser-level input to that
+tab. Commands are DOM observations, a grounded action or a bounded source capture.
+Unknown/lost action
 delivery is not automatically replayed. Temporary run/acknowledgement state lives
 in `chrome.storage.session` so a sleeping MV3 worker does not blindly repeat a
 click; browser restart clears it. Do not treat this storage as a secrets vault.
@@ -155,19 +253,23 @@ local backend; authorized visible source text still goes to your configured
 model. DOM reference attributes are added to elements but no visual labels or
 overlays are inserted by this adapter.
 
-## First-version boundaries
+## Current boundaries
 
 - LangGraph only for the new tab-agent path; existing CrewAI/manual paths remain.
-- DOM/text only, no screenshots, coordinate clicking or arbitrary model-provided
-  scripts/selectors. Custom widgets requiring trusted hardware-like input may
-  need manual interaction. Native fields and generic clickable counters are
-  supported; keyboard automation is limited to native-form Enter and Escape.
+- DOM/text observations only, no screenshots or arbitrary model-provided
+  coordinates/scripts/selectors. Browser-level clicks use coordinates derived
+  from the observed control, not a model-generated point. Native input still
+  requires source-grounded read-back; unsupported or ambiguous widgets can pause.
+  Public keyboard actions remain Enter/Escape; arrow stepping for a numeric
+  counter is internal to the verified action.
 - Only the connected top-level tab/origin is automated. Popups, other tabs and
   cross-origin frames are not controlled. Cross-origin navigation pauses rather
   than silently granting control of another website.
 - Temporary `activeTab` access is granted by clicking the extension on the
   website. Same-origin navigation can continue; if access is lost, invoke the
-  toolbar extension on that site again. No blanket site-access grant is needed.
+  toolbar extension on that site again. The debugger permission is separately
+  required for native input, but attachment is limited by this workflow to the
+  connected website tab; it is not a browser-wide debugging port.
 - Login/MFA/CAPTCHA remain manual. This does not bypass bot detection, access
   denials, paywalls or guarantee Tripadvisor will accept automated actions.
 - Dynamic prices, availability and source completeness still require review.
@@ -186,8 +288,10 @@ overlays are inserted by this adapter.
 2. **News current page:** open an accessible news homepage; ask for world-politics
    headlines visible on this page with original titles and links, without opening
    detail pages. Check that collection can finish without an unnecessary search.
-3. **Pause/manual/resume:** pause, inspect/change the connected form, renew
-   approval and resume. Fresh observed state must be used, not old control IDs.
+3. **Pause/manual/resume:** pause, inspect/change the connected form, renew both
+   paid and browser-level control approvals and resume. Fresh observed state must
+   be used, not old control IDs. Cancel the browser debugging warning or open
+   DevTools in a separate check: the interrupted input must stop without replay.
 4. **Connection boundaries:** switch to another site, close the selected tab,
    sign out of the dashboard, or restart the backend. Actions must stop; another
    account/tab must not inherit the run. Reconnect explicitly for a new workflow.
@@ -200,4 +304,5 @@ overlays are inserted by this adapter.
 
 Implementation references: [Chrome activeTab](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab),
 [sidePanel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel),
+[debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger),
 [MV3 worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle).

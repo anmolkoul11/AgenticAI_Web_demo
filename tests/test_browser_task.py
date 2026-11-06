@@ -45,6 +45,114 @@ def form_observation(adults="3", rooms="2", dates=True):
     }
 
 
+def required_age_form(age="-1"):
+    observation = form_observation()
+    for item in observation["frames"][0]["controls"]:
+        item["form_scope"] = "search"
+    observation["frames"][0]["controls"].extend([
+        {"id": "0:age", "tag": "SELECT", "name": "age", "label": "Age of child 1",
+         "value": age, "form_scope": "search", "required": True,
+         "invalid": age == "-1", "value_missing": age == "-1",
+         "selection_placeholder": age == "-1", "validation_message": "Select an age" if age == "-1" else ""},
+        {"id": "0:search", "tag": "BUTTON", "type": "submit", "submits_form": True,
+         "label": "Search", "form_scope": "search"},
+    ])
+    return observation
+
+
+def test_new_required_field_blocks_search_until_user_supplies_it():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    checklist = task.observe(observation)
+    submit = observation["frames"][0]["controls"][-1]
+    assert not task.pending()
+    assert checklist["unresolved_form_fields"][0]["label"] == "Age of child 1"
+    assert not task.submission_candidates
+    assert "Age of child 1" in task.required_form_problem(observation, submit)
+    assert not task.begin_submission(observation, observation["url"], control=submit, action="click")
+    assert task.pending_submission is None
+    # An age of zero is a real supplied value, never an empty/false placeholder.
+    corrected = required_age_form("0")
+    task.observe(corrected)
+    assert not task.unresolved_form_fields and len(task.submission_candidates) == 1
+    assert "child_age" not in task.requirements
+    assert task.begin_submission(corrected, corrected["url"], control=submit, action="click")
+
+
+def test_unrelated_form_and_valid_radio_group_do_not_block_retrieval():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form("7")
+    observation["frames"][0]["controls"].extend([
+        {"id": "0:email", "tag": "INPUT", "type": "text", "label": "Newsletter email",
+         "form_scope": "newsletter", "required": True, "value": "", "value_missing": True,
+         "invalid": True},
+        {"id": "0:radio", "tag": "INPUT", "type": "radio", "label": "Other room type",
+         "form_scope": "search", "required": True, "selected": "false", "value": "other",
+         "value_missing": False, "invalid": False},
+    ])
+    task.observe(observation)
+    assert not task.unresolved_form_fields
+    assert len(task.submission_candidates) == 1
+
+
+@pytest.mark.parametrize("label,blocked", [
+    ("Age needed", True), ("Selection required", True),
+    ("Choose optional add-on", False), ("Select if needed", False),
+])
+def test_explicit_required_placeholder_blocks_without_html_required(label, blocked):
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    field.update(required=False, invalid=False, value_missing=False, selected_label=label)
+    task.observe(observation)
+    assert bool(task.unresolved_form_fields) is blocked
+    assert bool(task.submission_candidates) is not blocked
+
+
+def test_explicit_validation_preflight_releases_only_same_form_submission():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    before = required_age_form("7")
+    task.observe(before)
+    submit = before["frames"][0]["controls"][-1]
+    assert task.begin_submission(before, before["url"], control=submit, action="click")
+    after = required_age_form()
+    outcome = {"status": "validation_blocked", "submitted": False,
+               "dispatch_status": "not_dispatched", "validation": {"form_scope": "search",
+               "fields": [{"control_id": "0:age", "label": "Age of child 1"}]}}
+    assert task.reject_pending_submission(after, outcome)
+    assert task.pending_submission is None
+    assert task.snapshot()["search_transition"]["attempt_status"] == "validation_blocked"
+    assert "Age of child 1" in task.completion_problem()
+    corrected = required_age_form("9")
+    task.observe(corrected)
+    assert task.begin_submission(corrected, corrected["url"], control=submit, action="click")
+    assert task.last_validation_rejection is None
+
+
+@pytest.mark.parametrize("change", ["unknown_dispatch", "other_form", "other_document", "no_rejection"])
+def test_invalid_field_alone_never_releases_uncertain_search(change):
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    before = required_age_form("7")
+    task.observe(before)
+    submit = before["frames"][0]["controls"][-1]
+    assert task.begin_submission(before, before["url"], control=submit, action="click")
+    after = required_age_form()
+    outcome = {"status": "validation_blocked", "submitted": False,
+               "dispatch_status": "not_dispatched", "validation": {"form_scope": "search",
+               "fields": [{"control_id": "0:age", "label": "Age of child 1"}]}}
+    if change == "unknown_dispatch":
+        outcome["dispatch_status"] = "outcome_unknown"
+    elif change == "other_form":
+        outcome["validation"]["form_scope"] = "newsletter"
+    elif change == "other_document":
+        after["document_id"] = "other-document"
+    else:
+        outcome["status"] = "action_performed"
+    assert not task.reject_pending_submission(after, outcome)
+    assert task.pending_submission is not None
+    assert task.snapshot()["search_response_pending"]
+
+
 class SearchResultTools(FakeTools):
     """Checked form and result snapshots, without a browser or model transport."""
 

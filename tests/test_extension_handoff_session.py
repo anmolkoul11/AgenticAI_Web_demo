@@ -36,7 +36,6 @@ def test_worker_session_recovery_is_explicit_and_preserves_access_checks():
     assert "error:'delivery_unknown'" in script
     assert "if ((await readState()) !== state) break;" in script
     assert "if (state.revision !== revision) continue;" in script
-    assert "const controlled = {...state,run:{...state.run,...result}" in script
     assert "state = latest;" in script
     assert "onMessageExternal" not in script and "eval(" not in script
 
@@ -54,6 +53,7 @@ def worker_page(shared_local_page):
             dashboard_url:'http://localhost:8120', ...session};
           const run = {run_id:'a'.repeat(32), job_id:'b'.repeat(32), state:'agent_paused'};
           const config = {session, state:{binding,run,error:null,pending:null}, calls:[], events:[],
+            nativeDetachListeners:[],
             apiStatus:200, apiBody:run, markerVersion:'current-ui', markerReady:'ready'};
           const noListener = {addListener:() => {}};
           const tabs = config.tabs = {1:{id:1,windowId:1,url:'https://hotels.example.org/',title:'Hotels',active:false},
@@ -62,15 +62,27 @@ def worker_page(shared_local_page):
           const fakeChrome = {
             storage:{session:{get:async key => ({[key]:config.state}),
               set:async value => {config.state = Object.values(value)[0];}}},
-            runtime:{sendMessage:async () => {},onMessage:noListener,getURL:()=>'extension://fixture/'},
-            windows:{update:async(id,options)=>{config.events.push({kind:'window',id,...options});return {id,focused:config.focusAllowed !== false};}},
+            runtime:{sendMessage:async () => {},onMessage:noListener,getURL:()=>'extension://fixture/',
+              getManifest:()=>({version:'0.5.2'})},
+            windows:{update:async(id,options)=>{config.events.push({kind:'window',id,...options});return {id,focused:config.focusAllowed !== false};},
+              get:async id=>({id,focused:config.focusAllowed !== false})},
             tabs:{get:async id => {if(!tabs[id])throw Error('Missing tab');return tabs[id];},
               update:async(id,options)=>{config.events.push({kind:'tab',id,...options});
                 if(options.active)for(const tab of Object.values(tabs))tab.active=false;
                 Object.assign(tabs[id],options);return tabs[id];},
               query:async query => query.active ? Object.values(tabs).filter(tab=>tab.active) : Object.values(tabs),
               onRemoved:noListener,onUpdated:noListener},
-            scripting:{executeScript:async options => [{result:await options.func(...options.args)}]},
+            debugger:{onDetach:{addListener:listener=>config.nativeDetachListeners.push(listener)}},
+            scripting:{executeScript:async options => {
+              if(options.files)return [{result:undefined}];
+              if(options.target.tabId===1){
+                if(!options.args?.length)return [{result:{before:false,has_focus:config.documentFocus !== false,visibility:'visible'}}];
+                if(config.executorHook)return [{result:{ok:true,result:await config.executorHook(...options.args)}}];
+                if(options.args[0]==='capabilities')return [{result:{ok:true,result:{executor_version:'0.5.2',input_protocol:1}}}];
+                throw Error('Unexpected website executor request');
+              }
+              return [{result:await options.func(...(options.args||[]))}];
+            }},
           };
           const fakeFetch = async (path,options) => {
             config.calls.push({path,method:options?.method || 'GET',body:options?.body});
@@ -84,10 +96,29 @@ def worker_page(shared_local_page):
             get agenticUiVersion(){return config.markerVersion;},
             get agenticConnection(){return config.markerReady;}
           }}};
-          const construct = new Function('chrome','location','document','fetch',script +
-            ';return {connect,relay,handle,readState,writeState,stopFor,publicState,dashboardRequest,activateWebsite,pump};');
+          const native = config.native = {
+            attachedTabId:null,
+            attach:async id=>{
+              config.events.push({kind:'native_attach',id});
+              if(config.attachError)throw Error(config.attachError);
+              if(id!==binding.tab_id)throw Error('unsupported');
+              native.attachedTabId=id;
+            },
+            focus:async id=>{config.events.push({kind:'native_focus',id});},
+            perform:async(id,step,validate)=>{
+              await validate();
+              config.events.push({kind:'native_perform',id,step_id:step.id});
+              if(config.performHook)await config.performHook(id,step,validate);
+            },
+            detach:async id=>{
+              if(native.attachedTabId!==id)return;
+              config.events.push({kind:'native_detach',id});native.attachedTabId=null;
+            }
+          };
+          const construct = new Function('chrome','location','document','fetch','importScripts','AgenticNativeInput',script +
+            ';return {connect,relay,handle,readState,writeState,stopFor,publicState,dashboardRequest,activateWebsite,pump,executeNative,injectCommand,removedTab,updatedTab};');
           window.workerFixture = {config,api:construct(fakeChrome,
-            {origin:'http://localhost:8120'},fakeDocument,fakeFetch)};
+            {origin:'http://localhost:8120'},fakeDocument,fakeFetch,()=>{},native)};
         }""",
         script,
     )
@@ -248,7 +279,8 @@ def test_explicit_start_activates_bound_site_before_the_paid_start_request(worke
           config.state.run.state='completed';const old=await api.readState();
           config.apiBody={run_id:'d'.repeat(32),job_id:'e'.repeat(32),state:'agent_paused'};
           const started=await api.handle({operation:'start',instructions:'Find hotels',record_limit:5,
-            agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false});
+            agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false,
+            native_input_confirmed:true});
           return {started,events:config.events,old_run_id:old.run.run_id};
         }"""
     )
@@ -259,9 +291,13 @@ def test_explicit_start_activates_bound_site_before_the_paid_start_request(worke
     tab = next(i for i, event in enumerate(events) if event["kind"] == "tab")
     start = next(i for i, event in enumerate(events)
                  if event.get("method") == "POST" and event.get("path") == "/api/extension/runs")
-    assert window < tab < start
+    attach = next(i for i, event in enumerate(events) if event["kind"] == "native_attach")
+    focus = next(i for i, event in enumerate(events) if event["kind"] == "native_focus")
+    assert window < tab < attach < focus < start
     assert events[tab]["id"] == 1
-    assert result["started"]["website_activity"]["observation"] is None
+    assert events[attach]["id"] == events[focus]["id"] == 1
+    assert result["started"]["website_activity"]["input_driver"] == "native_cdp"
+    assert result["started"]["website_activity"]["focus_confirmed"] is True
 
 
 def test_failed_window_activation_does_not_send_a_paid_start_request(worker_page):
@@ -270,12 +306,140 @@ def test_failed_window_activation_does_not_send_a_paid_start_request(worker_page
           const {config,api}=workerFixture;
           config.state.run.state='completed';config.focusAllowed=false;
           try{await api.handle({operation:'start',instructions:'Find hotels',record_limit:5,
-            agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false});}
+            agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false,
+            native_input_confirmed:true});}
           catch(error){return {error:error.message,calls:config.calls};}
         }"""
     )
     assert result["error"] == "website_focus_required"
     assert all(call["method"] == "GET" for call in result["calls"])
+
+
+def test_failed_native_attach_does_not_send_a_paid_start_request(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='completed';config.attachError='native_input_unavailable';
+      try{await api.handle({operation:'start',instructions:'Find hotels',record_limit:5,
+        agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false,
+        native_input_confirmed:true});}
+      catch(error){return {error:error.message,calls:config.calls,events:config.events,
+        attached:config.native.attachedTabId};}
+    }""")
+    assert result["error"] == "native_input_unavailable"
+    assert result["attached"] is None
+    assert all(call["method"] == "GET" for call in result["calls"])
+    assert [e["id"] for e in result["events"] if e["kind"] == "native_attach"] == [1]
+
+
+def test_incompatible_page_executor_is_rejected_before_backend_start(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='completed';
+      config.executorHook=async operation=>{
+        if(operation==='capabilities')return {executor_version:'0.5.0'};
+        throw Error('Unexpected input');
+      };
+      try{await api.handle({operation:'start',instructions:'Find hotels',record_limit:5,
+        agent_confirmed:true,authorized:true,allow_model_api:true,agent_visual_confirmed:false,
+        native_input_confirmed:true});}
+      catch(error){return {error:error.message,calls:config.calls,events:config.events,
+        attached:config.native.attachedTabId};}
+    }""")
+    assert result["error"] == "extension_update_required"
+    assert result["attached"] is None
+    assert result["calls"] == []
+    assert not any(event["kind"] == "native_perform" for event in result["events"])
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_observation_driver_is_confirmed_by_worker_attachment(worker_page, attached):
+    result = worker_page.evaluate("""async attached=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='agent_running';config.native.attachedTabId=attached?1:null;
+      config.executorHook=async operation=>{
+        if(operation==='observe')return {executor_version:'0.5.2',input_driver:'dom',
+          document_token:'fixture-document',url:'https://hotels.example.org/',
+          tab_state:{visibility:'visible',has_focus:true},frame:{controls:[]}};
+        throw Error('Unexpected input');
+      };
+      try{return {observation:await api.injectCommand(await api.readState(),
+        {operation:'observe',payload:{focus:'form'}}),calls:config.calls};}
+      catch(error){return {error:error.message,calls:config.calls};}
+    }""", attached)
+    assert result["calls"] == []
+    if attached:
+        assert result["observation"]["input_driver"] == "native_cdp"
+        assert result["observation"]["native_attached"] is True
+        assert result["observation"]["worker_version"] == "0.5.2"
+        assert result["observation"]["input_protocol"] == 1
+    else:
+        assert result["error"] == "native_input_detached"
+
+
+@pytest.mark.parametrize("operation", ["start", "resume"])
+def test_native_consent_is_required_before_attach_or_paid_control(worker_page, operation):
+    result = worker_page.evaluate("""async operation=>{
+      const {config,api}=workerFixture;
+      const message=operation==='start' ? {operation:'start',instructions:'Find hotels',
+        record_limit:5,agent_confirmed:true,authorized:true,allow_model_api:true,
+        agent_visual_confirmed:false} : {operation:'control',action:'resume'};
+      if(operation==='start')config.state.run.state='completed';
+      try{await api.handle(message);}
+      catch(error){return {error:error.message,calls:config.calls,events:config.events};}
+    }""", operation)
+    assert result == {"error": "native_input_consent_required", "calls": [], "events": []}
+
+
+def test_external_debugger_detach_pauses_without_reattaching_or_resuming(worker_page):
+    page = worker_page
+    page.evaluate("""()=>{
+      const {config}=workerFixture;
+      config.state.run.state='agent_running';
+      config.apiBody={...config.state.run,state:'agent_paused'};
+      config.native.attachedTabId=null;
+      config.nativeDetachListeners.forEach(listener=>listener({tabId:1},'canceled_by_user'));
+    }""")
+    page.wait_for_function("() => workerFixture.config.state.error==='native_input_detached'")
+    result = page.evaluate("({state:workerFixture.config.state,calls:workerFixture.config.calls,events:workerFixture.config.events})")
+    assert result["state"]["run"]["state"] == "agent_paused"
+    assert not any(event["kind"] == "native_attach" for event in result["events"])
+    posted = [call for call in result["calls"] if call["method"] == "POST"]
+    assert len(posted) == 1 and posted[0]["path"].endswith("/control")
+    assert posted[0]["body"] == '{"action":"pause"}'
+
+
+def test_unknown_native_delivery_is_aborted_without_input_replay(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='agent_running';config.tabs[1].active=true;
+      config.native.attachedTabId=1;config.operations=[];
+      const step={id:'step-1',kind:'click',point:{x:20,y:30},value:'',selection_steps:0};
+      config.executorHook=async operation=>{
+        config.operations.push(operation);
+        if(operation==='native_begin')return {transaction_id:'tx-1',native_step:step};
+        if(operation==='native_validate')return step;
+        if(operation==='native_abort')return {aborted:true};
+        throw Error('Unexpected native continuation');
+      };
+      config.performHook=async()=>{throw Error('delivery_unknown');};
+      try{await api.executeNative(await api.readState(),{document_token:'fixture-token'});}
+      catch(error){return {error:error.message,operations:config.operations,events:config.events,calls:config.calls};}
+    }""")
+    assert result["error"] == "delivery_unknown"
+    assert result["operations"] == ["native_begin", "native_validate", "native_abort"]
+    assert len([e for e in result["events"] if e["kind"] == "native_perform"]) == 1
+    assert result["calls"] == []
+
+
+def test_native_input_is_not_dispatched_after_connected_origin_changes(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='agent_running';config.native.attachedTabId=1;
+      config.tabs[1].url='https://another.example.org/';
+      try{await api.executeNative(await api.readState(),{document_token:'fixture-token'});}
+      catch(error){return {error:error.message,events:config.events,calls:config.calls};}
+    }""")
+    assert result == {"error": "origin_changed", "events": [], "calls": []}
 
 
 def test_resume_activation_is_explicit_and_status_poll_never_focuses(worker_page):
@@ -284,7 +448,7 @@ def test_resume_activation_is_explicit_and_status_poll_never_focuses(worker_page
           const {config,api}=workerFixture;
           await api.handle({operation:'status'});
           const passive=structuredClone(config.events);config.events.length=0;
-          await api.handle({operation:'control',action:'resume'});
+          await api.handle({operation:'control',action:'resume',native_input_confirmed:true});
           return {passive,resume:config.events};
         }"""
     )
@@ -337,7 +501,7 @@ def test_late_same_run_status_cannot_overwrite_explicit_control(worker_page, act
     result = worker_page.evaluate(
         """async ({action,expected})=>{
           const {config,api}=workerFixture;
-          config.state.run.state='agent_running';
+          config.state.run.state='agent_running';config.native.attachedTabId=1;
           const old=await api.readState(), runId=old.run.run_id;
           let release,entered;
           const waiting=new Promise(resolve=>{entered=resolve;});
@@ -360,3 +524,45 @@ def test_late_same_run_status_cannot_overwrite_explicit_control(worker_page, act
     assert result["state"]["run"]["state"] == expected
     assert result["state"]["error"] is None
     assert result["oldState"] == "agent_running"
+
+
+def test_reloaded_worker_without_native_attachment_pauses_before_claiming_commands(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;
+      config.state.run.state='agent_running';config.native.attachedTabId=null;
+      config.apiBody={...config.state.run,state:'agent_paused'};
+      await api.pump();
+      return {error:config.state.error,calls:config.calls,events:config.events};
+    }""")
+    assert result["error"] == "native_input_detached"
+    assert not any(call["path"].endswith("/next") for call in result["calls"])
+    assert not any(event["kind"] == "native_attach" for event in result["events"])
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_collect_retained_pages_polls_review_without_native_input(worker_page, attached):
+    result = worker_page.evaluate("""async attached=>{
+      const {config,api}=workerFixture;
+      config.native.attachedTabId=attached?1:null;
+      config.apiBody={...config.state.run,state:'agent_running'};
+      const collecting=await api.handle({operation:'control',action:'collect'});
+      await api.pump();
+      // Intentional detachment while extracting retained sources is not a
+      // request to pause or reacquire browser control.
+      for(const listener of config.nativeDetachListeners)listener({tabId:1});
+      await new Promise(resolve=>setTimeout(resolve,0));
+      const polling=await api.handle({operation:'status'});
+      config.apiBody={...config.apiBody,state:'reviewing'};
+      const reviewing=await api.handle({operation:'status'});
+      return {collecting,polling,reviewing,calls:config.calls,events:config.events,
+        attachedTabId:config.native.attachedTabId};
+    }""", attached)
+    assert result["collecting"]["run"]["collection_only"] is True
+    assert result["polling"]["error"] is None
+    assert result["reviewing"]["error"] is None
+    assert result["reviewing"]["run"]["state"] == "reviewing"
+    assert result["attachedTabId"] is None
+    assert not any(call["path"].endswith("/next") for call in result["calls"])
+    posts = [call for call in result["calls"] if call["method"] == "POST"]
+    assert len(posts) == 1 and posts[0]["body"] == '{"action":"collect"}'
+    assert not any(event["kind"] in {"native_attach", "native_perform"} for event in result["events"])

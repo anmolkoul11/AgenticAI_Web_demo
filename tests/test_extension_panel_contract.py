@@ -30,7 +30,9 @@ def test_sidepanel_markup_matches_packaged_script():
     assert "agentic-panel-v1" in script and "agentic-panel-state-v1" in script
     assert "agent_visual_confirmed:false" in script
     assert 'send("status")' in script
-    assert 'action("control", {action:name})' in script
+    assert 'action("control",' in script
+    assert 'id="native-input-consent"' in html
+    assert "native_input_confirmed" in script
     assert 'src="sidepanel.js"' in html and 'href="sidepanel.css"' in html
     assert 'role="alert"' in html and 'role="status"' in html
     assert "before saving" in html and "not screenshots" in html

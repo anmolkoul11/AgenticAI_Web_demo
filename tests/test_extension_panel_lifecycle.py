@@ -48,6 +48,7 @@ def test_panel_status_resync_after_port_failure_does_not_repeat_start(companion_
     page.evaluate("panelFixture.failStart=true")
     page.locator("#instructions").fill("Find hotel names and displayed prices")
     page.locator("#consent").check()
+    page.locator("#native-input-consent").check()
     page.locator("#start").click()
     assert page.locator("#connect").inner_text() == "Check status"
     assert page.locator("#start").is_disabled()
@@ -105,3 +106,28 @@ def test_panel_shows_actual_document_focus_separately_from_browser_activation(co
       website_activity:{activation_requested:true,tab_active:true,window_focused:true,
         observation:{visibility:'visible',has_focus:false}}},true)""")
     assert "document focus no" in page.locator("#account").inner_text()
+
+
+def test_panel_requires_separate_native_input_consent_without_sending_start(companion_panel):
+    page = companion_panel
+    result = page.evaluate("""async()=>{
+      panelFixture.messages=[];
+      document.getElementById('instructions').value='Find hotel names';
+      document.getElementById('consent').checked=true;
+      await document.getElementById('task-form').onsubmit({preventDefault(){}});
+      return {error:document.getElementById('error').textContent,
+        starts:panelFixture.messages.filter(m=>m.operation==='start').length};
+    }""")
+    assert "browser-level mouse and keyboard control" in result["error"]
+    assert result["starts"] == 0
+
+
+def test_panel_counter_evidence_shows_real_counts_and_dispatch(companion_panel):
+    page = companion_panel
+    page.evaluate("""()=>render({...panelFixture.state,revision:3,run:{state:'agent_paused',
+      agent_report:{actions:[{action:'set_counter',control:'increase Adults',
+        status:'counter_unconfirmed',before:2,expected:3,observed:2,
+        attempts:1,dispatched:true}]}}},true)""")
+    text = page.locator("#actions").text_content()
+    assert "before 2; requested 3; observed 2" in text
+    assert "Input attempts: 1; dispatched: yes" in text

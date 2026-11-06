@@ -49,7 +49,7 @@ def control(**changes):
 
 
 def observation(token=TOKEN, url=URL + QUERY, controls=None, **frame_changes):
-    return {"url": url, "document_token": token, "frame": {
+    return {"url": url, "document_token": token, "input_driver": "native_cdp", "frame": {
         "title": "Search results", "text": "Returned hotel listings are visible on the website.",
         "controls": controls if controls is not None else [control()],
         "results": {"record_count": 1, "busy": False},
@@ -113,6 +113,62 @@ def test_observation_diagnostics_preserve_counts_but_not_entered_values():
     assert summary["autocomplete"]["fields"][0]["control_id"] == "0:0"
     assert summary["autocomplete"]["fields"][0]["association"] == "explicit_aria"
     assert "private" not in repr(summary) and "must not be retained" not in repr(summary)
+
+
+@pytest.mark.parametrize("driver", [None, "dom"])
+def test_missing_native_readiness_retains_diagnostics_before_rejection(driver):
+    reply = observation()
+    reply.update(worker_version="0.4.4", executor_version="0.5.0",
+                 input_protocol=1, native_attached=False)
+    if driver is None:
+        reply.pop("input_driver")
+    else:
+        reply["input_driver"] = driver
+    adapter, channel = tools([("observe", reply)])
+    with pytest.raises(WebsiteError, match="readiness was not confirmed") as error:
+        adapter.observe()
+    diagnostics = adapter.observation_diagnostics
+    assert diagnostics["worker_version"] == "0.4.4"
+    assert diagnostics["executor_version"] == "0.5.0"
+    assert diagnostics["input_protocol"] == 1
+    assert diagnostics["native_attached"] is False
+    assert diagnostics["input"] == (driver or "unknown")
+    assert diagnostics["adapter"] == ("selected_tab_dom" if driver else "selected_tab_unknown")
+    assert "Browser Companion 0.5.2" in str(error.value)
+    assert "No model decision ran from this observation" in str(error.value)
+    assert [operation for operation, _ in channel.calls] == ["observe"]
+    assert adapter.document_token is None and not adapter.references
+
+
+@pytest.mark.parametrize("frame", [None, False, [], "private-page-text",
+                                   {"controls": None}, {"controls": False},
+                                   {"controls": "private-controls"}])
+def test_readiness_diagnostics_handle_malformed_frames_without_leaking_text(frame):
+    reply = {"frame": frame, "input_driver": ["private-driver"],
+             "worker_version": "private-worker", "executor_version": {"text": "private-executor"},
+             "input_protocol": True, "native_attached": "private-state"}
+    adapter, _ = tools([("observe", reply)])
+    with pytest.raises(WebsiteError, match="readiness was not confirmed") as error:
+        adapter.observe()
+    diagnostics = adapter.observation_diagnostics
+    assert diagnostics["control_count"] == 0
+    assert diagnostics["adapter"] == "selected_tab_unknown"
+    assert diagnostics["worker_version"] == diagnostics["executor_version"] == "unknown"
+    assert diagnostics["input_protocol"] == diagnostics["native_attached"] == "unknown"
+    assert "private" not in repr(diagnostics) and "private" not in str(error.value)
+
+
+def test_ready_observation_retains_worker_executor_and_attachment_diagnostics():
+    reply = observation()
+    reply.update(worker_version="0.5.1", executor_version="0.5.1",
+                 input_protocol=1, native_attached=True)
+    adapter, _ = tools([("observe", reply)])
+    observed = adapter.observe()
+    assert observed["frames"][0]["controls"][0]["id"] == "0:0"
+    summary = adapter.observation_diagnostics
+    assert summary["adapter"] == "selected_tab_native_cdp"
+    assert summary["worker_version"] == summary["executor_version"] == "0.5.1"
+    assert summary["input_protocol"] == 1 and summary["native_attached"] is True
 
 
 @pytest.mark.parametrize("diagnostics", [None, False, [], {"fields": False}])
@@ -211,7 +267,8 @@ def test_uncertain_execute_is_not_replayed():
 
 @pytest.mark.parametrize("code", ["command_timeout", "delivery_unknown", "execution_failed",
                                  "origin_changed", "tab_closed", "permission_required",
-                                 "session_changed", "payload_too_large", "access_restriction"])
+                                 "session_changed", "payload_too_large", "access_restriction",
+                                 "extension_update_required"])
 def test_dispatched_transport_uncertainty_uses_runtime_attempted_action_path(code):
     adapter, channel = tools([("observe", observation())])
     adapter.observe()
@@ -363,7 +420,7 @@ def test_reader_keeps_confirmed_empty_search_for_existing_no_extraction_branch(m
     assert review.snapshot_frozen
 
 
-def test_selected_tab_capabilities_use_existing_decider_without_advertising_arrow_keys(monkeypatch):
+def test_selected_tab_capabilities_use_native_input_without_advertising_arrow_keys(monkeypatch):
     received = []
 
     def decide(self, payload, timeout):
@@ -376,6 +433,10 @@ def test_selected_tab_capabilities_use_existing_decider_without_advertising_arro
         {"id": "0:0", "supported_actions": ["fill", "press", "click"]},
     ]}]}}
     assert adapter.decide(payload, 10) == "fixture decision"
-    assert received[0]["observation"]["frames"][0]["controls"][0]["supported_actions"] == ["fill", "click"]
+    assert received[0]["observation"]["frames"][0]["controls"][0]["supported_actions"] == ["fill", "press", "click"]
+    assert received[0]["browser_capabilities"]["adapter"] == "selected_tab_native_cdp"
+    assert received[0]["browser_capabilities"]["input"] == "native_cdp"
+    assert received[0]["browser_capabilities"]["observation"] == "dom"
+    assert received[0]["browser_capabilities"]["keyboard"] == ["Enter", "Escape"]
     assert received[0]["browser_capabilities"]["screenshots"] is False
     assert payload["observation"]["frames"][0]["controls"][0]["supported_actions"] == ["fill", "press", "click"]

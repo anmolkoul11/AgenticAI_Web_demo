@@ -165,6 +165,17 @@ def _interaction_focus(observation, checklist):
             "control_ids": [],
             "hint": "Search submitted: wait/inspect the response. Do not submit/navigate again.",
         }
+    unresolved = checklist.get("unresolved_form_fields") or []
+    if unresolved:
+        return {
+            "phase": "complete_required_fields",
+            "fields": [item.get("label", "Required field") for item in unresolved[:12]],
+            "control_ids": [item["control_id"] for item in unresolved[:12]
+                            if item.get("control_id") in items],
+            "hint": "The website revealed required or invalid fields. Complete them from the "
+            "request before closing the widget or Search. If a needed value is absent, "
+            "pause and ask the user to enter it in the website, then Resume. Never guess.",
+        }
     form = [item for item in requirements if item.get("application") == "form"]
     ready = bool(form) and all(item.get("status") == "verified" for item in form)
     if (
@@ -362,6 +373,11 @@ def _control(item, expected_values=(), *, focused=False, include_geometry=True):
         "option_primary",
         "editable",
         "required",
+        "invalid",
+        "value_missing",
+        "selection_placeholder",
+        "selected_label",
+        "validation_message",
     )
     actions, hint = _affordance(item)
     result = {"supported_actions": actions}
@@ -372,7 +388,9 @@ def _control(item, expected_values=(), *, focused=False, include_geometry=True):
         if not _nonempty(value) or value is False:
             continue
         # Preserve values, hrefs and exact IDs; shorten presentation labels only.
-        result[key] = _short(value, 180) if key in {"label", "option_primary"} else value
+        result[key] = _short(value, 180) if key in {
+            "label", "option_primary", "selected_label", "validation_message"
+        } else value
     if "value" in item and "fill" in actions:
         result["value"] = copy.deepcopy(item["value"])
     if item.get("enabled") is False:
@@ -466,6 +484,7 @@ def _observation(observation, checklist, budget, task, *, focused=False, include
     )
     mandatory_ids = (
         required_ids | date_ids | (submit_ids if form_required else set())
+        | {item.get("control_id") for item in checklist.get("unresolved_form_fields", [])}
     ) & observed_ids
     focus_ids = set(_interaction_focus(observation, checklist)["control_ids"])
     if focused:
@@ -487,7 +506,7 @@ def _observation(observation, checklist, budget, task, *, focused=False, include
     query_terms = _terms(task) - _QUERY_FILLER
     for item in checklist.get("requirements", []):
         query_terms.update(_terms(item.get("expected", "")) - _QUERY_FILLER)
-    form_pending = bool(checklist.get("pending_fields"))
+    form_pending = bool(checklist.get("pending_fields") or checklist.get("unresolved_form_fields"))
     result = {
         key: copy.deepcopy(observation[key])
         for key in ("url", "document_id", "version", "captured_urls")
@@ -646,6 +665,14 @@ def _build_navigation_context(
         "search_submitted": bool(checklist.get("search_submitted")),
         "search_response_pending": bool(checklist.get("search_response_pending")),
     }
+    if checklist.get("unresolved_form_fields"):
+        compact_checklist["unresolved_form_fields"] = [
+            {key: _short(item[key], 180) if key in {"label", "validation_message"}
+             else copy.deepcopy(item[key])
+             for key in ("control_id", "label", "required", "invalid", "value_missing",
+                         "validation_message") if _nonempty(item.get(key))}
+            for item in checklist["unresolved_form_fields"][:12]
+        ]
     if checklist.get("collection_mode") in {
         "model_decides",
         "linked_details",

@@ -38,3 +38,6 @@ Thumbs.db
 
 # uv.lock is intentionally tracked for reproducible dependency resolution.
 /live-model-results*.txt
+
+# Private reinstall backups: local context, history and potentially credentials.
+/_reinstall-backup/
