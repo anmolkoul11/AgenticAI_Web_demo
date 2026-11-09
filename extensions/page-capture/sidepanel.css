@@ -47,6 +47,13 @@ input::placeholder, textarea::placeholder { color: #758298; opacity: 1; }
 textarea:disabled { background: #f7f9fc; color: #5c6a80; }
 .field-help, .action-note { font-size: 11px; color: var(--muted); line-height: 1.5; }
 .field-help { margin: 8px 0 12px; }
+.record-limit { margin: 15px 0; }
+.record-limit-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.record-limit-heading label { margin: 0; }
+.record-limit-heading input { width: 83px; margin: 0; padding: 7px 9px; }
+#limit-slider { height: 24px; margin: 8px 0 0; padding: 0; border: 0; accent-color: var(--accent); cursor: pointer; background: transparent; }
+.record-limit-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.record-limit .field-help { margin: 6px 0 0; }
 .action-note { text-align: center; margin: 9px 0 0; }
 details { margin: 13px 0; }
 summary { display: list-item; cursor: pointer; font-size: 12px; font-weight: 650; line-height: 1.5; padding: 8px 0; }

@@ -1,5 +1,32 @@
 # Use an agent in your normal Chrome or Edge tab
 
+## Record limits and review handoff - 2026-11-09
+
+Restart the backend, refresh the dashboard (UI **2026-11-09.1**), reload
+Companion **0.5.21**, and refresh the website. Navigation remains browser-agent
+v20.30; these changes concern collection settings and workflow/review state.
+
+The Companion's Maximum records slider and number input both cover 0–500 and
+start at 50. Zero does not start a task. Above 50, batched collection is selected
+automatically. This is a maximum: available source records and validation may
+produce fewer saved results.
+
+Review results opens the existing workflow. After approval, both views follow
+the same save job and saved run. Opening an old review or repeating an approval
+returns that existing attempt, rather than saving or publishing again. A failed
+attempt remains available for inspection; it is not automatically replayed.
+Collection is shown as preparing results until extraction finishes.
+
+For manual verification (not performed during implementation):
+
+- Check default 50, type 52, drag to 500, and confirm zero disables Start.
+- Collect and approve once; reopen Review results and confirm it shows the same
+  saved run and downloads without another execution in history.
+- Keep both views open while saving and confirm preparing/review/saving/saved
+  transitions agree. Reopening review should preserve any pending approval.
+- Reopen completed results after the browser-control session expires; viewing
+  should work without reattaching browser input or rerunning navigation.
+
 ## Larger adult/room adjustments - 2026-11-09
 
 Restart backend **v20.30**, reload Companion **0.5.20** and refresh the website

@@ -33,7 +33,7 @@ from agentic_web_demo.extension_channel import ExtensionRuns
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-11-07.1"
+UI_VERSION = "2026-11-09.1"
 
 
 class CustomApproval(BaseModel):

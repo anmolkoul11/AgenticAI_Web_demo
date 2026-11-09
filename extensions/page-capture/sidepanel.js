@@ -11,7 +11,7 @@ const workflowLabels = {
   reviewing:"Preparing your results", queued:"Getting ready", running:"Working on your request",
   agent_paused:"Paused", needs_input:"More information needed", failed:"Couldn't finish",
   captured:"Results ready to review", awaiting_review:"Results ready to review",
-  completed:"Results ready to review", cancelled:"Stopped",
+  completed:"Task complete", cancelled:"Stopped",
 };
 const errorLabels = {
   companion_unavailable: "The browser companion is not responding. Choose Check status to reconnect to its existing state; closing the panel is not required. This is not a dashboard sign-in error.",
@@ -32,7 +32,7 @@ const errorLabels = {
   native_input_consent_required: "Choose Start or Resume to begin browser-level control of the connected website tab.",
   native_input_unavailable: "Browser-level input could not attach to this website tab. Check the extension's debugger permission and close DevTools or another debugger on this tab, then choose Start or Resume again. No automatic retry was made; inspect the latest action evidence first.",
   native_input_detached: "Browser-level input was detached. The last action may have run; inspect the website and action evidence before choosing Resume. Cancelling the browser's debugging warning or opening DevTools can detach control. Nothing was automatically replayed.",
-  extension_update_required: "The extension worker and website helper are different versions. In edge://extensions or chrome://extensions, reload Browser Companion 0.5.20 from this project's extensions/page-capture folder, refresh the website, reconnect and start a fresh workflow. Nothing was automatically retried.",
+  extension_update_required: "The extension worker and website helper are different versions. In edge://extensions or chrome://extensions, reload Browser Companion 0.5.21 from this project's extensions/page-capture folder, refresh the website, reconnect and start a fresh workflow. Nothing was automatically retried.",
   unsupported: "Connect from the HTTPS website tab, not from the dashboard or a browser settings page. An existing connection keeps its original website tab.",
   permission_required: "Browser access to this tab was lost. Open the extension from the website tab again, then explicitly resume if the run is still available.",
   origin_changed: "The website moved to another origin. Automation paused. Return to the connected site or cancel and connect a new workflow.",
@@ -46,6 +46,32 @@ const errorLabels = {
 };
 let current = {connection:null,run:null}, busy = false, timer, signature = "", pollInFlight = false, panelActive = true, transportError = null;
 let requestRun = null;
+function recordLimitValid() {
+  const value = Number(byId("limit").value);
+  return byId("limit").value !== "" && Number.isInteger(value) && value >= 1 && value <= 500;
+}
+function updateRecordLimit(source, commit = false) {
+  const input = byId("limit"), slider = byId("limit-slider");
+  let value = Number(source.value);
+  if (commit && source.value !== "" && Number.isFinite(value)) {
+    value = Math.max(0, Math.min(500, Math.round(value)));
+    source.value = String(value);
+  }
+  const valid = source.value !== "" && Number.isInteger(value) && value >= 0 && value <= 500;
+  if (valid) {
+    input.value = String(value); slider.value = String(value);
+    // Larger limits need batched collection; preserve the user's chosen count.
+    if (value > 50) byId("extent").value = "all_results";
+  }
+  const all = byId("extent").value === "all_results";
+  setText("limit-help", !valid ? "Enter a whole number from 0 to 500." : value === 0 ?
+    "Choose at least 1 record to start. No task runs at 0." :
+    `Collect up to ${value} records. ${value > 50 ? "Uses the result list and additional pages when available. " : ""}The source may provide fewer.`);
+  setText("result-cost", valid && value > 0 ? all ?
+    `Collects up to ${value} records, using paid extraction in batches of up to 10. Review before saving.` :
+    `Collects a preview of up to ${value} records using your configured AI service. Review before saving.` :
+    "Choose a record limit before starting.");
+}
 function setText(id, text) {
   const element = byId(id);
   // Keep live regions and layout stable between identical status polls.
@@ -95,7 +121,8 @@ function render(value, synchronized = false) {
   byId("connection-status").dataset.tone = status.tone;
   byId("connection-status").dataset.working = String(working);
   setText("connection-status-label", status.label);
-  setText("connection-hint", status.hint);
+  setText("connection-hint", run?.saved_run_id && !needsReconnect && !needsStatus && !current.error ?
+    "Your results are saved in the dashboard. You can view them or start another task." : status.hint);
   setText("website-title", connection?.title || (connection ? "Selected website" : "No website selected"));
   let domain = "Your own browser tab";
   try { if (connection?.url) domain = new URL(connection.url).hostname; } catch (_) { domain = "Selected website"; }
@@ -110,14 +137,16 @@ function render(value, synchronized = false) {
   byId("connect").textContent = needsStatus ? "Check status" : needsReconnect ? "Reconnect dashboard" : connection ? "Check connection" : "Connect website tab";
   byId("disconnect").hidden = !connection;
   byId("disconnect").disabled = busy || needsStatus || (live && !needsReconnect);
-  byId("start").disabled = busy || needsStatus || !connection || live || needsReconnect;
+  byId("start").disabled = busy || needsStatus || !connection || live || needsReconnect || !recordLimitValid();
   byId("instructions").disabled = live && !needsReconnect;
   byId("activity").hidden = !run;
   setText("activity-title", run && terminalStates.has(state) && current.run_tab_id !== connection?.tab_id ? "Previous results" : "Your progress");
   byId("activity").dataset.tone = ["agent_paused", "agent_pausing", "needs_input", "failed"].includes(state) || current.error || needsStatus || needsReconnect ?
     "attention" : ["captured", "awaiting_review", "completed"].includes(state) ? "ready" : state === "cancelled" ? "stopped" : "working";
   byId("spinner").hidden = !working;
-  setText("state", state === "agent_paused" && report.awaiting_user_input ? "Waiting for you" : workflowLabels[state] || "Ready when you are");
+  setText("state", run?.execution_job_id && ["queued", "running"].includes(state) ? "Saving your results" :
+    run?.saved_run_id && state === "completed" ? "Results saved" :
+    state === "agent_paused" && report.awaiting_user_input ? "Waiting for you" : workflowLabels[state] || "Ready when you are");
   setText("guidance", run?.guidance || "");
   byId("guidance").hidden = !run?.guidance;
   byId("calls").max = report.max_calls || 30;
@@ -132,7 +161,11 @@ function render(value, synchronized = false) {
   byId("pause").hidden = !["agent_running", "agent_pausing"].includes(state);
   byId("resume").hidden = state !== "agent_paused";
   byId("collect").hidden = state !== "agent_paused" || !count;
-  byId("cancel").hidden = !live;
+  byId("cancel").hidden = !live || !!run?.execution_job_id;
+  setText("review", run?.saved_run_id ? "View saved results →" : "Review results →");
+  setText("review-note", run?.saved_run_id ? "Opens the existing saved results in your dashboard." :
+    run?.execution_job_id ? "Your approval is being processed or needs attention. Opens the existing save attempt." :
+    "Opens your dashboard. Nothing is saved until you approve.");
   byId("review").disabled = busy || needsReconnect || !run?.job_id;
   for (const id of ["pause", "resume", "collect", "cancel"]) byId(id).disabled = busy || needsReconnect || needsStatus;
   const actions = Array.isArray(report.actions) ? report.actions.slice(-6) : [];
@@ -145,7 +178,7 @@ function render(value, synchronized = false) {
       if (action.action === "set_counter") {
         const detail = document.createElement("p"); detail.className = "muted";
         const count = value => Number.isInteger(value) && value >= 0 && value <= 100 ? String(value) : "unconfirmed";
-        const attempts = Number.isInteger(action.attempts) && action.attempts >= 0 && action.attempts <= 10 ? String(action.attempts) : "not reported";
+        const attempts = Number.isInteger(action.attempts) && action.attempts >= 0 && action.attempts <= 30 ? String(action.attempts) : "not reported";
         const dispatched = action.dispatched === true ? "yes" : action.dispatched === false ? "no" : "not reported";
         detail.textContent = `Counter: before ${count(action.before)}; requested ${count(action.expected)}; observed ${count(action.observed)}. Input attempts: ${attempts}; dispatched: ${dispatched}.`;
         li.append(detail);
@@ -194,14 +227,15 @@ byId("connect").onclick = async () => {
 byId("disconnect").onclick = () => action("disconnect");
 byId("review").onclick = () => action("open_review");
 byId("extent").onchange = () => {
-  const all = byId("extent").value === "all_results";
-  byId("limit").max = all ? "5000" : "50";
-  byId("limit").value = all ? "5000" : "25";
-  setText("result-cost", all ? "All results uses additional paid extraction calls, in batches of up to 10 listings. Review before saving." :
-    "Uses your configured AI service for a limited preview. Review before saving.");
+  updateRecordLimit(byId("limit")); render(current);
 };
+for (const id of ["limit", "limit-slider"]) {
+  byId(id).oninput = () => { updateRecordLimit(byId(id)); render(current); };
+  byId(id).onchange = () => { updateRecordLimit(byId(id), true); render(current); };
+}
 byId("task-form").onsubmit = async event => {
   event.preventDefault();
+  if (!recordLimitValid()) { showError("Choose a whole number from 1 to 500 records before starting."); return; }
   const fields = byId("fields").value.split(",").map(value=>value.trim()).filter(Boolean);
   if (fields.length > 16 || new Set(fields).size !== fields.length || fields.some(name=>!/^[a-z][a-z0-9_]{0,39}$/.test(name))) {
     showError("Use up to 16 unique lowercase output field names, separated by commas."); return;

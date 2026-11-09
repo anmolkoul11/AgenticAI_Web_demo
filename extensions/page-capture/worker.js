@@ -33,6 +33,25 @@ async function writeState(state) {
   if (memory !== state) return;
   chrome.runtime.sendMessage({type:'agentic-panel-state-v1',...publicState(state)}).catch(() => {});
 }
+async function readRunStatus(state) {
+  try { return await relay(state,'/api/extension/runs/'+state.run.run_id); }
+  catch (error) {
+    // A browser channel can expire after collection while its private saved job
+    // remains reviewable. Only read persisted status; never renew tab control.
+    if (!['run_expired','run_unavailable'].includes(error?.message) ||
+        (!FINISHED.has(state.run.state) && state.run.state !== 'reviewing' && !state.run.execution_job_id)) throw error;
+    const sourceId = state.run.plan_job_id || state.run.job_id;
+    const {job} = await relay(state,'/api/custom/jobs/'+sourceId+'/workflow');
+    const workflow = job.workflow || {};
+    return {run_id:state.run.run_id,job_id:job.job_id,
+      plan_job_id:workflow.plan_job_id || state.run.plan_job_id || sourceId,
+      plan_id:workflow.plan_id,execution_job_id:workflow.execution_job_id,
+      saved_run_id:workflow.saved_run_id,job_status:job.status,
+      state:['queued','running'].includes(job.status) && !workflow.execution_job_id ? 'reviewing':job.status,
+      guidance:job.result?.guidance || job.guidance || 'Review the workflow in your dashboard.',
+      command_pending:false};
+  }
+}
 function websiteUrl(value) {
   if (!value) throw new Error('permission_required');
   const u = new URL(value);
@@ -92,7 +111,8 @@ async function sessionAt(tab,expected=null) {
 }
 async function relay(state,path,method='GET',body=null) {
   const b = state.binding;
-  if (!b || !/^\/api\/extension\/runs(?:\/[a-f0-9-]{32,36}(?:\/(?:next|result|control))?)?$/.test(path)) throw new Error('unsupported');
+  const workflowRead = method === 'GET' && /^\/api\/custom\/jobs\/[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\/workflow$/.test(path);
+  if (!b || (!workflowRead && !/^\/api\/extension\/runs(?:\/[a-f0-9-]{32,36}(?:\/(?:next|result|control))?)?$/.test(path))) throw new Error('unsupported');
   const dashboard = await chrome.tabs.get(b.dashboard_tab_id).catch(()=>null);
   if (!dashboard?.url) throw new Error('dashboard_tab_closed');
   if (new URL(dashboard.url).origin !== b.dashboard_url) throw new Error('dashboard_origin_changed');
@@ -353,7 +373,7 @@ async function pump() {
       }
       if (!next.command) {
         const revision = state.revision;
-        const status = await relay(state,'/api/extension/runs/'+state.run.run_id);
+        const status = await readRunStatus(state);
         if ((await readState()) !== state) break;
         if (state.revision !== revision) continue;
         state.run = {...state.run,...status};
@@ -412,7 +432,7 @@ async function connect(message) {
       try {
         // Reconnection is not a shortcut around session ownership. A healthy
         // live run remains bound to its current tab and account.
-        old.run = {...old.run,...await relay(old,'/api/extension/runs/'+old.run.run_id)};
+        old.run = {...old.run,...await readRunStatus(old)};
       } catch(error) {
         if (!DASHBOARD_ERRORS.has(error?.message) && !['run_expired','run_unavailable'].includes(error?.message)) throw error;
         await stopFor(old,error);
@@ -497,10 +517,12 @@ async function handle(message) {
     await followSelectedTab(message.operation === 'start') : '';
   const state = await readState();
   if (message.operation === 'status') {
-    if (state.run && !DASHBOARD_ERRORS.has(state.error) && !FINISHED.has(state.run.state)) {
+    // Review is a handoff, not the end of the workflow. Keep reading the shared
+    // job after collection so dashboard approval/saving is reflected here too.
+    if (state.run && !DASHBOARD_ERRORS.has(state.error)) {
       try {
         const revision = state.revision;
-        const status = await relay(state,'/api/extension/runs/'+state.run.run_id);
+        const status = await readRunStatus(state);
         if ((await readState()) === state && state.revision === revision) {
           state.run = {...state.run,...status}; await writeState(state);
         }
@@ -563,6 +585,13 @@ async function handle(message) {
     if (session.ui_version !== state.binding.ui_version) throw new Error('dashboard_updated');
     if (session.username !== state.binding.username) throw new Error('dashboard_account_changed');
     if (session.csrf !== state.binding.csrf) throw new Error('dashboard_csrf_changed');
+    // Resolve a preview that was already saved to its original execution. This
+    // is read-only; opening review never submits another approval.
+    const revision = state.revision;
+    const status = await readRunStatus(state);
+    if ((await readState()) !== state || state.revision !== revision) return publicState(await readState());
+    state.run = {...state.run,...status};
+    await writeState(state);
     await chrome.scripting.executeScript({target:{tabId:state.binding.dashboard_tab_id},func:jobId=>window.postMessage({type:'agentic-extension-review-v1',job_id:jobId},location.origin),args:[state.run.job_id]});
     const dashboard = await chrome.tabs.update(state.binding.dashboard_tab_id,{active:true}); await chrome.windows.update(dashboard.windowId,{focused:true});
     return publicState(state);

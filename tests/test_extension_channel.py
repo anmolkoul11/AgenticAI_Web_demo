@@ -136,7 +136,10 @@ def test_run_is_bound_to_account_session_and_shutdown_unblocks():
 
 def test_explicit_cancel_snapshot_wins_worker_completion_race():
     manager, link = ExtensionRuns("instance"), channel()
-    service = SimpleNamespace(read=lambda _: {"status": "needs_input", "result": {"guidance": "Cancelled"}})
+    service = SimpleNamespace(lock=threading.RLock(), read=lambda _: {
+        "job_id": "fixture-job", "kind": "custom-plan", "status": "needs_input",
+        "result": {"guidance": "Cancelled"},
+    })
     item = manager.add(sid="session", current=object(), service=service, channel=link)
     item["job_id"] = "fixture-job"
     link.request_control("cancel")
@@ -152,7 +155,11 @@ def test_packets_are_bounded_finite_json(bad):
 def test_extension_start_requires_explicit_consent_and_rejects_screenshots():
     values = {"url": "https://example.org/", "tab_id": 9, "instructions": "Get records",
               "agent_confirmed": True, "authorized": True, "allow_model_api": True}
-    assert ExtensionStart(**values).record_limit == 25
+    assert ExtensionStart(**values).record_limit == 50
+    assert ExtensionStart(**{**values, "record_limit": 500, "collection_extent": "all_results"}).record_limit == 500
+    for limit in (0, 501):
+        with pytest.raises(ValueError):
+            ExtensionStart(**{**values, "record_limit": limit, "collection_extent": "all_results"})
     for field in ("agent_confirmed", "authorized", "allow_model_api"):
         with pytest.raises(ValueError):
             ExtensionStart(**{**values, field: False})

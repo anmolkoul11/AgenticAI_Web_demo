@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-11-07.1";
+const UI_VERSION = "2026-11-09.1";
 document.documentElement.dataset.agenticUiVersion = UI_VERSION;
 document.documentElement.dataset.agenticConnection = "loading";
 let instanceId = null, connectionBlocked = false;

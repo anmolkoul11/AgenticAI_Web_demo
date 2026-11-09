@@ -21,16 +21,21 @@
       <summary><span class="step-number" aria-hidden="true">1</span><h2 id="task-title">What would you like to find?</h2></summary>
       <label class="sr-only" for="instructions">Describe your task</label><textarea id="instructions" rows="4" maxlength="2000" required placeholder="Find hotels in Edison for November 28–30, 2026, with 3 adults and 2 rooms. Include prices and listing links."></textarea>
       <p class="field-help">Include any dates, guest counts or price limits that matter.</p>
+      <div class="record-limit">
+        <div class="record-limit-heading"><label for="limit">Maximum records</label><input id="limit" type="number" min="0" max="500" step="1" value="50" required aria-describedby="limit-help"></div>
+        <label class="sr-only" for="limit-slider">Maximum records slider</label><input id="limit-slider" type="range" min="0" max="500" step="1" value="50" aria-describedby="limit-help">
+        <div class="record-limit-scale" aria-hidden="true"><span>0</span><span>500</span></div>
+        <p id="limit-help" class="field-help">Collect up to 50 records. The source may provide fewer.</p>
+      </div>
       <details class="customize"><summary>Customize results <span class="optional">Optional</span></summary>
         <label>Results to collect<select id="extent"><option value="all_results" selected>All available listings in this search</option><option value="preview">Limited preview</option></select></label>
-        <label>Maximum listings<input id="limit" type="number" min="1" max="5000" value="5000" required></label>
         <p class="muted">All results scrolls and follows available result pages. Limits: 100 pages and 4 active collection minutes. More listings use additional paid extraction batches of up to 10 records each. A limit or interruption is reported as partial.</p>
         <label>Information to include<input id="fields" maxlength="650" placeholder="name, url, price, currency, rating"></label><p class="muted">Leave blank to choose useful fields automatically. Custom fields: up to 16 lowercase names, separated by commas.</p>
         <div class="rule"><p class="settings-title">Optional rule</p><label>Field<input id="rule-field" maxlength="40" placeholder="rating"></label><div class="rule-values"><label>Condition<select id="rule-op"><option value="gte">At least</option><option value="lte">At most</option><option value="eq">Equals</option><option value="contains">Contains</option></select></label><label>Value<input id="rule-value" maxlength="200" placeholder="8"></label></div></div>
         <label>Publish matching approved records?<select id="publish"><option value="no" selected>No</option><option value="yes">Yes</option></select></label><p class="muted">Optional event publishing requires the local message broker.</p>
       </details>
       <button id="start" type="submit" class="full primary-action" disabled>Start task <span aria-hidden="true">→</span></button>
-      <p id="result-cost" class="action-note">Collects the available result list within the displayed limits, then uses paid extraction in batches of up to 10 listings. Review before saving.</p>
+      <p id="result-cost" class="action-note">Collects up to 50 records, using paid extraction in batches of up to 10. Review before saving.</p>
       <details class="quiet-details"><summary>Usage &amp; browser access</summary><p class="muted">Start controls this tab and sends its content to your configured model: up to 30 paid navigation decisions (5 active minutes). All results then collects and extracts listings in paid batches of up to 10; a limited preview uses up to 6 captured sources. No reservations or payments.</p><p class="muted">The agent observes page text and controls, not screenshots. Complete login, MFA and CAPTCHA yourself. Browser control uses the debugger permission for this connected tab only. Cancelling the browser's debugging warning or opening DevTools can detach control.</p></details>
       </details>
     </form>
@@ -41,7 +46,7 @@
       <progress id="calls" max="30" value="0" aria-label="AI step budget used"></progress>
       <p id="usage" class="muted budget-note">Steps used, not percentage complete.</p>
       <div class="buttons task-actions"><button id="pause" type="button" class="secondary">Pause</button><button id="resume" type="button" hidden>Resume task</button><button id="collect" type="button" class="secondary" hidden>Get collected results</button><button id="cancel" type="button" class="text-button danger">Stop task</button></div>
-      <button id="review" type="button" class="full primary-action">Review results <span aria-hidden="true">→</span></button><p class="action-note">Opens your dashboard. Nothing is saved until you approve.</p>
+      <button id="review" type="button" class="full primary-action">Review results <span aria-hidden="true">→</span></button><p id="review-note" class="action-note">Opens your dashboard. Nothing is saved until you approve.</p>
       <details><summary>Recent activity</summary><ol id="actions"></ol></details>
       <details class="quiet-details"><summary>Help &amp; technical details</summary><p class="muted">Resume continues control of this tab within the original paid decision budget. Pause takes effect between actions; a click or AI request already underway may finish. Closing this panel does not stop the task. Your website tab stays open.</p><p class="muted">Browser control diagnostics below contain tab visibility, focus, input adapter and popup counts. Counter values appear in recent activity. Include both when reporting a stalled control.</p><pre id="observation-diagnostics"></pre></details>
     </section>

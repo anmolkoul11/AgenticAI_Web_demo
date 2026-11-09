@@ -1199,7 +1199,67 @@ async def publish_summary(service, event):
         await nc.close()
 
 
+def execution_job(service, plan_id):
+    """Read the first approval attempt for this user's plan, without replaying it."""
+    plan_id = str(UUID(str(plan_id)))
+    with service.lock:
+        cache = getattr(service, "_custom_execution_jobs", None)
+        if cache is None:
+            cache, first = {}, {}
+            for path in service.directory.glob("*.json"):
+                try:
+                    job = service.read(path.stem)
+                except (ValueError, KeyError, OSError):
+                    continue
+                if job.get("kind") != "custom-execute" or not job.get("plan_id"):
+                    continue
+                order = (job.get("created_at", ""), job["job_id"])
+                if job["plan_id"] not in first or order < first[job["plan_id"]]:
+                    first[job["plan_id"]] = order
+                    cache[job["plan_id"]] = job["job_id"]
+            service._custom_execution_jobs = cache
+        return service.read(cache[plan_id]) if plan_id in cache else None
+
+
+def workflow_job(service, job_id):
+    """Resolve a review link to its existing save attempt and saved result."""
+    with service.lock:
+        source = service.read(job_id)
+        plan_id = source.get("plan_id")
+        execution = execution_job(service, plan_id) if plan_id else None
+        job = execution or source
+        result = job.get("result") or {}
+        saved = job["kind"] == "custom-execute" and (
+            job["status"] == "completed" or "save:ok" in result.get("trace", [])
+        )
+        return {
+            **job,
+            "workflow": {
+                "plan_job_id": source["job_id"] if source["kind"] == "custom-plan" else None,
+                "execution_job_id": execution["job_id"] if execution else None,
+                "plan_id": plan_id,
+                "saved_run_id": result.get("run_id") if saved else None,
+            },
+        }
+
+
 def execute(service, plan_id, approval, *, accept_partial=False):
+    # The lock covers lookup and submission: two review tabs share one attempt.
+    # A repeated request follows that attempt, including a failed/unknown result;
+    # it never repeats saving or publishing merely because the response was lost.
+    with service.lock:
+        proposal = load(service, plan_id)
+        if digest(proposal) != approval:
+            raise WebsiteError("Proposal changed. Review a fresh proposal before approval.")
+        existing = execution_job(service, plan_id)
+        if existing:
+            return existing["job_id"]
+        job_id = _execute_new(service, plan_id, approval, accept_partial=accept_partial)
+        service._custom_execution_jobs[str(UUID(str(plan_id)))] = job_id
+        return job_id
+
+
+def _execute_new(service, plan_id, approval, *, accept_partial=False):
     proposal = load(service, plan_id)
     if digest(proposal) != approval:
         raise WebsiteError("Proposal changed. Review a fresh proposal before approval.")

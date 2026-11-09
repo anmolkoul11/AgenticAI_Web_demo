@@ -2,6 +2,7 @@
 let webSelected = null, webTimer = null, webProposal = null, webRevision = null;
 let webCapture = null, receivingCapture = false;
 let webSubmitting = false;
+let webSaving = false;
 let webPollEpoch = 0;
 const webForm = $("web-form");
 webForm.dataset.busy = "false";
@@ -1277,6 +1278,7 @@ window.addEventListener("message", async event => {
     // The endpoint verifies this account owns the job. Opening never saves it.
     await api(`/api/jobs/${event.data.job_id}`);
     document.querySelector('[data-view="custom"]').click();
+    if (webSaving) { setStudioStep("work"); return; }
     await customSelect(event.data.job_id);
   } catch (error) { webText("web-status", error.message); }
 });
@@ -1302,7 +1304,7 @@ $("web-open-normal-browser").onclick = () => {
     "Website opened in this browser. On that tab, open Browser Companion, capture the page and send the reviewed snapshot here. Then this dashboard's extraction button becomes available. If no tab appeared, check the browser's pop-up setting.";
 };
 function canApproveWeb() {
-  return webProposal && $("web-approved").checked &&
+  return !webSaving && webProposal && $("web-approved").checked &&
     (!webProposal.partial || $("web-partial-approved").checked);
 }
 function showRejected(items, fieldIssues = [], fieldRepairs = [], constraintIssues = []) {
@@ -2124,6 +2126,15 @@ $("web-back-source").onclick = () => {
 };
 async function customSelect(id) {
   setStudioStep("work");
+  // Reopening the same review must preserve the user's approval controls and
+  // current selection. Its read-only poll resolves any save from another view.
+  if (webSelected === id) {
+    if (!webSubmitting) {
+      clearTimeout(webTimer);
+      await customPoll(id, ++webPollEpoch);
+    }
+    return;
+  }
   if (previewDialog.open) previewDialog.close();
   clearTimeout(webTimer); webSelected = id; webProposal = null; webRevision = null;
   const epoch = ++webPollEpoch;
@@ -2153,12 +2164,18 @@ async function customPoll(id, epoch = webPollEpoch) {
       clearTimeout(webTimer); webBusy(false);
       setFlowActivity(false, "Status updates paused — sign in or restore the connection before continuing."); return;
     }
-    const job = await api(`/api/jobs/${id}`);
+    const workflow = await api(`/api/custom/jobs/${id}/workflow`);
+    const job = workflow.job;
     if (webSelected !== id || epoch !== webPollEpoch) return;
+    if (job.job_id !== id) {
+      await customSelect(job.job_id);
+      return;
+    }
     // Commit one coherent frame, never a browser-less intermediate render.
     const extension = job.source === "extension";
-    const browser = terminal(job.status) ? null : extension ? {
-      state: job.browser_agent_diagnostics?.status === "paused" ? "agent_paused" : "agent_running",
+    const browser = terminal(job.status) || job.kind === "custom-execute" ? null : extension ? workflow.browser || {
+      state: job.browser_agent_diagnostics?.status === "paused" ? "agent_paused" :
+        (job.stages || []).some(item => item.stage === "extract_content") ? "reviewing" : "agent_running",
       guidance: "Use the extension side panel to inspect the current action, pause, resume or cancel.",
     } : await api(`/api/custom/jobs/${id}/browser`);
     if (webSelected !== id || epoch !== webPollEpoch) return;
@@ -2187,6 +2204,10 @@ async function customPoll(id, epoch = webPollEpoch) {
     });
     webBusy(!terminal(job.status));
     if (!terminal(job.status)) {
+      if (job.kind === "custom-execute") {
+        $("web-browser-controls").hidden = true;
+        webTimer = setTimeout(() => customPoll(id, epoch), 1000); return;
+      }
       if (extension) {
         $("web-browser-controls").hidden = true;
         if (!(job.stages || []).some(item => item.stage === "extract_content")) {
@@ -2250,6 +2271,9 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
       } catch (_) { webText("web-count", "Saved export not available. Inspect technical evidence before retrying."); }
     }
     await loadHistory();
+    if (webSelected === id && epoch === webPollEpoch && job.status === "awaiting_review") {
+      webTimer = setTimeout(() => customPoll(id, epoch), 2000);
+    }
   } catch (error) {
     if (webSelected !== id || epoch !== webPollEpoch) return;
     webText("web-status", error.message);
@@ -2261,17 +2285,23 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
   }
 }
 $("web-execute").onclick = async () => {
-  if (!canApproveWeb()) return;
+  if (webSaving || webSubmitting || !canApproveWeb()) return;
+  const planId = webProposal.plan_id, revision = webRevision;
+  const acceptPartial = $("web-partial-approved").checked;
+  webSaving = true;
   webBusy(true);
   setFlowActivity(true, "Submitting your approval — results are not saved until the server confirms.");
   try {
-    const job = await api(`/api/custom/plans/${webProposal.plan_id}/execute`, {
-      revision: webRevision, accept_partial: $("web-partial-approved").checked,
+    const job = await api(`/api/custom/plans/${planId}/execute`, {
+      revision, accept_partial: acceptPartial,
     });
     await customSelect(job.job_id);
   } catch (error) {
     webText("web-status", error.message); webBusy(false);
     setFlowActivity(false, "Save submission did not complete. Check the message before retrying.");
+  } finally {
+    webSaving = false;
+    $("web-execute").disabled = webSubmitting || !canApproveWeb();
   }
 };
 for (const [id, action] of [["web-capture", "capture"], ["web-cancel-browser", "cancel"],

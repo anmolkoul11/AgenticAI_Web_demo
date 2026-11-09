@@ -1,7 +1,7 @@
 /* Packaged, isolated-world executor. No model-provided JavaScript or selectors. */
 (() => {
   'use strict';
-  const version = '0.5.20';
+  const version = '0.5.21';
   if (globalThis.__agenticTabExecutor?.version === version) return;
   const token = crypto.randomUUID();
   let observedUrl = null;

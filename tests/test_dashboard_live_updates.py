@@ -235,7 +235,11 @@ def test_repeated_polls_preserve_coverage_nodes_and_render_only_once(live_ui):
         link_coverage:{index_retained:true,approved:1,captured:1,failed:0,
           links:[{url:'https://news.example.org/story',title:'Story',status:'captured'}]},
         navigation_result:{status:'partial_form',actions:[],requirements:[]}};
-      window.fixtureApi = async path => path.includes('/browser') ? browser : job;
+      window.fixtureApi = async path => {
+        if (path.endsWith('/workflow')) return {job,browser};
+        if (path.endsWith('/browser')) return browser;
+        throw new Error('Unexpected fixture API operation');
+      };
       webSelected = 'fixture-job';
       let renders = 0, interim = false;
       const original = renderWorkflow;
@@ -267,11 +271,11 @@ def test_delayed_response_from_old_selection_cannot_redraw_new_run(live_ui):
       const pending=customPoll('old-job',oldEpoch);
       webSelected='new-job'; webPollEpoch++;
       flowActivityText.textContent='New selection';
-      resolveOld({job_id:'old-job',status:'running',kind:'custom-plan',stages:[]});
+      resolveOld({job:{job_id:'old-job',status:'running',kind:'custom-plan',stages:[]},browser:null});
       await pending; clearTimeout(webTimer);
       return {message:flowActivityText.textContent,calls:window.fixtureCalls};
     }""")
-    assert result == {"message": "New selection", "calls": ["/api/jobs/old-job"]}
+    assert result == {"message": "New selection", "calls": ["/api/custom/jobs/old-job/workflow"]}
 
 
 def test_cards_expose_all_fields_and_do_not_claim_blank_means_absent(live_ui):

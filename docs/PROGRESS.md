@@ -1,5 +1,49 @@
 # Progress
 
+## Manual feedback and future fixes - 2026-11-09
+
+The user reports that the record-limit and shared-state changes work in live
+use. Some runs still need manual Resume because an action appears to make no
+change or the agent incorrectly detects a loop. These intermittent navigation
+issues remain open; the implementation has not been independently tested.
+
+Future work:
+
+- Improve action verification for delayed rendering and controls whose changes
+  are already applied, reducing false no-progress pauses.
+- Detect when requested values or results are already present and continue
+  collection instead of repeatedly editing the same control.
+- Refresh stale control observations and distinguish genuine repeated failures
+  from false loops, with bounded recovery and clear pause reasons.
+- Preserve legitimate pauses for missing user information or access challenges;
+  reduce unnecessary manual Resume without blindly repeating dispatched actions.
+
+## Companion record limits and shared save state - 2026-11-09, manual verification pending
+
+Companion **0.5.21** provides a slider and editable record count from 0 to 500,
+defaulting to 50. Zero keeps Start disabled and explains that no task will run.
+Counts above 50 select batched collection; changing collection mode preserves
+the selected count. The Companion API uses the same default and upper bound.
+
+Saved user1/user3 history showed successful saves followed by failed duplicate
+attempts from reopened previews. Approval now follows the original execution
+under the account's service lock, including failed or interrupted attempts;
+it never repeats saving or event publishing. Old review links resolve to that
+execution, and repeated dashboard review opens preserve the current approval.
+
+Both interfaces read canonical workflow state. The Companion keeps refreshing
+after collection, reports extraction as preparing results, and distinguishes
+review, saving and saved states. Read-only review can resolve persisted jobs
+after browser-command expiry or channel pruning. This does not renew input
+authority. The dashboard follows the same execution for progress and downloads,
+and a double-click or simultaneous review cannot submit a second save.
+
+Dashboard UI version **2026-11-09.1** requires a backend restart and dashboard
+refresh. Reload Companion 0.5.21 and refresh the website before manual acceptance.
+Browser navigation, site-specific search behavior, extraction and eligibility
+rules were not changed. Tests and local fixture cases were authored/updated,
+but no tests, validators, application startup, live workflows or API calls ran.
+
 ## Large occupancy counter budget - 2026-11-09, manual verification pending
 
 User3 Tripadvisor job `987664fe...` paused after four valid decisions with the

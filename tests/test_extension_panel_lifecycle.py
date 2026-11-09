@@ -213,3 +213,95 @@ def test_panel_counter_evidence_shows_real_counts_and_dispatch(companion_panel):
     text = page.locator("#actions").text_content()
     assert "before 2; requested 3; observed 2" in text
     assert "Input attempts: 1; dispatched: yes" in text
+
+
+def test_panel_record_slider_defaults_to_fifty_and_submits_that_limit(companion_panel):
+    page = companion_panel
+    slider = page.locator("#limit-slider")
+    assert slider.is_visible()
+    assert slider.get_attribute("min") == "0"
+    assert slider.get_attribute("max") == "500"
+    assert slider.input_value() == "50"
+    assert page.locator("#limit").input_value() == "50"
+    page.locator("#instructions").fill("Find hotel names and their listing URLs")
+    page.locator("#start").click()
+    page.wait_for_function("panelFixture.messages.some(message=>message.operation==='start')")
+    starts = page.evaluate("panelFixture.messages.filter(message=>message.operation==='start')")
+    assert len(starts) == 1
+    assert starts[0]["record_limit"] == 50
+
+
+def test_panel_typing_a_larger_limit_uses_batches_without_resetting_the_count(companion_panel):
+    page = companion_panel
+    page.locator(".customize").evaluate("element=>element.open=true")
+    page.locator("#extent").select_option("preview")
+    page.locator("#limit").fill("52")
+    assert page.locator("#limit-slider").input_value() == "52"
+    assert page.locator("#extent").input_value() == "all_results"
+    # Requesting the small-preview mode must not silently replace 52 with 25/50.
+    page.locator("#extent").select_option("preview")
+    assert page.locator("#limit").input_value() == "52"
+    assert page.locator("#extent").input_value() == "all_results"
+    page.locator("#instructions").fill("Find the hotel listings with names and prices")
+    page.locator("#start").click()
+    page.wait_for_function("panelFixture.messages.some(message=>message.operation==='start')")
+    sent = page.evaluate("panelFixture.messages.find(message=>message.operation==='start')")
+    assert sent["record_limit"] == 52 and sent["collection_extent"] == "all_results"
+
+
+def test_panel_slider_updates_typed_count_and_zero_cannot_dispatch_a_task(companion_panel):
+    page = companion_panel
+    page.locator("#limit-slider").evaluate("""element=>{
+      element.value='500';element.dispatchEvent(new Event('input',{bubbles:true}));
+    }""")
+    assert page.locator("#limit").input_value() == "500"
+    assert page.locator("#start").is_enabled()
+    page.locator("#limit").fill("0")
+    assert page.locator("#limit-slider").input_value() == "0"
+    assert page.locator("#start").is_disabled()
+    assert "at least 1" in page.locator("#limit-help").inner_text()
+    # The submit guard also blocks a direct handler invocation, independently
+    # of the browser's disabled-button and native form validation behavior.
+    page.evaluate("""async()=>{
+      document.getElementById('instructions').value='Find hotel listings';
+      await document.getElementById('task-form').onsubmit({preventDefault(){}});
+    }""")
+    assert not page.evaluate("panelFixture.messages.some(message=>message.operation==='start')")
+    page.locator("#limit").fill("1")
+    assert page.locator("#start").is_enabled()
+
+
+@pytest.mark.parametrize("state", ["queued", "running"])
+def test_panel_canonical_save_state_hides_navigation_and_stop_actions(companion_panel, state):
+    page = companion_panel
+    page.evaluate("""state=>{
+      panelFixture.state={...panelFixture.state,revision:4,run:{state,
+        run_id:'a'.repeat(32),job_id:'b'.repeat(32),execution_job_id:'c'.repeat(32),
+        agent_report:{status:'paused',captured_pages:['https://hotels.example.org/results']}}};
+      render(panelFixture.state,true);
+    }""", state)
+    assert page.locator("#state").inner_text() == "Saving your results"
+    assert page.locator("#start").is_disabled()
+    for control in ("pause", "resume", "collect", "cancel"):
+        assert page.locator(f"#{control}").is_hidden()
+    assert not page.evaluate("panelFixture.messages.some(message=>message.operation==='control')")
+
+
+def test_panel_saved_results_do_not_revert_to_stale_paused_browser_state(companion_panel):
+    page = companion_panel
+    page.evaluate("""()=>{
+      panelFixture.state={...panelFixture.state,revision:8,run:{state:'completed',
+        run_id:'a'.repeat(32),job_id:'b'.repeat(32),execution_job_id:'c'.repeat(32),
+        saved_run_id:'saved-result',guidance:'Your approved results were saved.',
+        agent_report:{status:'paused',captured_pages:['https://hotels.example.org/results']}}};
+      render(panelFixture.state,true);
+      render({...panelFixture.state,revision:7,run:{state:'agent_paused',job_id:'b'.repeat(32)}},true);
+    }""")
+    assert page.locator("#state").inner_text() == "Results saved"
+    assert page.locator("#review").inner_text() == "View saved results →"
+    assert page.locator("#review").is_enabled()
+    for control in ("pause", "resume", "collect", "cancel"):
+        assert page.locator(f"#{control}").is_hidden()
+    page.locator("#review").click()
+    assert page.evaluate("panelFixture.messages.filter(message=>message.operation==='open_review').length") == 1
+    assert not page.evaluate("panelFixture.messages.some(message=>['start','control'].includes(message.operation))")

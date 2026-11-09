@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agentic Studio Browser Companion",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "description": "Run a reviewed information-retrieval workflow in your selected tab with your local Agentic Studio.",
   "permissions": ["activeTab", "scripting", "storage", "sidePanel", "debugger"],
   "host_permissions": ["http://localhost:8120/*", "http://127.0.0.1:8120/*"],
