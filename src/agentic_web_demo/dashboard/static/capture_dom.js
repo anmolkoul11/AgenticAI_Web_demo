@@ -398,6 +398,43 @@ function captureDocument(options = {}) {
       association: 'page', content_role: 'currency_setting'});
     capturedChars += text.length; eligibleChars += text.length;
   }
+  // The selected list-wide price mode is source evidence even when its button
+  // is outside main content. Do not capture open menu alternatives or card text.
+  const priceSettings=new Map();
+  const priceCaption=/^(?:nightly price|total price|price per night|per night)(?:\s+(?:per room|for all rooms))?(?:\s+(?:with|including|excluding|before)\s+(?:taxes?(?:\s+(?:and|&)\s+fees?)?|fees?))?$/i;
+  const priceVisible=element=>{
+    if(!element.getClientRects().length) return false;
+    for(let parent=element;parent;parent=ancestor(parent)) {
+      if(parent.matches('[hidden],[inert],iframe,script,style,template,input,textarea,[contenteditable]')) return false;
+      const style=getComputedStyle(parent);
+      if(style.display==='none'||style.visibility==='hidden'||style.opacity==='0') return false;
+    }
+    return true;
+  };
+  const selector='button,[role="button"],select,[role="combobox"],[aria-haspopup],label,span,p';
+  for(const root of [document,...shadowRoots]) for(const element of root.querySelectorAll(selector)) {
+    const selected=element.tagName==='SELECT'?element.selectedOptions?.[0]:null;
+    const shortText=tidy(element.textContent).length<=180;
+    const captions=selected?[selected.textContent]:[shortText?element.innerText:'',
+      element.getAttribute('aria-label'),element.getAttribute('title')];
+    const text=captions.map(tidy).find(value=>value.length<=180&&priceCaption.test(value));
+    if(!text) continue;  // Only exact short captions need layout/record inspection.
+    if(!priceVisible(element)||element.closest('[role="menu"],[role="listbox"],[role="option"],option')||
+      element.tagName!=='SELECT'&&element.closest('select')) continue;
+    const choice=element.closest('[role="radio"],[role="menuitemradio"]');
+    const radio=element.closest('label')?.querySelector('input[type="radio"]');
+    if(choice&&choice.getAttribute('aria-checked')!=='true'||radio&&!radio.checked) continue;
+    // A page wrapper with one H1 may be a fallback recordOwner. It must not
+    // hide the list-wide setting; a hotel's own heading/container still does.
+    const owner=recordOwner(element);
+    if(owner&&!owner.querySelector('h1,[role="heading"][aria-level="1"]')) continue;
+    priceSettings.set(text.toLowerCase(),text);
+  }
+  for(const text of priceSettings.size<=4?priceSettings.values():[]) {
+    labelBlocks.push({id:'',kind:'text',text,href:null,group_id:null,
+      association:'page',content_role:'price_setting'});
+    capturedChars+=text.length; eligibleChars+=text.length;
+  }
   // Coherent record bundles precede unrelated headings and secondary labels.
   // Reserving every heading/URL first used to leave no room for the prices and
   // ratings attached to those same records, especially with attribution URLs.
@@ -561,7 +598,7 @@ function captureDocument(options = {}) {
     heading.closest('article,[itemtype*="Article"],[class*="article-header"],' +
       '[class*="article-headline"],[class*="story-header"]') ||
     heading.matches('[itemprop="headline"]'));
-  if (detailHeadings.length) {
+  if (detailHeadings.length && !options.record_window) {
     const detailBodies = [...new Set(roots.flatMap(root =>
       [...root.querySelectorAll(bodySelector)]))].filter(visible);
     if (detailBodies.length) {
@@ -607,8 +644,28 @@ function captureDocument(options = {}) {
   };
   // Give each early record a share before spending the rest on long descriptions.
   // A loaded page can exceed this bounded snapshot; omissions are disclosed.
-  const bundleRoots = recordRoots.slice(0, 50);
-  if (recordRoots.length > bundleRoots.length) reasons.add('record_bundle_limit');
+  const uniqueRoots=[...new Map(recordRoots.map(card=>[recordInfo(card)?.key,card])).values()];
+  // A window of cards must not lose the list's explicit availability cautions.
+  // These are literal page notices, never proof that every card fails/matches.
+  if(options.record_window) {
+    const notices=new Set();
+    for(const element of (primary||document.body).querySelectorAll('[role="alert"],[role="status"],p,span,div')) {
+      if(notices.size>=8) break;
+      const raw=tidy(element.textContent);
+      if(raw.length>500 || !/\b(?:some|certain)\s+(?:options|results|properties|listings|hotels)\b.{0,100}\b(?:fewer|unavailable|not available|do not match)\b/i.test(raw)) continue;
+      if(element.closest(excluded+', [role="menu"], [role="listbox"], [role="dialog"]') ||
+         !visible(element) || uniqueRoots.some(card=>card.contains(element))) continue;
+      const text=literalLabel(element);
+      if(!text || notices.has(text) || capturedChars+text.length>characterLimit) continue;
+      notices.add(text);
+      labelBlocks.push({id:'',kind:'text',text,href:null,group_id:null,association:'page',content_role:'other'});
+      capturedChars+=text.length;eligibleChars+=text.length;
+    }
+  }
+  const recordOffset=options.record_window?Math.max(0,Math.min(10000,Number(options.record_offset)||0)):0;
+  const windowSize=options.record_window?Math.max(1,Math.min(10,Number(options.record_count)||10)):50;
+  const bundleRoots = uniqueRoots.slice(recordOffset, recordOffset+windowSize);
+  if (!options.record_window && uniqueRoots.length > bundleRoots.length) reasons.add('record_bundle_limit');
   const bundleQuota = Math.max(400, Math.min(1600,
     Math.floor((characterLimit - capturedChars) / Math.max(bundleRoots.length, 1))));
   for (const card of bundleRoots) {
@@ -625,11 +682,13 @@ function captureDocument(options = {}) {
   }
   // Non-card headlines and paragraph/span link titles still survive hundreds of
   // early secondary paragraphs. Literal labels remain separate link evidence.
-  for (const heading of contentHeadings) collectRoot(heading);
-  preserveLinkLabels();
-  for (const root of [...recordRoots, ...roots]) {
-    collectRoot(root);
-    if (visited > 50000) break;
+  if(!options.record_window) {
+    for (const heading of contentHeadings) collectRoot(heading);
+    preserveLinkLabels();
+    for (const root of [...recordRoots, ...roots]) {
+      collectRoot(root);
+      if (visited > 50000) break;
+    }
   }
   // Numeric blocks retain literal amount-specific relationships. A record-wide
   // "per night" must not become the basis of every amount in that record.
@@ -733,6 +792,10 @@ function captureDocument(options = {}) {
     truncated: reasons.size > 0, blocks,
     coverage: {
       collector_version: 'source-inventory-v6', scope: 'loaded_dom',
+      record_window:!!options.record_window,records_detected:Math.min(uniqueRoots.length,10000),
+      record_offset:recordOffset,records_selected:bundleRoots.length,
+      price_setting_status:priceSettings.size===0?'not_found':priceSettings.size===1?'captured':'ambiguous',
+      price_settings_detected:Math.min(priceSettings.size,100),
       page_url_identity_omitted: pageURLIdentityOmitted,
       eligible_text_chars: Math.min(eligibleChars, 10000000),
       captured_text_chars: blocks.reduce((n, block) => n + characterCount(block.text), 0),

@@ -12,7 +12,7 @@ from test_browser_agent import agent_page as shared_page
 from agentic_web_demo import browser_agent, custom_extract
 from agentic_web_demo.browser_agent import BrowserAgent, BrowserDecision, BrowserRequirement
 from agentic_web_demo.browser_dates import resolve_stay_dates
-from agentic_web_demo.browser_task import TaskLedger, compact_observation
+from agentic_web_demo.browser_task import TaskLedger, compact_observation, occupancy_summary_values
 from agentic_web_demo.custom_fetch import WebsiteError
 from agentic_web_demo.custom_service import capture_summary
 
@@ -77,6 +77,490 @@ def test_new_required_field_blocks_search_until_user_supplies_it():
     assert not task.unresolved_form_fields and len(task.submission_candidates) == 1
     assert "child_age" not in task.requirements
     assert task.begin_submission(corrected, corrected["url"], control=submit, action="click")
+
+
+@pytest.mark.parametrize("quote,expected,interpretation", [
+    ("3 adults and 2 rooms", "7", "A child needs an age to search"),
+    ("3 adults", "3", "Use the available numeric value"),
+    ("check-in 2026-10-28", "28", "Use the requested date's day"),
+])
+def test_new_age_cannot_be_grounded_by_interpretation_or_incidental_numbers(
+    quote, expected, interpretation,
+):
+    from agentic_web_demo.browser_task import MissingFormValue
+
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    requirement = BrowserRequirement(
+        name="child_age_1", expected=expected, application="form", request_quote=quote,
+        interpretation=interpretation, control_id="0:age",
+    )
+    with pytest.raises(MissingFormValue) as error:
+        task.declare([requirement], required_age_form())
+    assert error.value.field == "child_age_1"
+    assert "child_age_1" not in task.requirements
+    assert "child_age_1" not in task.bindings
+
+
+def test_child_count_is_not_an_explicit_age():
+    from agentic_web_demo.browser_task import MissingFormValue
+
+    request = TASK + " Include 1 child."
+    task = TaskLedger(request, reference_date=date(2026, 10, 1))
+    with pytest.raises(MissingFormValue):
+        task.declare([BrowserRequirement(
+            name="child_age_1", expected="1", application="form",
+            request_quote="1 child", control_id="0:age",
+        )], required_age_form())
+    assert "child_age_1" not in task.requirements
+
+
+@pytest.mark.parametrize("phrase,age", [
+    ("child aged 7", "7"),
+    ("child age 7", "7"),
+    ("7-year-old child", "7"),
+    ("child age 0", "0"),
+])
+def test_explicit_age_declaration_authorizes_only_its_literal_value(phrase, age):
+    request = TASK + " Include one " + phrase + "."
+    task = TaskLedger(request, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    field["options"] = [
+        {"value": "-1", "label": "Select an age", "disabled": False},
+        {"value": age, "label": age, "disabled": False},
+        {"value": "8", "label": "8", "disabled": False},
+    ]
+    task.declare([BrowserRequirement(
+        name="child_age_1", expected=age, application="form", request_quote=phrase,
+        control_id=field["id"],
+    )], observation)
+    assert task.action_value_problem(
+        field, decision("select", field["id"], age, purpose="set_field"), observation,
+    ) is None
+    assert task.action_value_problem(
+        field, decision("select", field["id"], "8", purpose="set_field"), observation,
+    )
+
+
+@pytest.mark.parametrize("action,value", [
+    ("select", "7"), ("fill", "7"), ("press", "ArrowDown"),
+])
+def test_undeclared_required_value_cannot_be_changed_directly(action, value):
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    if action == "fill":
+        field.update(tag="INPUT", type="number")
+    field["options"] = [{"value": "7", "label": "7", "disabled": False}]
+    problem = task.action_value_problem(
+        field, decision(action, field["id"], value, purpose="set_field"), observation,
+    )
+    assert problem and "Age of child 1" in problem
+    assert "Resume" in problem
+
+
+def test_undeclared_required_checkbox_cannot_be_checked():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form("7")
+    field = {
+        "id": "0:preference", "tag": "INPUT", "type": "checkbox",
+        "label": "Breakfast preference", "form_scope": "search", "required": True,
+        "selected": "false", "value": "on", "value_missing": True,
+    }
+    observation["frames"][0]["controls"].append(field)
+    assert task.action_value_problem(
+        field, decision("check", field["id"], "true", purpose="set_field"), observation,
+    )
+
+
+def test_custom_owned_age_option_cannot_bypass_missing_request_value():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    field.update(tag="DIV", role="combobox", widget_scope="choice", option_ids=["0:age7"])
+    option = {
+        "id": "0:age7", "tag": "DIV", "role": "option", "label": "7",
+        "text": "7", "value": "7", "widget_scope": "choice",
+    }
+    observation["frames"][0]["controls"].append(option)
+    problem = task.action_value_problem(
+        option, decision("click", option["id"], purpose="set_field"), observation,
+    )
+    assert problem and "Age of child 1" in problem
+
+
+def test_age_control_cannot_borrow_authorization_from_known_adults_requirement():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    task.declare([BrowserRequirement(
+        name="adults", expected="3", application="form", control_id=field["id"],
+    )], observation)
+    assert "adults" not in task.bindings
+    assert task.action_value_problem(
+        field, decision("select", field["id"], "3", purpose="set_field"), observation,
+    )
+
+
+@pytest.mark.parametrize("name,value", [("adults", "3"), ("children", "1"), ("rooms", "2")])
+def test_unprovided_country_cannot_borrow_an_occupancy_option_id(name, value):
+    task = TaskLedger(TASK + " Include 1 child.", reference_date=date(2026, 10, 1))
+    observation = required_age_form("7")
+    field = {"id": "0:country", "tag": "SELECT", "name": "country", "label": "Country",
+             "value": "", "required": True, "form_scope": "search",
+             "options": [{"value": value, "label": "France"}]}
+    observation["frames"][0]["controls"].append(field)
+    task.declare([BrowserRequirement(name=name, expected=value, application="form",
+                                    control_id=field["id"])], observation)
+    assert name not in task.bindings
+    assert task.action_value_problem(
+        field, decision("select", field["id"], value, purpose="set_field"), observation,
+    )
+
+
+def test_seeded_values_allow_counter_changes_and_owned_destination_options():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = form_observation(adults="2")
+    destination, adults = (
+        observation["frames"][0]["controls"][index] for index in (0, 3)
+    )
+    destination.update(role="combobox", option_ids=["0:city"])
+    option = {
+        "id": "0:city", "tag": "LI", "role": "option", "label": "New York",
+        "text": "New York", "option_primary": "New York", "option_kind": "city",
+    }
+    observation["frames"][0]["controls"].append(option)
+    task.observe(observation)
+    assert task.action_value_problem(
+        adults, decision("set_counter", adults["id"], "3", purpose="set_field"), observation,
+    ) is None
+    assert task.action_value_problem(
+        option, decision("click", option["id"], purpose="set_field"), observation,
+    ) is None
+
+
+@pytest.mark.parametrize("category", [
+    {"tag": "A", "href": "https://example.org/Hotels", "role": ""},
+    {"tag": "BUTTON", "role": "tab"},
+])
+def test_owned_category_navigation_does_not_request_a_missing_search_value(category):
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    field = {"id": "0:query", "tag": "INPUT", "type": "search", "label": "Search",
+             "value": "New York", "option_ids": ["0:hotels"]}
+    category = {"id": "0:hotels", "label": "Hotels", "text": "Hotels", **category}
+    observation = {"url": "https://example.org/", "document_id": "global_search",
+                   "frames": [{"controls": [field, category]}]}
+    assert task.action_value_problem(
+        category, decision("click", category["id"], purpose="navigate"), observation,
+    ) is None
+    assert not task.destination_options(field, observation)
+    task.remember_action(category, {"status": "action_performed"}, decision("click"), observation)
+    assert not task.destination_selections
+
+
+def test_navigation_purpose_or_link_tag_cannot_authorize_an_unknown_age_choice():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    age = observation["frames"][0]["controls"][-2]
+    age.update(tag="DIV", role="combobox", option_ids=["0:age7"])
+    option = {"id": "0:age7", "tag": "A", "href": "https://example.org/age/7",
+              "label": "7", "text": "7"}
+    observation["frames"][0]["controls"].append(option)
+    assert task.action_value_problem(
+        option, decision("click", option["id"], purpose="navigate"), observation,
+    )
+
+
+def discovery_observation():
+    return {"url": "https://example.org/", "document_id": "site_search", "frames": [{
+        "controls": [
+            {"id": "0:query", "tag": "INPUT", "type": "search", "label": "Search",
+             "value": "New York", "form_scope": "global"},
+            {"id": "0:go", "tag": "BUTTON", "type": "submit", "label": "Search",
+             "submits_form": True, "form_scope": "global"},
+        ],
+    }]}
+
+
+REGIONAL_REQUEST = "find hotels in New Jersey from 28-30 November with 4 adults and 3 rooms."
+
+
+def regional_discovery_observation(category=True):
+    items = [
+        {"id": "0:query", "tag": "INPUT", "type": "search", "label": "Search", "value": "",
+         "required": True, "value_missing": True, "option_ids": ["0:all"]},
+        {"id": "0:all", "tag": "BUTTON", "type": "button", "label": 'See all results for "New Jersey"'},
+        {"id": "0:city", "tag": "A", "label": "DESTINATION New Jersey United States, North America",
+         "href": "https://example.org/region"},
+        {"id": "0:property", "tag": "A", "label": "HOTEL Sheraton New Jersey 3.7 of 5 bubbles 1198 reviews",
+         "href": "https://example.org/property"},
+    ]
+    if category:
+        items.append({"id": "0:hotels", "tag": "A", "label": "Hotels", "href": "https://example.org/stays"})
+    return {"url": "https://example.org/", "document_id": "discovery", "frames": [{"controls": items}]}
+
+
+def test_region_discovery_keeps_city_results_and_category_before_global_query():
+    task = TaskLedger(REGIONAL_REQUEST, reference_date=date(2026, 11, 7))
+    observation = regional_discovery_observation()
+    assert task.observe(observation)["navigation_stage"]["control_ids"] == ["0:hotels"]
+    observation = regional_discovery_observation(category=False)
+    stage = task.observe(observation)["navigation_stage"]
+    assert stage["phase"] == "discover_location"
+    assert stage["control_ids"][:2] == ["0:all", "0:city"]
+    assert "0:property" not in stage["control_ids"]
+    for item in observation["frames"][0]["controls"][1:3]:
+        action = decision("click", item["id"], purpose="set_field")
+        assert task.discovery_navigation(action, item, observation)
+        assert not task.is_submit(action, item, observation)
+        assert task.action_value_problem(item, action, observation) is None
+    assert task.submission is None and task.pending_submission is None
+
+
+def test_room_card_button_is_not_a_stay_form_but_guest_widget_is():
+    task = TaskLedger(REGIONAL_REQUEST, reference_date=date(2026, 11, 7))
+    observation = regional_discovery_observation()
+    items = observation["frames"][0]["controls"]
+    items.append({"id": "0:rooms", "tag": "BUTTON", "type": "button", "label": "See rooms"})
+    assert not task.has_stay_form(observation)
+    assert task.observe(observation)["navigation_stage"]["phase"] == "discover_category"
+    items[-1].update(label="Guests and rooms", expanded="false")
+    assert task.has_stay_form(observation)
+
+
+def test_global_search_validation_does_not_block_another_native_stay_form():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = form_observation()
+    items = observation["frames"][0]["controls"]
+    for item in items:
+        item["form_scope"] = "stay"
+    items.extend([
+        {"id": "0:stay-go", "tag": "BUTTON", "type": "submit", "submits_form": True,
+         "label": "Search", "form_scope": "stay"},
+        {"id": "0:site-query", "tag": "INPUT", "type": "search", "label": "Search",
+         "value": "", "required": True, "value_missing": True, "form_scope": "global"},
+        {"id": "0:site-go", "tag": "BUTTON", "type": "submit", "submits_form": True,
+         "label": "Search", "form_scope": "global"},
+    ])
+    assert task.required_form_fields(observation) == []
+    items.append({"id": "0:age", "tag": "SELECT", "label": "Age of child 1", "value": "",
+                  "required": True, "value_missing": True, "form_scope": "stay"})
+    assert [field["control_id"] for field in task.required_form_fields(observation)] == ["0:age"]
+
+
+def test_city_and_category_transitions_are_not_incomplete_stay_submissions():
+    class RegionalTools(FakeTools):
+        stage = 0
+
+        def observe(self):
+            observation = regional_discovery_observation(category=self.stage == 1)
+            observation["document_id"] = f"page-{self.stage}"
+            if self.stage == 2:
+                observation["frames"][0]["controls"] = [
+                    {"id": "0:dates", "tag": "BUTTON", "type": "button",
+                     "label": "Select dates Check-in — Check-out"}
+                ]
+            self.references = {item["id"]: (None, None, item)
+                               for item in observation["frames"][0]["controls"]}
+            return observation
+
+        def execute(self, action):
+            outcome = super().execute(action)
+            self.stage += 1
+            return outcome
+
+    tools = RegionalTools()
+    report = BrowserAgent(tools, FakeDecider([
+        decision("click", "0:all", purpose="set_field"),
+        decision("click", "0:hotels", purpose="set_field"), decision("pause"),
+    ]), REGIONAL_REQUEST).run()
+    assert tools.events == ["click", "click"]
+    assert not any(item["status"] == "unsubmitted_navigation" for item in report["actions"])
+    assert report["task_checklist"]["navigation_stage"]["phase"] == "prepare_stay"
+    assert not report["search_transition"]["attempted"]
+    assert not tools.pages
+
+
+def test_isolated_site_query_can_navigate_without_claiming_a_completed_stay_search():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = discovery_observation()
+    task.observe(observation)
+    submit = observation["frames"][0]["controls"][-1]
+    action = decision("click", submit["id"], purpose="submit_search")
+    assert task.pending()
+    assert task.discovery_search(action, submit, observation)
+    assert task.submission is None and task.pending_submission is None
+    assert task.completion_problem()
+
+
+def test_agent_dispatches_query_only_search_then_continues_without_stay_proof():
+    class DiscoveryTools(FakeTools):
+        searched = False
+
+        def observe(self):
+            observation = discovery_observation() if not self.searched else {
+                "url": "https://example.org/Hotels", "document_id": "category",
+                "frames": [{"text": "Choose hotels and prepare your stay", "controls": []}],
+            }
+            self.references = {
+                item["id"]: (None, None, item)
+                for frame in observation["frames"] for item in frame["controls"]
+            }
+            return observation
+
+        def execute(self, action):
+            result = super().execute(action)
+            self.searched = action.action == "click" and action.control_id == "0:go"
+            return result
+
+    tools = DiscoveryTools()
+    report = BrowserAgent(tools, FakeDecider([
+        decision("click", "0:go", purpose="submit_search"), decision("pause"),
+    ]), TASK).run()
+    assert tools.events.count("click") == 1
+    assert report["actions"][0]["submission_semantics"]["discovery_search_only"]
+    assert not report["search_transition"]["confirmed"]
+    assert not report["search_transition"]["attempted"]
+    assert not tools.pages
+
+
+@pytest.mark.parametrize("change", ["date_opener", "age_field", "unowned", "unrequested_query"])
+def test_actual_stay_form_and_unowned_controls_do_not_become_discovery_searches(change):
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = discovery_observation()
+    fields = observation["frames"][0]["controls"]
+    if change == "date_opener":
+        fields.append({"id": "0:dates", "tag": "BUTTON", "label": "Check-in / Check-out",
+                       "form_scope": "global"})
+    elif change == "age_field":
+        fields.append({"id": "0:age", "tag": "SELECT", "label": "Child age",
+                       "form_scope": "global", "value": ""})
+    elif change == "unowned":
+        fields[-1]["form_scope"] = None
+    else:
+        fields[0]["value"] = "Paris"
+    submit = fields[1]
+    assert not task.discovery_search(decision("click", submit["id"]), submit, observation)
+
+
+def test_known_value_binding_does_not_authorize_keyboard_change_to_other_option():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = form_observation()
+    adults = observation["frames"][0]["controls"][3]
+    adults.update(tag="SELECT", options=[
+        {"value": value, "label": value, "disabled": False} for value in ("1", "3", "9")
+    ])
+    task.observe(observation)
+    assert task.action_value_problem(
+        adults, decision("press", adults["id"], "Home", purpose="set_field"), observation,
+    )
+
+
+def test_explicit_age_can_fill_without_redundant_requirement_metadata():
+    task = TaskLedger(TASK + " Include a child aged 7.", reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    field["options"] = [{"value": "7", "label": "7", "disabled": False}]
+    assert task.action_value_problem(
+        field, decision("select", field["id"], "7", purpose="set_field"), observation,
+    ) is None
+    assert "child_age_1" not in task.requirements
+
+
+def test_custom_owned_option_uses_explicit_age_and_rejects_other_age():
+    task = TaskLedger(TASK + " Include a child aged 7.", reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    field = observation["frames"][0]["controls"][-2]
+    field.update(tag="DIV", role="combobox", widget_scope="choice",
+                 option_ids=["0:age7", "0:age8"])
+    options = [
+        {"id": "0:age" + age, "tag": "DIV", "role": "option", "label": age,
+         "text": age, "value": age, "widget_scope": "choice"}
+        for age in ("7", "8")
+    ]
+    observation["frames"][0]["controls"].extend(options)
+    assert task.action_value_problem(
+        options[0], decision("click", options[0]["id"], purpose="set_field"), observation,
+    ) is None
+    assert task.action_value_problem(
+        options[1], decision("click", options[1]["id"], purpose="set_field"), observation,
+    )
+
+
+def test_one_childs_explicit_age_does_not_supply_another_childs_missing_age():
+    request = TASK + " Include 2 children, with child 1 aged 7."
+    task = TaskLedger(request, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    first = observation["frames"][0]["controls"][-2]
+    first["options"] = [{"value": "7", "label": "7", "disabled": False}]
+    second = {
+        **first, "id": "0:age2", "name": "age2", "label": "Age of child 2",
+    }
+    observation["frames"][0]["controls"].append(second)
+    assert task.action_value_problem(
+        first, decision("select", first["id"], "7", purpose="set_field"), observation,
+    ) is None
+    assert task.action_value_problem(
+        second, decision("select", second["id"], "7", purpose="set_field"), observation,
+    )
+
+
+def test_multiple_explicit_child_ages_preserve_child_order_and_reject_swaps():
+    from agentic_web_demo.browser_task import MissingFormValue
+
+    request = TASK + " Include 2 children aged 7 and 9."
+    task = TaskLedger(request, reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    first = observation["frames"][0]["controls"][-2]
+    first["options"] = [
+        {"value": age, "label": age, "disabled": False} for age in ("7", "9")
+    ]
+    second = {
+        **first, "id": "0:age2", "name": "age2", "label": "Age of child 2",
+    }
+    observation["frames"][0]["controls"].append(second)
+    for field, allowed, other in ((first, "7", "9"), (second, "9", "7")):
+        assert task.action_value_problem(
+            field, decision("select", field["id"], allowed, purpose="set_field"), observation,
+        ) is None
+        assert task.action_value_problem(
+            field, decision("select", field["id"], other, purpose="set_field"), observation,
+        )
+    with pytest.raises(MissingFormValue):
+        task.declare([BrowserRequirement(
+            name="child_age_1", expected="9", application="form",
+            request_quote="children aged 7 and 9", control_id=first["id"],
+        )], observation)
+    assert "child_age_1" not in task.requirements
+
+
+def test_multiple_child_age_fields_without_ordinals_require_manual_assignment():
+    task = TaskLedger(TASK + " Include 2 children aged 7 and 9.", reference_date=date(2026, 10, 1))
+    observation = required_age_form()
+    first = observation["frames"][0]["controls"][-2]
+    first.update(label="Child age", name="age")
+    first["options"] = [
+        {"value": age, "label": age, "disabled": False} for age in ("7", "9")
+    ]
+    second = {**first, "id": "0:ageOther", "name": "other_age"}
+    observation["frames"][0]["controls"].append(second)
+    for field in (first, second):
+        assert task.action_value_problem(
+            field, decision("select", field["id"], "7", purpose="set_field"), observation,
+        )
+
+
+def test_manually_completed_age_allows_search_without_authorizing_agent_overwrite():
+    task = TaskLedger(TASK, reference_date=date(2026, 10, 1))
+    observation = required_age_form("7")
+    task.observe(observation)
+    age, submit = observation["frames"][0]["controls"][-2:]
+    assert not task.unresolved_form_fields
+    assert task.action_value_problem(
+        age, decision("select", age["id"], "8", purpose="set_field"), observation,
+    )
+    assert "child_age_1" not in task.requirements
+    assert task.begin_submission(observation, observation["url"], control=submit, action="click")
 
 
 def test_unrelated_form_and_valid_radio_group_do_not_block_retrieval():
@@ -812,6 +1296,111 @@ def test_pending_full_calendar_dates_are_exposed_as_exact_control_choices():
     assert task.observe(form_observation())["visible_date_choices"] == []
 
 
+def test_date_openers_are_not_day_choices_and_selected_endpoints_are_read_back():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    observed["frames"][0]["controls"] += [
+        {"id": "0:opener", "tag": "BUTTON", "date_kind": "opener",
+         "label": "Enter the date. The selected date is Wednesday, October 28, 2026"},
+        {"id": "0:in", "tag": "INPUT", "type": "checkbox", "date_kind": "day_choice",
+         "date": "2026-10-28", "label": "Selected October 28, 2026", "selected": "true", "date_widget_id": "0:calendar"},
+        {"id": "0:out", "tag": "BUTTON", "date_kind": "day_choice",
+         "date": "2026-10-30", "label": "Selected October 30, 2026", "selected": "true", "date_widget_id": "0:calendar"},
+    ]
+    state = task.observe(observed)
+    assert state["visible_date_choices"] == []
+    assert not {"check_in", "check_out"} & set(task.pending())
+    checks = {item["field"]: item for item in state["requirements"]}
+    assert checks["check_in"]["observed"] == "2026-10-28"
+    assert checks["check_out"]["observed"] == "2026-10-30"
+    assert not state["search_submitted"]
+
+
+def test_selected_date_range_does_not_hide_a_conflicting_form_summary():
+    task = TaskLedger(TASK)
+    observed = form_observation()
+    observed["frames"][0]["controls"][1]["value"] = "2026-10-27"
+    observed["frames"][0]["controls"] += [
+        {"id": "0:in", "tag": "BUTTON", "date_kind": "day_choice",
+         "date": "2026-10-28", "label": "Selected October 28, 2026",
+         "selected": "true", "date_widget_id": "0:calendar"},
+        {"id": "0:out", "tag": "BUTTON", "date_kind": "day_choice",
+         "date": "2026-10-30", "label": "Selected October 30, 2026",
+         "selected": "true", "date_widget_id": "0:calendar"},
+    ]
+    task.observe(observed)
+    assert next(item for item in task.checks if item["field"] == "check_in")["status"] == "mismatch"
+
+
+def test_full_current_value_date_openers_read_back_a_closed_calendar_range():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    observed["frames"][0]["controls"] += [
+        {"id": "0:opener-in", "tag": "BUTTON", "date_kind": "opener",
+         "label": "Enter the date. The selected date is Wednesday, October 28, 2026"},
+        {"id": "0:opener-out", "tag": "BUTTON", "date_kind": "opener",
+         "label": "Enter the date. The selected date is Friday, October 30, 2026"},
+    ]
+    state = task.observe(observed)
+    assert state["visible_date_choices"] == []
+    assert not {"check_in", "check_out"} & set(task.pending())
+
+
+def test_a_single_selected_day_is_not_a_verified_stay_range():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    observed["frames"][0]["controls"].append(
+        {"id": "0:in", "tag": "BUTTON", "date_kind": "day_choice",
+         "date": "2026-10-28", "selected": "true"}
+    )
+    state = task.observe(observed)
+    assert {"check_in", "check_out"} <= set(task.pending())
+    assert [item["control_id"] for item in state["visible_date_choices"]] == ["0:in"]
+
+
+def test_requested_day_checkbox_does_not_require_an_unrelated_boolean_value():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    day = {"id": "0:in", "tag": "INPUT", "type": "checkbox", "date_kind": "day_choice",
+           "date": "2026-10-28", "selected": "false", "label": "October 28, 2026"}
+    observed["frames"][0]["controls"].append(day)
+    assert task.action_value_problem(day, decision("check", day["id"], "true"), observed) is None
+    assert task.action_value_problem(day, decision("check", day["id"], "false"), observed)
+    unrelated = {"id": "0:newsletter", "tag": "INPUT", "type": "checkbox", "label": "Subscribe"}
+    assert task.action_value_problem(unrelated, decision("check", unrelated["id"], "true"), observed)
+
+
+def test_selected_days_from_separate_calendars_do_not_create_a_stay_range():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    observed["frames"][0]["controls"] += [
+        {"id": "0:in", "tag": "BUTTON", "date_kind": "day_choice", "selected": "true",
+         "date": "2026-10-28", "label": "Selected October 28, 2026", "date_widget_id": "0:first"},
+        {"id": "0:out", "tag": "BUTTON", "date_kind": "day_choice", "selected": "true",
+         "date": "2026-10-30", "label": "Selected October 30, 2026", "date_widget_id": "0:second"},
+    ]
+    task.observe(observed)
+    assert {"check_in", "check_out"} <= set(task.pending())
+
+
+def test_a_selected_interior_day_of_the_wrong_range_remains_a_pending_choice():
+    task = TaskLedger(TASK)
+    observed = form_observation(dates=False)
+    observed["frames"][0]["controls"] += [
+        {"id": "0:old-in", "tag": "BUTTON", "date_kind": "day_choice", "selected": "true",
+         "date": "2026-10-27", "label": "Selected October 27, 2026", "date_endpoint": "check_in",
+         "date_widget_id": "0:calendar"},
+        {"id": "0:in", "tag": "BUTTON", "date_kind": "day_choice", "selected": "true",
+         "date": "2026-10-28", "label": "October 28, 2026", "date_widget_id": "0:calendar"},
+        {"id": "0:out", "tag": "BUTTON", "date_kind": "day_choice", "selected": "true",
+         "date": "2026-10-30", "label": "Selected October 30, 2026", "date_endpoint": "check_out",
+         "date_widget_id": "0:calendar"},
+    ]
+    state = task.observe(observed)
+    assert [item["control_id"] for item in state["visible_date_choices"]] == ["0:in"]
+    assert next(item for item in task.checks if item["field"] == "check_in")["status"] == "mismatch"
+
+
 def test_agent_does_not_advance_past_an_already_visible_requested_date():
     tools = FakeTools()
     observed = form_observation(dates=False)
@@ -1186,6 +1775,162 @@ def test_known_occupancy_binding_accepts_a_recognized_counter_not_its_opener():
     task.observe(fresh)
     check = next(item for item in task.checks if item["field"] == "rooms")
     assert check["status"] == "verified" and check["method"] == "visible_counter"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("3 rooms 5 guests", {"rooms": [3], "guests": [5]}),
+    ("5 travelers", {"guests": [5]}),
+    ("5 travellers", {"guests": [5]}),
+    ("Selected rooms 3 guests 5", {"rooms": [3], "guests": [5]}),
+    ("The selected number of rooms is 3 and the selected number of guests is 5",
+     {"rooms": [3], "guests": [5]}),
+    ("Adults 4 Children 1 Rooms 3", {"adults": [4], "children": [1], "rooms": [3]}),
+    ("4 adults, 1 child, 3 rooms", {"adults": [4], "children": [1], "rooms": [3]}),
+    ("3 rooms; selected rooms 2", {"rooms": [2, 3]}),
+])
+def test_occupancy_summary_keeps_each_named_quantity_and_total_separate(text, expected):
+    assert occupancy_summary_values(text) == expected
+
+
+def committed_occupancy_observation(summary, *, opened=False, adults=4, children=1, rooms=3):
+    observation = form_observation(adults="4", rooms="3")
+    observation["frames"][0]["controls"][3:] = [
+        {"id": "0:occupancy", "tag": "BUTTON", "type": "button", "label": summary,
+         "expanded": str(opened).lower(), "haspopup": "dialog"},
+    ]
+    if opened:
+        for name, value in (("adults", adults), ("children", children), ("rooms", rooms)):
+            observation["frames"][0]["controls"].append({
+                "id": "0:" + name, "tag": "BUTTON", "type": "button",
+                "label": "Increase " + name, "widget_scope": "counter",
+                "counter": {"label": name, "value": value, "direction": "increase",
+                            "evidence": f"{name} {value}"},
+            })
+        observation["frames"][0]["controls"].append({
+            "id": "0:update", "tag": "BUTTON", "type": "button", "label": "Update",
+            "widget_scope": "counter",
+        })
+    return observation
+
+
+def occupancy_task():
+    return TaskLedger(
+        "Find hotels in New York with check-in 2026-10-28 and check-out 2026-10-30 "
+        "for 4 adults, 1 child and 3 rooms."
+    )
+
+
+def test_closed_combined_guest_total_requires_fresh_independent_occupancy_rows():
+    task = occupancy_task()
+    opened = committed_occupancy_observation("4 adults, 1 child, 3 rooms", opened=True)
+    task.declare([
+        BrowserRequirement(name=name, expected=str(value), application="form", control_id="0:" + name)
+        for name, value in (("adults", 4), ("children", 1), ("rooms", 3))
+    ], opened)
+    task.observe(opened)
+    assert not task.pending()
+
+    closed = committed_occupancy_observation(
+        "Enter the number of rooms and guests. The selected number of rooms is 3 "
+        "and the selected number of guests is 5"
+    )
+    state = task.observe(closed)
+    checks = {check["field"]: check for check in task.checks}
+    assert checks["rooms"]["status"] == "verified"
+    assert checks["adults"]["status"] == checks["children"]["status"] == "pending"
+    assert checks["adults"]["observed"] is None
+    recheck = state["occupancy_recheck"]
+    assert recheck["opener"]["control_id"] == "0:occupancy"
+    assert set(recheck["pending_fields"]) == {"adults", "children"}
+    assert recheck["observed_counts"] == {"rooms": [3]}
+    assert recheck["observed_total_guests"] == [5]
+    assert recheck["expected_total_guests"] == 5
+    assert not task.begin_submission(closed, closed["url"])
+
+
+def test_closed_summary_reversion_withdraws_prior_popup_row_verification():
+    task = occupancy_task()
+    task.observe(committed_occupancy_observation("4 adults, 1 child, 3 rooms", opened=True))
+    closed = committed_occupancy_observation("5 adults, 1 child, 2 rooms")
+    state = task.observe(closed)
+    checks = {check["field"]: check for check in task.checks}
+    assert checks["adults"]["status"] == checks["rooms"]["status"] == "mismatch"
+    assert checks["adults"]["observed"] == "5"
+    assert checks["rooms"]["observed"] == "2"
+    assert set(state["occupancy_recheck"]["pending_fields"]) == {"adults", "rooms"}
+    assert not task.begin_submission(closed, closed["url"])
+
+
+def test_bound_native_count_does_not_override_a_conflicting_closed_summary():
+    task = occupancy_task()
+    page = committed_occupancy_observation("2 adults, 1 child, 3 rooms")
+    field = {"id": "0:capacity", "tag": "INPUT", "type": "number", "name": "capacity",
+             "label": "Capacity", "value": "4"}
+    page["frames"][0]["controls"].append(field)
+    task.declare([BrowserRequirement(name="adults", expected="4", application="form",
+                                     control_id=field["id"])], page)
+    task.observe(page)
+    check = next(item for item in task.checks if item["field"] == "adults")
+    assert check["status"] == "mismatch"
+    assert check["observed"] == "2; 4"
+    assert "2 adults" in check["evidence"]
+
+
+def test_open_draft_rows_with_old_summary_request_widget_confirmation():
+    task = occupancy_task()
+    state = task.observe(committed_occupancy_observation("5 adults, 0 children, 2 rooms", opened=True))
+    for check in task.checks:
+        if check["field"] in {"adults", "children", "rooms"}:
+            assert check["status"] == "pending"
+            assert check["next_action"] == "confirm_or_close_widget"
+            assert check["summary_confirmation_pending"] is True
+    assert state["occupancy_recheck"] is None
+
+
+@pytest.mark.parametrize("expanded,status", [("true", "pending"), ("false", "mismatch")])
+def test_native_draft_count_waits_for_confirmation_only_while_widget_is_open(expanded, status):
+    task = occupancy_task()
+    page = committed_occupancy_observation("5 adults, 0 children, 2 rooms")
+    page["frames"][0]["controls"][3]["expanded"] = expanded
+    page["frames"][0]["controls"].append({
+        "id": "0:rooms", "tag": "INPUT", "type": "number", "label": "Rooms", "value": "3",
+    })
+    task.observe(page)
+    check = next(item for item in task.checks if item["field"] == "rooms")
+    assert check["status"] == status
+    if expanded == "true":
+        assert check["observed"] == "3"
+        assert check["next_action"] == "confirm_or_close_widget"
+    else:
+        assert check["observed"] == "2; 3"
+
+
+def test_total_guest_mismatch_does_not_invent_an_adult_count():
+    task = occupancy_task()
+    state = task.observe(committed_occupancy_observation("3 rooms 7 guests"))
+    checks = {check["field"]: check for check in task.checks}
+    assert checks["rooms"]["status"] == "verified"
+    for name in ("adults", "children"):
+        assert checks[name]["status"] == "pending"
+        assert checks[name]["observed"] is None
+        assert checks[name]["total_guest_conflict"] is True
+    assert state["occupancy_recheck"]["observed_total_guests"] == [7]
+
+
+def test_age_choice_and_ambiguous_openers_cannot_supply_occupancy_recheck_proof():
+    task = occupancy_task()
+    page = committed_occupancy_observation("3 rooms 5 guests")
+    page["frames"][0]["controls"].append({
+        "id": "0:age", "tag": "SELECT", "label": "Age of child 1", "value": "1",
+        "options": [{"value": "1", "label": "1 year old"}],
+    })
+    task.observe(page)
+    assert next(check for check in task.checks if check["field"] == "children")["status"] == "pending"
+    page["frames"][0]["controls"].append({
+        "id": "0:other-occupancy", "tag": "BUTTON", "type": "button",
+        "label": "Rooms and guests", "expanded": "false", "haspopup": "dialog",
+    })
+    assert task.observe(page)["occupancy_recheck"] is None
 
 
 def test_generic_request_quoted_form_requirements_do_not_need_a_hotel_site_recipe():
@@ -1970,5 +2715,5 @@ def test_extraction_adapter_passes_form_context_separately_and_does_not_duplicat
     assert payload["output_fields"] == ["name", "price", "url"]
     assert "text" not in payload["pages"][0]
     assert payload["pages"][0]["browser_task_context"] == page["browser_task_context"]
-    assert metadata["prompt_version"] == "website-extractor-v15"
+    assert metadata["prompt_version"] == "website-extractor-v17"
     assert "proof of per-hotel availability" in received["input"][0]["content"]

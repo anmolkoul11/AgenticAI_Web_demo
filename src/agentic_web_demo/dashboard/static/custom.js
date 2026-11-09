@@ -238,7 +238,9 @@ function updateSourceChoice() {
   $("web-request-optional").textContent = automatic ? "Required for automation" : "Optional";
   $("web-consent-text").textContent = selected === "capture" ?
     "I approve paid extraction of this received snapshot. No browser navigation or agent actions will run. I will review results before saving." : automatic ?
-    "I approve up to 30 paid agent decisions (5 active minutes), followed by paid extraction of up to 6 captured pages. No reservation or payment. I will review results before saving." :
+    "I approve up to 30 paid agent decisions (5 active minutes), followed by " +
+    ($("web-extent").value === "all_results" ? "all-results collection and paid extraction in batches of up to 10 listings, within the displayed collection limits. " : "paid extraction of up to 6 captured pages. ") +
+    "No reservation or payment. I will review results before saving." :
     "I approve reading the supplied content and a paid extraction call. Manual search navigation, link discovery or browser-agent actions require separate approval.";
   const guidance = {
     browser: automatic ? "Your request guides search, navigation and collection in one run. Preview first; save after review." :
@@ -912,8 +914,11 @@ function renderBrowserOptions(browser) {
   agentPanel.hidden = authenticationPending || $("web-framework").value !== "langgraph";
   agentApprovalState();
   const agentReport = browser.agent_report;
+  const retainedSources = agentReport?.listing_collection ?
+    `${agentReport.listing_collection.records_collected} unique source cards across ${agentReport.listing_collection.result_pages} result pages` :
+    `${agentReport?.captured_pages?.length || 0} retained page(s)`;
   const agentMessage = agentReport ?
-    `${agentReport.status.replaceAll("_", " ")} · ${agentReport.calls}/${agentReport.max_calls} model calls attempted · ${agentReport.captured_pages.length} retained page(s). ${agentReport.guidance}` :
+    `${agentReport.status === "paused" && agentReport.awaiting_user_input ? "Waiting for your input" : agentReport.status.replaceAll("_", " ")} · ${agentReport.calls}/${agentReport.max_calls} model calls attempted · ${retainedSources}. ${agentReport.guidance}` :
     "Ready when you authorize it. Your original task remains unchanged throughout this session.";
   const lastDecision = agentReport?.decision_diagnostics?.at(-1);
   const decisionMessage = lastDecision ?
@@ -1392,10 +1397,13 @@ function showPricingSummary(data) {
   if (!summary?.applicable) return;
   const within = summary.within_target_ready ?? summary.within_target ?? 0;
   const outside = summary.outside_target_ready ?? summary.outside_target ?? 0;
+  const hasTarget = summary.target_requested ?? summary.comparison_requested ?? true;
   stableText(pricingNote, `${summary.verified || 0} captured prices verified; ${summary.unverified || 0} unverified. ` +
-    `${within} ready records within the price target; ${outside} outside it. ` +
-    "Outside-target preferences are labelled alternatives, not budget matches. " +
-    "Nightly defaults to all requested rooms combined. Taxes and fees are shown separately.");
+    (hasTarget ? `${within} ready records within the price target; ${outside} outside it. ` +
+      "Outside-target preferences are labelled alternatives, not budget matches. " :
+      "No price target was requested. Optional price warnings remain visible in the results. ") +
+    (summary.comparison_requested !== false ? "Nightly defaults to all requested rooms combined. " : "") +
+    "Taxes and fees are shown separately.");
   updateRegion(pricingTargets, data.request_preferences || [], () => {
     pricingTargets.replaceChildren();
     for (const preference of data.request_preferences || []) {
@@ -1425,6 +1433,12 @@ function showOutputContract(data) {
       `${coverage.truncated_pages || 0} truncated. This is not verified whole-website coverage. ` : "") +
     (contract.omitted_inferred_fields?.length ?
       `Empty optional fields omitted: ${contract.omitted_inferred_fields.map(name => name.replaceAll("_", " ")).join(", ")}. ` : "") +
+    (coverage?.listing_collection ? `${coverage.listing_collection.records_collected} unique source cards across ${coverage.listing_collection.result_pages} result pages. ` +
+      (coverage.listing_collection.source_preview_only ? "Read-only source preview: requested stay details remain unverified. " : "") +
+      (coverage.listing_collection.complete ? "Reached the end of the available result list. " :
+        `Partial collection: ${coverage.listing_collection.reason.replaceAll("_", " ")}. `) : "") +
+    (coverage?.extraction_batches ? `${coverage.extraction_batches.completed}/${coverage.extraction_batches.total} extraction batches processed. ` +
+      (coverage.extraction_batches.unreturned_groups ? `${coverage.extraction_batches.unreturned_groups} source cards were not returned as model candidates. ` : "") : "") +
     (coverage?.information_coverage?.partial_reason ? coverage.information_coverage.partial_reason + " " : "") +
     "Missing means not verified in this capture, not absent from the website.");
   updateRegion(outputContractList, contract.field_coverage || [], () => {
@@ -1490,7 +1504,21 @@ function webBusy(busy) {
   updateSourceInputs();
   $("web-execute").disabled = busy || !canApproveWeb();
 }
+function updateCollectionExtent() {
+  const supported = ["browser", "extension"].includes($("web-source").value) &&
+    $("web-framework").value === "langgraph" && !$("web-manual-mode").checked;
+  $("web-extent").disabled = !supported;
+  if (!supported) $("web-extent").value = "preview";
+  const all = $("web-extent").value === "all_results";
+  $("web-limit").max = all ? "5000" : "50";
+  if (!all && Number($("web-limit").value) > 50) $("web-limit").value = "25";
+}
+$("web-extent").onchange = () => {
+  $("web-limit").value = $("web-extent").value === "all_results" ? "5000" : "25";
+  updateCollectionExtent(); updateSourceChoice(); $("web-consent").checked = false;
+};
 $("web-source").onchange = () => {
+  updateCollectionExtent();
   $("web-workflow-visual").checked = false;
   updateSourceChoice();
   const paste = $("web-source").value === "paste";
@@ -1560,6 +1588,7 @@ $("web-browser-mode").onchange = () => {
   $("web-login-mode").onchange();
 };
 $("web-manual-mode").onchange = $("web-framework").onchange = () => {
+  updateCollectionExtent();
   $("web-consent").checked = false;
   $("web-workflow-visual").checked = false;
   updateSourceChoice();
@@ -1585,6 +1614,7 @@ $("web-form").onsubmit = async event => {
     instructions: $("web-request").value, page_text: $("web-source").value === "paste" ? $("web-text").value : "",
     output_fields: $("web-output-fields").value.split(",").map(value => value.trim()).filter(Boolean),
     record_limit: Number($("web-limit").value), business_rules: field ? [{field, operator: $("web-rule-op").value, value: $("web-rule-value").value}] : [],
+    collection_extent: $("web-extent").value,
     publish_event: $("web-publish").checked, authorized: $("web-authorized").checked, allow_model_api: $("web-consent").checked,
   };
   if (values.output_fields.length > 16 || new Set(values.output_fields).size !== values.output_fields.length ||
@@ -1823,7 +1853,8 @@ function pricingPreview(pricing, row = null) {
   status.dataset.verified = String(pricing.status === "verified");
   status.textContent = pricing.budget_status === "within_target" ? "Within your price target" :
     pricing.budget_status === "outside_target" ? "Outside your target · alternative" :
-    pricing.status === "unverified" ? "Price or stay details need verification" : pricing.basis_label || "Review price details";
+    pricing.status === "unverified" ? (pricing.scope_status === "verified" ?
+      "Price details need verification" : "Price or stay details need verification") : pricing.basis_label || "Review price details";
   section.append(status);
   const details = document.createElement("details"), summary = document.createElement("summary");
   summary.textContent = "Price details & source quotes"; details.append(summary);

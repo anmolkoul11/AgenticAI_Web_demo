@@ -49,7 +49,8 @@ def control(**changes):
 
 
 def observation(token=TOKEN, url=URL + QUERY, controls=None, **frame_changes):
-    return {"url": url, "document_token": token, "input_driver": "native_cdp", "frame": {
+    return {"url": url, "document_token": token, "input_driver": "native_cdp",
+            "worker_version": "0.5.20", "executor_version": "0.5.20", "frame": {
         "title": "Search results", "text": "Returned hotel listings are visible on the website.",
         "controls": controls if controls is not None else [control()],
         "results": {"record_count": 1, "busy": False},
@@ -134,7 +135,7 @@ def test_missing_native_readiness_retains_diagnostics_before_rejection(driver):
     assert diagnostics["native_attached"] is False
     assert diagnostics["input"] == (driver or "unknown")
     assert diagnostics["adapter"] == ("selected_tab_dom" if driver else "selected_tab_unknown")
-    assert "Browser Companion 0.5.2" in str(error.value)
+    assert "Browser Companion 0.5.20" in str(error.value)
     assert "No model decision ran from this observation" in str(error.value)
     assert [operation for operation, _ in channel.calls] == ["observe"]
     assert adapter.document_token is None and not adapter.references
@@ -160,15 +161,33 @@ def test_readiness_diagnostics_handle_malformed_frames_without_leaking_text(fram
 
 def test_ready_observation_retains_worker_executor_and_attachment_diagnostics():
     reply = observation()
-    reply.update(worker_version="0.5.1", executor_version="0.5.1",
+    reply.update(worker_version="0.5.20", executor_version="0.5.20",
                  input_protocol=1, native_attached=True)
     adapter, _ = tools([("observe", reply)])
     observed = adapter.observe()
     assert observed["frames"][0]["controls"][0]["id"] == "0:0"
     summary = adapter.observation_diagnostics
     assert summary["adapter"] == "selected_tab_native_cdp"
-    assert summary["worker_version"] == summary["executor_version"] == "0.5.1"
+    assert summary["worker_version"] == summary["executor_version"] == "0.5.20"
     assert summary["input_protocol"] == 1 and summary["native_attached"] is True
+
+
+@pytest.mark.parametrize("old_version", ["0.5.12", "0.5.13", "0.5.14"])
+def test_old_native_ready_calendar_helper_is_stopped_before_any_model_decision(old_version):
+    reply = observation()
+    reply.update(worker_version=old_version, executor_version=old_version)
+    adapter, channel = tools([("observe", reply)])
+    with pytest.raises(WebsiteError, match="Browser Companion 0.5.20"):
+        adapter.observe()
+    assert [operation for operation, _ in channel.calls] == ["observe"]
+
+
+@pytest.mark.parametrize("helper_version", ["0.5.15", "0.5.16", "0.5.17", "0.5.18", "0.5.19", "0.5.20"])
+def test_collection_update_does_not_disable_existing_native_search_helpers(helper_version):
+    reply = observation()
+    reply.update(worker_version=helper_version, executor_version=helper_version)
+    adapter, channel = tools([("observe", reply)])
+    assert adapter.observe()["frames"][0]["controls"]
 
 
 @pytest.mark.parametrize("diagnostics", [None, False, [], {"fields": False}])
@@ -390,8 +409,42 @@ def test_reader_resumes_same_agent_without_recreating_budget_and_leaves_tab_open
     assert not channel.cancel.is_set() and not channel.calls
 
 
-def test_reader_keeps_confirmed_empty_search_for_existing_no_extraction_branch(monkeypatch):
+@pytest.mark.parametrize(
+    "handoff", ["confirmed_search", "observed_empty", "mismatched_scope", "nonempty_results"],
+)
+def test_reader_keeps_confirmed_empty_search_for_existing_no_extraction_branch(
+    monkeypatch, handoff,
+):
     channel = Channel([])
+    channel.wait_for_resume = lambda: "stop"
+    checklist = {"search_submitted": True, "search_response_pending": False}
+    if handoff != "confirmed_search":
+        returned_stay = {
+            "destination": "New York", "check_in": "2026-10-28", "check_out": "2026-10-30",
+            "adults": "4", "rooms": "2",
+        }
+        checklist.update(
+            search_submitted=False, matching_results_observed=True,
+            result_scope={
+                "status": "verified", "source": "returned_page", "document_id": TOKEN,
+                "requested": returned_stay,
+                "fields": [{"field": field, "expected": value, "observed": value, "status": "verified"}
+                           for field, value in returned_stay.items()],
+                "contradictions": [],
+            },
+            search_transition={
+                "attempted": False, "confirmed": False, "dispatch_status": "not_attempted",
+                "attempt_status": "matching_results_observed", "result_state": "empty",
+                "scope": "observed_matching_results_only", "result_document_id": TOKEN,
+                "submission_provenance": {
+                    "actor": "website", "action": None, "evidence_method": "returned_url",
+                },
+            },
+        )
+        if handoff == "mismatched_scope":
+            checklist["result_scope"]["status"] = "mismatch"
+        elif handoff == "nonempty_results":
+            checklist["search_transition"]["result_state"] = "observed"
 
     class Decider:
         def __init__(self, settings):
@@ -406,7 +459,7 @@ def test_reader_keeps_confirmed_empty_search_for_existing_no_extraction_branch(m
 
         def run(self):
             return {"status": "ready", "guidance": "No results", "collection_outcome": "empty_results",
-                    "task_checklist": {"search_submitted": True, "search_response_pending": False}}
+                    "task_checklist": checklist}
 
         def captured_sources(self):
             return []
@@ -416,6 +469,11 @@ def test_reader_keeps_confirmed_empty_search_for_existing_no_extraction_branch(m
     review = BrowserControl()
     values = SimpleNamespace(framework="langgraph", browser_scroll_steps=0,
                              instructions="Find matching records", output_fields=[])
+    if handoff in {"mismatched_scope", "nonempty_results"}:
+        with pytest.raises(WebsiteError, match="before source collection completed"):
+            extension_browser.read_extension(values, review, object(), channel)
+        assert not review.snapshot_frozen
+        return
     assert extension_browser.read_extension(values, review, object(), channel) == []
     assert review.snapshot_frozen
 

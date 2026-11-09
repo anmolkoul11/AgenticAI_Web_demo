@@ -180,6 +180,131 @@ def test_executor_calendar_does_not_skip_a_previously_selected_range_interior(ex
     assert page.evaluate("window.clicks") == 1
 
 
+def test_executor_calendar_preserves_selected_day_in_independently_verified_range(executor_page):
+    page = executor_page
+    page.set_content("""<main><div role=grid><div role=gridcell
+      aria-label='Saturday, November 28, 2026' aria-selected=true>
+      <button type=button onclick='window.clicks=(window.clicks||0)+1'>28</button>
+      </div></div></main>""")
+    payload = date_payload(page, observed(page))
+    payload["facts"]["calendar_range_verified"] = True
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", payload)
+    assert result["calendar"]["status"] == "already_selected"
+    assert result["calendar"]["dispatched"] is False
+    assert page.evaluate("window.clicks||0") == 0
+
+
+def test_requested_new_endpoint_can_reselect_a_previously_selected_label(executor_page):
+    page = executor_page
+    page.set_content("""<main><div role=grid><button type=button
+      aria-label='Selected November 28, 2026' aria-selected=true
+      onclick='window.clicks=(window.clicks||0)+1;this.setAttribute("aria-label","November 28, 2026, Check-in date")'>28</button></div></main>""")
+    observation = observed(page)
+    control = next(item for item in observation["frame"]["controls"] if item["tag"] == "BUTTON")
+    control["calendar_selection_required"] = True
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", {
+        "document_token": observation["document_token"], "facts": control,
+        "decision": {"action": "click", "control_id": control["id"], "value": ""},
+    })
+    assert result["calendar"]["dispatched"] is True
+    assert page.evaluate("window.clicks") == 1
+
+
+def test_executor_date_opener_can_announce_selected_date_without_day_readback(executor_page):
+    page = executor_page
+    page.set_content("""<main><button type=button aria-haspopup=dialog
+      aria-label='Enter the date. The selected date is Saturday, November 28, 2026.'
+      onclick='window.clicks=(window.clicks||0)+1;dates.hidden=false'>Check-in</button>
+      <div id=dates role=dialog hidden>Choose your stay dates</div></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"] if c["tag"] == "BUTTON")
+    assert field["date_kind"] == "opener"
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert result["status"] == "action_performed"
+    assert "calendar" not in result
+    assert page.get_by_role("dialog").is_visible()
+    assert page.evaluate("window.clicks") == 1
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_executor_selected_accessible_day_label_does_not_toggle_selection(executor_page, native):
+    page = executor_page
+    page.set_content("""<main><span role=checkbox tabindex=0
+      aria-label='Selected November 28, 2026'
+      onclick='window.clicks=(window.clicks||0)+1;this.setAttribute("aria-label","November 28, 2026")'>28</span></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"] if c["role"] == "checkbox")
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch(p.mode,p.payload)", {
+        "mode": "native_begin" if native else "execute",
+        "payload": {"document_token": observation["document_token"], "facts": field,
+                    "decision": {"action": "click", "control_id": field["id"], "value": ""}},
+    })
+    if native:
+        assert "native_step" not in result
+        result = result["result"]
+    assert result["calendar"]["status"] == "already_selected"
+    assert result["calendar"]["dispatched"] is False
+    assert page.evaluate("window.clicks||0") == 0
+
+
+def test_executor_explicit_false_day_state_overrides_selected_label(executor_page):
+    page = executor_page
+    page.set_content("""<main><button type=button aria-checked=false
+      aria-label='Selected November 28, 2026'
+      onclick='window.clicks=(window.clicks||0)+1;this.setAttribute("aria-checked","true")'>28</button></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"] if c["tag"] == "BUTTON")
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert result["calendar"]["status"] == "selected"
+    assert result["calendar"]["dispatched"] is True
+    assert page.evaluate("window.clicks") == 1
+
+
+def test_executor_numeric_day_target_uses_its_observed_full_date_owner(executor_page):
+    page = executor_page
+    page.set_content("""<main><div role=grid><div role=gridcell
+      aria-label='Saturday, November 28, 2026' aria-selected=false>
+      <button type=button onclick='window.clicks=(window.clicks||0)+1;
+        this.parentElement.setAttribute("aria-selected","true")'>28</button>
+      </div></div></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"] if c["tag"] == "BUTTON")
+    assert field["date"] == "2026-11-28"
+    assert field["date_owner_id"] != field["id"]
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert result["calendar"]["status"] == "selected"
+    assert result["calendar"]["target"] == "observed_control"
+    assert page.evaluate("window.clicks") == 1
+
+
+def test_executor_native_date_click_keeps_occlusion_guard(executor_page):
+    page = executor_page
+    page.set_content("""<main><button type=button data-date=2026-11-28
+      aria-label='November 28, 2026' onclick='window.clicks=(window.clicks||0)+1'>28</button></main>""")
+    observation = observed(page)
+    field = next(c for c in observation["frame"]["controls"] if c["tag"] == "BUTTON")
+    page.evaluate("""() => {
+      const cover=document.createElement('div');
+      cover.style='position:fixed;inset:0;z-index:9999;background:white';
+      document.body.append(cover);
+    }""")
+    with pytest.raises(Exception, match="control_changed"):
+        page.evaluate("p=>__agenticTabExecutor.dispatch('native_begin',p)", {
+            "document_token": observation["document_token"], "facts": field,
+            "decision": {"action": "click", "control_id": field["id"], "value": ""},
+        })
+    assert page.evaluate("window.clicks||0") == 0
+
+
 def test_executor_calendar_keeps_selection_readback_when_checkout_closes_popup(executor_page):
     page = executor_page
     page.set_content("""<main><div role='grid'><div role='gridcell'
@@ -694,3 +819,97 @@ def test_observation_only_advertises_native_input_when_worker_declares_it(execut
       {focus:'form',input_driver:'native_cdp'})""")
     assert dom["input_driver"] == "dom"
     assert native["input_driver"] == "native_cdp"
+
+
+@pytest.mark.parametrize("age_markup", [
+    '<button role="combobox" aria-label="Age of child 1" aria-valuetext="7 years">7 years</button>',
+    '<button role="combobox" aria-label="Age of child 1">7 years</button>',
+    '<button role="combobox" aria-label="Age of child 1" aria-controls="ages"></button>'
+    '<div id="ages" role="listbox"><div role="option" aria-selected="true">7 years</div></div>',
+])
+def test_custom_age_observation_matches_exact_native_click_identity(executor_page, age_markup):
+    page = executor_page
+    page.set_content("<main>" + age_markup + "</main>")
+    observation = observed(page)
+    field = next(item for item in observation["frame"]["controls"]
+                 if item["role"] == "combobox")
+    prepared = page.evaluate("p=>__agenticTabExecutor.dispatch('native_begin',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert field["value"] == "7 years"
+    assert prepared["native_step"]["kind"] == "click"
+    # Preparation proves identity agreement without delivering browser input.
+    page.evaluate("p=>__agenticTabExecutor.dispatch('native_abort',p)", {
+        "document_token": observation["document_token"],
+        "transaction_id": prepared["transaction_id"],
+    })
+
+
+def test_generic_click_reports_changed_text_even_when_accessible_label_is_same(executor_page):
+    page = executor_page
+    page.set_content('<main><button aria-label="Enter the number of rooms and guests. '
+                     'Currently selected: Rooms 2, Guests 3." '
+                     'onclick="window.clicks=(window.clicks||0)+1">Rooms 2 Guests 3</button></main>')
+    observation = observed(page)
+    field = observation["frame"]["controls"][0]
+    page.locator("button").evaluate("e=>e.textContent='Rooms 2 Guests 4'")
+    result = page.evaluate("p=>__agenticTabExecutor.dispatch('execute',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert result["status"] == "value_mismatch" and result["dispatched"] is False
+    assert result["dispatch_status"] == "not_dispatched"
+    assert result["control_preflight"] == {
+        "reason": "identity_changed", "phase": "target",
+        "mismatched_fields": ["text"], "mismatch_count": 1,
+    }
+    assert "Guests 4" not in str(result)
+    assert page.evaluate("window.clicks||0") == 0
+
+
+def test_generic_native_click_keeps_hit_test_and_reports_preparation_phase(executor_page):
+    page = executor_page
+    page.set_content('<main><button onclick="window.clicks=(window.clicks||0)+1">'
+                     'Rooms 2 Guests 3</button></main>')
+    observation = observed(page)
+    field = observation["frame"]["controls"][0]
+    page.evaluate("""() => {
+      const cover=document.createElement('div');
+      cover.style='position:fixed;inset:0;z-index:999999;background:white';
+      document.body.append(cover);
+    }""")
+    response = page.evaluate("p=>__agenticTabExecutor.dispatch('native_begin',p)", {
+        "document_token": observation["document_token"], "facts": field,
+        "decision": {"action": "click", "control_id": field["id"], "value": ""},
+    })
+    assert "native_step" not in response
+    assert response["result"]["control_preflight"] == {
+        "reason": "hit_target_changed", "phase": "native_prepare",
+        "mismatched_fields": ["hit_target"], "mismatch_count": 1,
+    }
+    assert response["result"]["dispatched"] is False
+    assert page.evaluate("window.clicks||0") == 0
+
+
+def test_native_validation_reports_changed_custom_age_value_without_value_contents(executor_page):
+    page = executor_page
+    page.set_content('<main><button role="combobox" aria-label="Age of child 1" '
+                     'aria-valuetext="7 years">7 years</button></main>')
+    observation = observed(page)
+    field = observation["frame"]["controls"][0]
+    result = page.evaluate("""async payload => {
+      const prepared=await __agenticTabExecutor.dispatch('native_begin',payload);
+      const args={document_token:payload.document_token,transaction_id:prepared.transaction_id,
+        step_id:prepared.native_step.id};
+      document.querySelector('button').setAttribute('aria-valuetext','8 years');
+      let preflight;
+      try { await __agenticTabExecutor.dispatch('native_validate',args); }
+      catch(error) { preflight=error.controlPreflight; }
+      await __agenticTabExecutor.dispatch('native_abort',args);
+      return preflight;
+    }""", {"document_token": observation["document_token"], "facts": field,
+           "decision": {"action": "click", "control_id": field["id"], "value": ""}})
+    assert result == {"reason": "identity_changed", "phase": "native_validate",
+                      "mismatched_fields": ["value"], "mismatch_count": 1}
+    assert "7 years" not in str(result) and "8 years" not in str(result)

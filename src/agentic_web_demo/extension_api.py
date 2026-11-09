@@ -17,7 +17,8 @@ class ExtensionStart(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     tab_id: StrictInt = Field(ge=0, le=2_147_483_647)
     instructions: str = Field(min_length=1, max_length=2000)
-    record_limit: StrictInt = Field(default=25, ge=1, le=50)
+    collection_extent: Literal["preview", "all_results"] = "preview"
+    record_limit: StrictInt = Field(default=25, ge=1, le=5000)
     output_fields: list[str] = Field(default_factory=list, max_length=16)
     business_rules: list[Condition] = Field(default_factory=list, max_length=5)
     publish_event: StrictBool = False
@@ -28,6 +29,8 @@ class ExtensionStart(BaseModel):
 
     @model_validator(mode="after")
     def consent(self):
+        if self.collection_extent == "preview" and self.record_limit > 50:
+            raise ValueError("Limited previews support at most 50 records; choose All results for more.")
         if not all((self.agent_confirmed, self.authorized, self.allow_model_api)):
             raise ValueError("Explicit workflow and paid-model consent required")
         if self.agent_visual_confirmed:
@@ -87,6 +90,7 @@ def register_extension_routes(app, *, manager, accounts, active, user_service, g
                 source="extension", framework="langgraph", workflow_mode="automatic",
                 urls=[values.url], instructions=values.instructions,
                 record_limit=values.record_limit, output_fields=values.output_fields,
+                collection_extent=values.collection_extent,
                 business_rules=values.business_rules, publish_event=values.publish_event,
                 authorized=True, allow_model_api=True, agent_confirmed=True,
             )

@@ -465,7 +465,10 @@ def test_old_unfiltered_preview_cannot_bypass_contract_during_save(monkeypatch):
         custom_service.execute(object(), "old", custom_service.digest(proposal))
 
 
-def test_confirmed_empty_search_skips_extraction_and_does_not_create_preview(service, monkeypatch):
+@pytest.mark.parametrize("observed_matching_results", [False, True])
+def test_confirmed_empty_search_skips_extraction_and_does_not_create_preview(
+    service, monkeypatch, observed_matching_results,
+):
     values = WebsiteInput(
         source="browser",
         urls=["https://example.org/search"],
@@ -474,13 +477,38 @@ def test_confirmed_empty_search_skips_extraction_and_does_not_create_preview(ser
         allow_model_api=True,
         login_mode="none",
     )
+    checklist = {"search_submitted": True, "search_response_pending": False}
+    if observed_matching_results:
+        values.instructions = "Find hotels in New York, October 28-30, 2026, for 4 adults and 2 rooms."
+        returned_stay = {
+            "destination": "New York", "check_in": "2026-10-28", "check_out": "2026-10-30",
+            "adults": "4", "rooms": "2",
+        }
+        checklist.update(
+            search_submitted=False, matching_results_observed=True,
+            result_scope={
+                "status": "verified", "source": "returned_page", "document_id": "returned-results",
+                "requested": returned_stay,
+                "fields": [{"field": field, "expected": value, "observed": value, "status": "verified"}
+                           for field, value in returned_stay.items()],
+                "contradictions": [],
+            },
+            search_transition={
+                "attempted": False, "confirmed": False, "dispatch_status": "not_attempted",
+                "attempt_status": "matching_results_observed", "result_state": "empty",
+                "scope": "observed_matching_results_only", "result_document_id": "returned-results",
+                "submission_provenance": {
+                    "actor": "website", "action": None, "evidence_method": "returned_url",
+                },
+            },
+        )
 
     def empty_search(_values, control, _settings):
         control.set_agent_report(
             {
                 "status": "ready",
                 "collection_outcome": "empty_results",
-                "task_checklist": {"search_submitted": True, "search_response_pending": False},
+                "task_checklist": checklist,
             }
         )
         return []

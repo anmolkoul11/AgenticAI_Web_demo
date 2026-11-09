@@ -1,30 +1,51 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agentic Studio · Current tab</title><link rel="stylesheet" href="sidepanel.css"><script src="sidepanel.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agentic Studio · Browser assistant</title><link rel="stylesheet" href="sidepanel.css"><script src="sidepanel.js" defer></script></head>
 <body>
-  <header><span class="eyebrow">AGENTIC STUDIO</span><h1>Your tab. One workflow.</h1><p>Search and collect in your existing browser session. Review before saving.</p></header>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><div><span class="eyebrow">AGENTIC STUDIO</span><h1>Browser assistant</h1></div></div>
+    <p class="header-note">Find information. Review your results.</p>
+  </header>
   <main>
-    <section class="card" aria-labelledby="connection-title"><h2 id="connection-title">1. Connect your tab</h2><p id="connection">Open the website, finish any sign-in, then connect. Keep one signed-in dashboard tab open at localhost:8120.</p><p id="account" class="muted"></p><div class="buttons"><button id="connect" type="button">Connect website tab</button><button id="disconnect" type="button" class="secondary" hidden>Disconnect</button></div></section>
+    <section class="card connection-card" aria-labelledby="connection-title">
+      <h2 id="connection-title" class="sr-only">Your connection</h2>
+      <div id="connection-status" class="connection-status" data-tone="disconnected" role="status" aria-live="polite" aria-atomic="true"><span class="status-dot" aria-hidden="true"></span><span id="connection-status-label">Browser agent is not connected</span></div>
+      <p id="connection-hint" class="connection-hint">Open a website tab to get started.</p>
+      <div class="website"><span class="website-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c4 5 4 13 0 18-4-5-4-13 0-18Z"/></svg></span><div class="website-copy"><p id="website-title">No website selected</p><p id="website-domain" class="muted">Your own browser tab</p></div></div>
+      <details class="connection-details"><summary>Connection details</summary><p id="connection">Select a website tab to connect automatically while idle. Keep one signed-in dashboard tab open at localhost:8120. A workflow starts only when you choose Start.</p><p id="account" class="muted"></p></details>
+      <div class="buttons connection-actions"><button id="connect" type="button" class="secondary">Connect website tab</button><button id="disconnect" type="button" class="text-button" hidden>Disconnect</button></div>
+    </section>
     <p id="error" role="alert" hidden></p>
     <form id="task-form" class="card" aria-labelledby="task-title">
-      <h2 id="task-title">2. Describe your task</h2>
-      <label>What information do you need?<textarea id="instructions" rows="4" maxlength="2000" required placeholder="Find hotels in New York for 4 adults and 2 rooms, October 28–30, 2026. Include listing links and displayed nightly and total prices."></textarea></label>
-      <details><summary>Fields, limits &amp; optional rules</summary><label>Maximum records<input id="limit" type="number" min="1" max="50" value="25" required></label><label>Output fields (optional)<input id="fields" maxlength="650" placeholder="name, url, price, currency, rating"></label><p class="muted">Up to 16 lowercase field names. Leave blank to infer useful fields from the source.</p><div class="rule"><label>Rule field<input id="rule-field" maxlength="40" placeholder="rating"></label><label>Condition<select id="rule-op"><option value="gte">At least</option><option value="lte">At most</option><option value="eq">Equals</option><option value="contains">Contains</option></select></label><label>Value<input id="rule-value" maxlength="200" placeholder="8"></label></div><label class="check"><input id="publish" type="checkbox">Publish an event for approved records matching the rules (requires the local message broker).</label></details>
-      <label class="check consent"><input id="consent" type="checkbox" required>I authorize this tab's content to be sent to my configured model: up to 30 paid decisions (5 active minutes), then paid extraction of up to 6 captured pages. No reservations or payments. I will review before saving.</label>
-      <label class="check consent"><input id="native-input-consent" type="checkbox" required aria-describedby="native-input-help">I allow browser-level mouse and keyboard control of this connected website tab for this Start or Resume.</label>
-      <p id="native-input-help" class="muted">The debugger permission is powerful; this workflow attaches only to the connected website tab. Edge/Chrome may display a debugging warning; cancelling it or opening DevTools can detach control. Inspect the tab, then approve Resume explicitly. No other tab is controlled.</p>
-      <p class="muted">The agent observes page text and controls, not screenshots. Complete login, MFA and CAPTCHA yourself. Browser-level input does not bypass access restrictions or guarantee a website will accept automation.</p>
-      <button id="start" type="submit" disabled>Start workflow</button>
+      <details id="request-details" class="request-details" open>
+      <summary><span class="step-number" aria-hidden="true">1</span><h2 id="task-title">What would you like to find?</h2></summary>
+      <label class="sr-only" for="instructions">Describe your task</label><textarea id="instructions" rows="4" maxlength="2000" required placeholder="Find hotels in Edison for November 28–30, 2026, with 3 adults and 2 rooms. Include prices and listing links."></textarea>
+      <p class="field-help">Include any dates, guest counts or price limits that matter.</p>
+      <details class="customize"><summary>Customize results <span class="optional">Optional</span></summary>
+        <label>Results to collect<select id="extent"><option value="all_results" selected>All available listings in this search</option><option value="preview">Limited preview</option></select></label>
+        <label>Maximum listings<input id="limit" type="number" min="1" max="5000" value="5000" required></label>
+        <p class="muted">All results scrolls and follows available result pages. Limits: 100 pages and 4 active collection minutes. More listings use additional paid extraction batches of up to 10 records each. A limit or interruption is reported as partial.</p>
+        <label>Information to include<input id="fields" maxlength="650" placeholder="name, url, price, currency, rating"></label><p class="muted">Leave blank to choose useful fields automatically. Custom fields: up to 16 lowercase names, separated by commas.</p>
+        <div class="rule"><p class="settings-title">Optional rule</p><label>Field<input id="rule-field" maxlength="40" placeholder="rating"></label><div class="rule-values"><label>Condition<select id="rule-op"><option value="gte">At least</option><option value="lte">At most</option><option value="eq">Equals</option><option value="contains">Contains</option></select></label><label>Value<input id="rule-value" maxlength="200" placeholder="8"></label></div></div>
+        <label>Publish matching approved records?<select id="publish"><option value="no" selected>No</option><option value="yes">Yes</option></select></label><p class="muted">Optional event publishing requires the local message broker.</p>
+      </details>
+      <button id="start" type="submit" class="full primary-action" disabled>Start task <span aria-hidden="true">→</span></button>
+      <p id="result-cost" class="action-note">Collects the available result list within the displayed limits, then uses paid extraction in batches of up to 10 listings. Review before saving.</p>
+      <details class="quiet-details"><summary>Usage &amp; browser access</summary><p class="muted">Start controls this tab and sends its content to your configured model: up to 30 paid navigation decisions (5 active minutes). All results then collects and extracts listings in paid batches of up to 10; a limited preview uses up to 6 captured sources. No reservations or payments.</p><p class="muted">The agent observes page text and controls, not screenshots. Complete login, MFA and CAPTCHA yourself. Browser control uses the debugger permission for this connected tab only. Cancelling the browser's debugging warning or opening DevTools can detach control.</p></details>
+      </details>
     </form>
-    <section id="activity" class="card" aria-labelledby="activity-title" hidden>
-      <div class="activity-heading"><span id="spinner" class="spinner" aria-hidden="true" hidden></span><div><h2 id="activity-title">3. Workflow</h2><p id="state" role="status" aria-live="polite">Idle</p></div></div>
-      <p id="guidance"></p><progress id="calls" max="30" value="0" aria-label="Paid navigation decisions used"></progress><p id="usage" class="muted"></p>
-      <div class="buttons"><button id="pause" type="button" class="secondary">Pause</button><button id="resume" type="button" hidden>Resume agent</button><button id="collect" type="button" class="secondary" hidden>Review collected pages</button><button id="cancel" type="button" class="secondary">Cancel</button></div>
-      <p class="muted">Pause takes effect between actions; an in-flight click or model call may finish. Closing this panel is not cancellation. Your website tab stays open.</p>
-      <details><summary>Recent actions &amp; evidence</summary><ol id="actions"></ol></details>
-      <details><summary>Browser control diagnostics</summary><p class="muted">Tab visibility, focus, input adapter and popup counts only; no field values. Counter read-back values appear in recent action evidence. Include both sections if a form control stalls.</p><pre id="observation-diagnostics"></pre></details>
-      <button id="review" type="button" class="full">Open review / results in dashboard</button><p class="muted">Check missing fields, prices and source evidence there. Saving and optional event publishing require your approval in the dashboard.</p>
+    <section id="activity" class="card activity-card" data-tone="working" aria-labelledby="activity-title" hidden>
+      <div class="activity-heading"><span id="spinner" class="spinner" aria-hidden="true" hidden></span><div><h2 id="activity-title">Your progress</h2><p id="state" role="status" aria-live="polite">Ready when you are</p></div></div>
+      <p id="guidance" class="guidance"></p>
+      <div class="activity-metrics"><span id="pages-collected" class="pages-collected">0 pages collected</span><span id="step-count" class="muted">0 / 30 AI steps</span></div>
+      <progress id="calls" max="30" value="0" aria-label="AI step budget used"></progress>
+      <p id="usage" class="muted budget-note">Steps used, not percentage complete.</p>
+      <div class="buttons task-actions"><button id="pause" type="button" class="secondary">Pause</button><button id="resume" type="button" hidden>Resume task</button><button id="collect" type="button" class="secondary" hidden>Get collected results</button><button id="cancel" type="button" class="text-button danger">Stop task</button></div>
+      <button id="review" type="button" class="full primary-action">Review results <span aria-hidden="true">→</span></button><p class="action-note">Opens your dashboard. Nothing is saved until you approve.</p>
+      <details><summary>Recent activity</summary><ol id="actions"></ol></details>
+      <details class="quiet-details"><summary>Help &amp; technical details</summary><p class="muted">Resume continues control of this tab within the original paid decision budget. Pause takes effect between actions; a click or AI request already underway may finish. Closing this panel does not stop the task. Your website tab stays open.</p><p class="muted">Browser control diagnostics below contain tab visibility, focus, input adapter and popup counts. Counter values appear in recent activity. Include both when reporting a stalled control.</p><pre id="observation-diagnostics"></pre></details>
     </section>
+    <p class="footer-note">Your browser session. Your final say.</p>
   </main>
 </body>
 </html>

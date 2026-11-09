@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from openai import APIError
 
+from agentic_web_demo.browser_context import observed_matching_results_ready
 from agentic_web_demo.browser_links import safe_display_url
 from agentic_web_demo.custom_browser import (
     BrowserControl,
@@ -34,6 +35,7 @@ from agentic_web_demo.custom_extract import (
 )
 from agentic_web_demo.custom_fetch import WebsiteError, read_pages
 from agentic_web_demo.custom_workflow import run_steps
+from agentic_web_demo.extraction_batches import interpret_result_batches
 from agentic_web_demo.enrichment import evidence_block_ids, reconcile_records
 from agentic_web_demo.messaging import Broker, connect
 from agentic_web_demo.output_contract import project_output_records, select_output_contract
@@ -41,7 +43,9 @@ from agentic_web_demo.result_presentation import annotate_source_coverage
 from agentic_web_demo.pricing import (
     CONTRACT_VERSION as PRICING_CONTRACT_VERSION,
     assess_pricing,
+    price_comparison_requested,
     pricing_comparison_record,
+    pricing_review_issues,
 )
 
 
@@ -177,6 +181,7 @@ def pricing_source_pages(pages):
     return [
         {
             "url": page["url"],
+            **({"capture_id": page["capture_id"]} if page.get("capture_id") else {}),
             "blocks": page.get("blocks", []),
             **({"text": page.get("text", "")} if not page.get("blocks") else {}),
             **(
@@ -314,6 +319,7 @@ def capture_summary(pages):
     return [
         {
             "source_url": safe_display_url(page["url"]),
+            **({"capture_id": page["capture_id"]} if page.get("capture_id") else {}),
             "visible_text_chars": len(page.get("text", "")),
             "blocks": len(page.get("blocks", [])),
             "paragraph_blocks": sum(
@@ -414,7 +420,10 @@ def plan(
                 report
                 and report.get("status") == "ready"
                 and report.get("collection_outcome") == "empty_results"
-                and checklist.get("search_submitted") is True
+                and (
+                    checklist.get("search_submitted") is True
+                    or observed_matching_results_ready(checklist, empty=True)
+                )
                 and checklist.get("search_response_pending") is False
             ):
                 context["empty_results"] = True
@@ -436,7 +445,14 @@ def plan(
             if context.get("empty_results"):
                 return
             try:
-                candidate, metadata = interpret(values, context["pages"], model_settings)
+                if values.collection_extent == "all_results":
+                    candidate, metadata = interpret_result_batches(
+                        values, context["pages"], model_settings, interpret,
+                        lambda message: control.update("reviewing", message) if control else None,
+                        lambda: session_alive() and not (control and control.cancel.is_set()),
+                    )
+                else:
+                    candidate, metadata = interpret(values, context["pages"], model_settings)
             except APIError:
                 raise WebsiteError(
                     "Model call failed. Check account access, quota and model settings. "
@@ -459,7 +475,7 @@ def plan(
                     "review_counts": {"candidates": 0, "matched": 0},
                     "captured_pages": [],
                     "browser_diagnostics": context.get("browser_diagnostics"),
-                    "guidance": "The confirmed website search displayed no results. "
+                    "guidance": "The website displayed no results for the observed search criteria. "
                     "No extraction call ran and no records were saved. This describes "
                     "that search response, not every record on the website.",
                 }
@@ -572,6 +588,9 @@ def plan(
                 ),
                 "information_coverage": information_coverage,
                 "information_needs": checklist.get("information_needs", []),
+                "listing_collection": next((page["result_collection"] for page in context["pages"]
+                                            if page.get("result_collection")), None),
+                "extraction_batches": context["model"].get("extraction_batches"),
             }
             source_verified_rows = rows
             result_columns = pricing_columns(candidate.columns, rows)
@@ -628,15 +647,16 @@ def plan(
                 }
             constraint_unverified = []
             eligible = []
+            require_price = price_comparison_requested(
+                values.instructions, candidate.filters, values.output_fields
+            )
+            pricing_summary["comparison_requested"] = require_price
             for row in rows:
                 issues = unverified_constraints(row, request_coverage)
-                if row.get("pricing", {}).get("status") == "unverified":
-                    issues += [
-                        {"field": row["pricing"].get("price_field") or "price", "reason": reason}
-                        for reason in row["pricing"].get(
-                            "issues", ["requested_stay_price_unverified"]
-                        )
-                    ]
+                issues += [
+                    {"field": row.get("pricing", {}).get("price_field") or "price", "reason": reason}
+                    for reason in pricing_review_issues(row.get("pricing"), require_price=require_price)
+                ]
                 if issues:
                     constraint_unverified.append(
                         {
@@ -667,7 +687,7 @@ def plan(
             if len(rows) > values.record_limit:
                 raise WebsiteError(
                     f"{len(rows)} {'merged' if linked else 'source-verified'} matching records "
-                    f"exceed your preview limit of {values.record_limit}. "
+                    f"exceed your record limit of {values.record_limit}. "
                     "Nothing was truncated or saved. Narrow the query or increase "
                     "Maximum records for a new paid run."
                 )
@@ -773,6 +793,10 @@ def plan(
             result_columns = pricing_columns(output_columns, rows)
             rows = apply_pricing_rules(rows, candidate.query_rules)
             warnings = list(candidate.warnings) + repairs
+            listing_collection = collection_coverage.get("listing_collection")
+            if listing_collection and not listing_collection.get("complete"):
+                warnings.insert(0, "Listing collection is partial: " + listing_collection["reason"].replace("_", " ")
+                                + f". {listing_collection['records_collected']} unique source cards were retained.")
             if output_contract["omitted_inferred_fields"]:
                 warnings.append(
                     "Omitted empty optional inferred fields: "
@@ -790,6 +814,9 @@ def plan(
                     "An unqualified nightly budget is combined for all requested rooms. "
                     "Displayed source amounts remain unchanged; computed nightly amounts "
                     "are labelled and do not prove room availability or quote validity."
+                    if require_price else
+                    "Displayed prices are source amounts. Any unverified billing basis, room scope, "
+                    "currency, taxes or fees remain labelled; no price target was requested."
                 )
                 if (
                     pricing_summary.get("outside_target_ready")
@@ -1010,6 +1037,8 @@ def plan(
                 ),
                 "partial": bool(
                     rejected
+                    or listing_collection and not listing_collection.get("complete")
+                    or collection_coverage.get("extraction_batches") and not collection_coverage["extraction_batches"].get("complete")
                     or constraint_unverified
                     or field_issues
                     or field_repairs
@@ -1033,6 +1062,7 @@ def plan(
                 "evidence_block_ids": evidence_block_ids(rows, context["pages"]),
                 "excluded_by_filters": excluded,
                 "record_limit": values.record_limit,
+                "collection_extent": values.collection_extent,
                 "warnings": warnings,
                 "model": context["model"],
                 "captured_pages": context.get("captured_pages", []),
@@ -1187,6 +1217,9 @@ def execute(service, plan_id, approval, *, accept_partial=False):
         source_columns,
         [Condition.model_validate(item) for item in proposal["filters"]],
     )
+    require_price = price_comparison_requested(
+        proposal.get("request", ""), proposal["filters"], proposal.get("output_fields", [])
+    )
     pricing_review = assess_pricing(
         proposal["records"],
         saved_pricing_pages(proposal),
@@ -1211,7 +1244,7 @@ def execute(service, plan_id, approval, *, accept_partial=False):
         if (
             proposal.get("pricing_summary", {}).get("contract_version") != PRICING_CONTRACT_VERSION
             or any(
-                row.get("pricing", {}).get("status") != "verified"
+                pricing_review_issues(row.get("pricing"), require_price=require_price)
                 for row in pricing_review["records"]
             )
             or any(

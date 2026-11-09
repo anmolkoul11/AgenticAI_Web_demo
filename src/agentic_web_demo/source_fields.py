@@ -197,7 +197,10 @@ def headline_issue(value, page):
     if not blocks:
         return None
     primary = primary_headline(page)
-    if primary and page.get("source_kind") == "detail":
+    if primary and (
+        page.get("source_kind") == "detail"
+        or page.get("source_kind") != "index" and primary.get("content_role") == "headline"
+    ):
         return None if normalized(value) == normalized(primary["text"]) else "not_primary_headline"
     if page.get("source_kind") == "detail":
         # Old captures lack levels. Accept an exact legacy heading, never a paragraph.
@@ -231,6 +234,53 @@ def headline_issue(value, page):
         )
         else "title_not_supported_by_heading_or_link"
     )
+
+
+def article_record_issue(value, page):
+    """Reject captured non-article affordances without guessing titles from URLs.
+
+    Literal headline links remain valid evidence. Topic relevance alone cannot
+    turn a game launcher, navigation link or coverage landing page into a story.
+    """
+    title = normalized(value) if value is not None else ""
+    if not title:
+        return "article_headline_missing"
+    blocks = page.get("blocks", [])
+    matches = [block for block in blocks
+               if block.get("kind") in {"heading", "link"}
+               and block.get("association") != "ambiguous"
+               and normalized(block.get("text", "")) == title]
+    if blocks and not matches:
+        return "article_headline_not_captured"
+    # These are game-launch instructions, not every headline containing 'game'.
+    if re.fullmatch(
+        r"^(?:play|solve|try)\s+(?:(?:our|the|today['’]s|daily)\s+)?"
+        r"(?:connections(?:\s*:\s*[\w -]{1,40}\s+edition)?|wordle|sudoku|crosswords?|"
+        r"(?:sports\s+)?(?:puzzles?|quizzes?|quiz|games?))"
+        r"(?:\s+(?:now|today|for free))?[.!]?",
+        title, re.I,
+    ):
+        return "non_article_game"
+    if page.get("source_kind") != "index" and any(
+        block.get("kind") == "heading" and block.get("content_role") == "headline"
+        for block in matches
+    ):
+        return None
+    if matches and all(block.get("association") == "page" for block in matches):
+        return "non_article_navigation"
+    section = (
+        r"(?:sports|news|world|politics|business|technology|science|health|culture|opinion)"
+    )
+    browse_label = bool(re.fullmatch(
+        section + r"\s+(?:coverage|section)", title, re.I,
+    )) or bool(re.fullmatch(
+        r"(?:see|view|browse|explore|more|all|latest)\s+(?:all\s+)?"
+        + section + r"(?:\s+(?:coverage|news|headlines|section|stories))?",
+        title, re.I,
+    ))
+    if browse_label:
+        return "non_article_section"
+    return None
 
 
 def excerpt_issue(quote, page):

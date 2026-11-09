@@ -89,6 +89,188 @@ def test_real_graph_observes_again_after_each_action_and_retains_state():
     assert agent.captured_sources()[0]["source_kind"] == "page"
 
 
+@pytest.mark.parametrize("initial_age", ["", "8"])
+@pytest.mark.parametrize("resume_mode,resume_age", [
+    ("open", "7"), ("done", "7"), ("done", "0"),
+    ("delayed", "7"), ("done", ""),
+    ("updated", "7"), ("updated", "0"), ("updated", ""),
+])
+def test_missing_age_pauses_without_editing_and_waits_for_explicit_resume(initial_age, resume_mode, resume_age):
+    class AgeTools(FakeTools):
+        def __init__(self):
+            super().__init__()
+            self.age = initial_age
+            self.panel_open = True
+            self.delayed_reads = 0
+
+        def execute(self, action):
+            if action.action == "click" and action.control_id == "0:guests":
+                self.panel_open = True
+            return super().execute(action)
+
+        def observe(self):
+            self.events.append("observe")
+            field = {"id": "0:age", "tag": "SELECT", "name": "age",
+                     "label": "Age of child 1", "form_scope": "0:form:0",
+                     "widget_scope": "counter", "value": self.age, "required": True,
+                     "invalid": not bool(self.age), "value_missing": not bool(self.age),
+                     "selection_placeholder": not bool(self.age),
+                     "options": [{"value": "7", "label": "7 years old"},
+                                 {"value": "8", "label": "8 years old"}]}
+            search = {"id": "0:search", "tag": "BUTTON", "type": "submit",
+                      "label": "Search", "submits_form": True, "form_scope": "0:form:0"}
+            guests = {"id": "0:guests", "tag": "BUTTON", "type": "button",
+                      "label": ("Enter the number of rooms and then enter the number of guests. "
+                                "The selected number of rooms is 3 and the selected number of guests is 5."
+                                if resume_mode == "updated" else
+                                "Number of travelers and rooms. Currently selected: 3 adults · 1 child · 2 rooms"),
+                      "expanded": "true" if self.panel_open else "false", "form_scope": "0:form:0"}
+            if resume_mode == "updated":
+                guests.pop("expanded")  # The observed summary may omit popup metadata.
+            visible = self.panel_open and self.delayed_reads == 0
+            if self.panel_open and self.delayed_reads:
+                self.delayed_reads -= 1
+            fields = ([field] if visible else []) + [guests, search]
+            self.references = {item["id"]: (None, item["id"].split(":")[-1], item) for item in fields}
+            return {"url": "https://example.org/", "document_id": "same-document",
+                    "frames": [{"controls": fields, "text": "Hotel search",
+                                "password_or_code_visible": False}]}
+
+    tools = AgeTools()
+    model = FakeDecider([decision("pause", pause_reason="user_input")])
+    agent = BrowserAgent(tools, model,
+        "Find hotels in Virginia for November 28-30, 2026, with 4 adults, 1 child and 3 rooms."
+        if resume_mode == "updated" else
+        "Find hotels in Baltimore for November 28-30, 2026, with 3 adults, 1 child and 2 rooms.")
+    paused = agent.run()
+    expected_calls = 0
+    assert paused["status"] == "paused" and paused["calls"] == expected_calls
+    assert paused["awaiting_user_input"]["reason"] == "missing_form_value"
+    assert paused["actions"][-1]["input_dispatched"] is False
+    assert "child ages" in paused["guidance"] and "Resume" in paused["guidance"]
+    assert "select" not in tools.events and tools.age == initial_age
+    tools.age = resume_age  # A website change alone does not restart the agent.
+    tools.panel_open = resume_mode == "open"
+    tools.delayed_reads = 1 if resume_mode == "delayed" else 0
+    assert len(model.payloads) == expected_calls
+    resumed = agent.run()  # The explicit Resume boundary.
+    assert resumed["calls"] == expected_calls + (1 if resume_age else 0)
+    assert tools.age == resume_age
+    assert "select" not in tools.events
+    assert tools.events.count("click") == (0 if resume_mode == "open" else 1)
+    assert tools.events.count("wait") == (1 if resume_mode == "delayed" else 0)
+    if not resume_age:
+        assert resumed["status"] == "paused" and "child ages" in resumed["guidance"]
+
+
+def test_manual_age_recheck_cannot_use_search_or_count_changing_buttons_as_openers():
+    agent = BrowserAgent(FakeTools(), FakeDecider([]),
+                         "Find hotels for 3 adults, 1 child and 2 rooms.")
+    summary = "Currently selected: 3 adults, 1 child, 2 rooms"
+    controls = [
+        {"id": "0:guest", "tag": "BUTTON", "type": "button", "label": summary, "expanded": "false"},
+        {"id": "0:submit", "tag": "BUTTON", "type": "submit", "submits_form": True,
+         "label": "Search for 3 adults, 1 child and 2 rooms", "form_scope": "0:form:0"},
+        {"id": "0:add", "tag": "BUTTON", "type": "button", "label": "Add adults and children", "haspopup": "dialog"},
+        {"id": "0:bare-guests", "tag": "BUTTON", "type": "button", "label": "Guests", "haspopup": "dialog"},
+        {"id": "0:unqualified", "tag": "BUTTON", "type": "button", "label": "Rooms and guests"},
+        {"id": "0:guest-search", "tag": "BUTTON", "type": "submit", "submits_form": True,
+         "label": "Rooms 3, Guests 5", "form_scope": "0:form:0"},
+        {"id": "0:guest-add", "tag": "BUTTON", "type": "button", "label": "Add rooms and guests", "haspopup": "dialog"},
+    ]
+    observation = {"frames": [{"controls": controls}]}
+    assert [control["id"] for control in agent.age_panel_openers(observation)] == ["0:guest"]
+
+
+@pytest.mark.parametrize("label,changes", [
+    ("Enter the number of rooms and then enter the number of guests. "
+     "The selected number of rooms is 3 and the selected number of guests is 5.", {}),
+    ("Enter the number of rooms and guests. Currently selected: Rooms 3, Guests 5.", {}),
+    ("3 rooms, 5 guests", {}),
+    ("Rooms and guests", {"haspopup": "dialog"}),
+])
+def test_manual_age_recheck_accepts_observed_room_and_guest_summary(label, changes):
+    agent = BrowserAgent(FakeTools(), FakeDecider([]),
+                         "Find hotels for 4 adults, 1 child and 3 rooms.")
+    opener = {"id": "0:guests", "tag": "BUTTON", "type": "button", "label": label, **changes}
+    observation = {"frames": [{"controls": [opener]}]}
+    assert agent.age_panel_openers(observation) == [opener]
+
+
+@pytest.mark.parametrize("first_role", ["page", "detail"])
+def test_current_page_capture_and_finish_cannot_promote_homepage_to_detail(first_role):
+    class CaptureTools(FakeTools):
+        def __init__(self):
+            super().__init__()
+            self.roles = []
+
+        def execute(self, action):
+            if action.action == "capture":
+                return self.capture(action.value)
+            return super().execute(action)
+
+        def capture(self, kind="page"):
+            self.events.append("capture")
+            self.roles.append(kind)
+            if self.pages:
+                # Match the real low-level recapture promotion behavior.
+                if self.pages[0]["source_kind"] == "page" and kind in {"index", "detail"}:
+                    self.pages[0]["source_kind"] = kind
+                return {"status": "already_captured", "url": "https://example.org/"}
+            self.pages.append({"url": "https://example.org/", "text": "Sports headline source",
+                               "source_kind": kind})
+            return {"status": "captured", "url": "https://example.org/", "text_chars": 22}
+
+    request = "Find me articles related to sports"
+    tools = CaptureTools()
+    model = FakeDecider([
+        decision("capture", value=first_role, collection_goal={
+            "mode": "current_page", "request_quote": request,
+            "reason": "Visible homepage records can be selected during extraction.",
+        }),
+        decision("capture", value="detail"),
+        decision("finish", value="detail"),
+    ])
+    agent = BrowserAgent(tools, model, request)
+    report = agent.run()
+    assert report["status"] == "ready"
+    assert tools.roles == ["page", "page", "page"]
+    assert agent.captured_sources()[0]["source_kind"] == "page"
+    assert report["actions"][-1]["capture_role"] == {"requested": "detail", "resolved": "page"}
+
+
+@pytest.mark.parametrize("mode", ["current_page", "search_results", "listing_results"])
+def test_collection_and_results_capture_roles_are_neutral_without_changing_low_level_api(mode):
+    tools = FakeTools()
+    agent = BrowserAgent(tools, FakeDecider([]), "Get visible information")
+    agent.task.collection_mode = mode
+    assert agent.capture_role("detail", "https://example.org/") == "page"
+    tools.capture("detail")
+    assert tools.pages[0]["source_kind"] == "detail"
+
+
+def test_linked_collection_preserves_index_and_distinct_detail_roles():
+    tools = FakeTools()
+    agent = BrowserAgent(tools, FakeDecider([]), "Open relevant links for their full content")
+    agent.task.collection_mode = "linked_details"
+    assert agent.capture_role("detail", "https://example.org/news") == "index"
+    tools.pages = [{"url": "https://example.org/news", "source_kind": "index"}]
+    assert agent.capture_role("detail", "https://example.org/news") == "index"
+    assert agent.capture_role("page", "https://example.org/story") == "detail"
+    assert agent.capture_role("detail", "https://example.org/story") == "detail"
+
+
+def test_linked_capture_roles_use_private_record_query_identity_not_display_url():
+    tools = FakeTools()
+    tools.pages = [{"url": "https://example.org/item?id=1", "source_kind": "index"}]
+    agent = BrowserAgent(tools, FakeDecider([]), "Open relevant links for their full content")
+    agent.task.collection_mode = "linked_details"
+    tools.current_url = "https://example.org/item?id=2"
+    assert agent.capture_role("page", "https://example.org/item") == "detail"
+    tools.current_url = "https://example.org/item?id=1&utm_source=sports"
+    assert agent.capture_role("detail", "https://example.org/item") == "index"
+
+
 def test_autocomplete_settling_reads_new_owned_options_without_an_extra_decision():
     field = {
         "id": "0:field",
@@ -454,6 +636,44 @@ def test_local_autocomplete_preserves_subtitles_for_agent_disambiguation(agent_p
     assert "United States" in options[0]["text"] and "Search with AI" in options[1]["text"]
     tools.execute(decision("click", options[0]["id"]))
     assert agent_page.locator("input").input_value() == "New York"
+
+
+def test_local_search_popup_keeps_category_tabs_and_links_as_navigation(agent_page):
+    agent_page.set_content("""<input type=search role=combobox aria-label=Search
+      aria-controls='categories choices' aria-expanded=true value=Edison>
+      <div id=categories><div role=tablist><div role=tab tabindex=0>Hotels</div></div>
+        <a href='/Hotels'>Hotel listings</a></div>
+      <ul id=choices role=listbox><li role=option>Edison, New Jersey</li></ul>""")
+    observation = tools_for(agent_page).observe()
+    found = controls(observation)
+    search = next(item for item in found if item["tag"] == "INPUT")
+    tab = next(item for item in found if item["role"] == "tab")
+    link = next(item for item in found if item["tag"] == "A")
+    task = TaskLedger("Find hotels in Edison for 3 adults and 2 rooms.")
+    for category in (tab, link):
+        assert task.action_value_problem(
+            category, decision("click", category["id"], purpose="navigate"), observation,
+        ) is None
+    assert [item["role"] for item in task.destination_options(search, observation)] == ["option"]
+
+
+def test_local_categories_survive_background_links_without_displacing_form_widgets(agent_page):
+    background = "".join(f"<a href='/item/{index}'>Result {index}</a>" for index in range(170))
+    agent_page.set_content(f"""<form><input aria-label=Destination required>
+      <button type=button>Select dates Check-in — Check-out</button>
+      {background}</form>
+      <nav><a href='/Hotels'>Hotels</a><a href='/Dining'>Restaurants</a>
+      <button role=tab>Things to do</button><a href='/Essentials'>Essentials</a></nav>
+      <div role=listbox><span role=option>Edison, New Jersey</span></div>""")
+    tools = tools_for(agent_page)
+    tools.focus = "form"
+    observed = controls(tools.observe())
+    labels = [item["label"] for item in observed]
+    assert len(observed) <= 140
+    assert {"Hotels", "Restaurants", "Things to do", "Essentials"} <= set(labels)
+    assert labels.index("Destination") < labels.index("Hotels")
+    assert labels.index("Select dates Check-in — Check-out") < labels.index("Hotels")
+    assert labels.index("Edison, New Jersey") < labels.index("Hotels")
 
 
 def test_local_generic_fill_dates_and_native_occupancy_select_are_read_back(agent_page):

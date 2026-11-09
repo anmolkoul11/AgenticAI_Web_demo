@@ -110,7 +110,8 @@ def _page_groups(row, pages, columns):
     }
     result = []
     for url in urls - {None}:
-        matching_pages = [page for page in pages if page.get("url") == url]
+        matching_pages = [page for page in pages if page.get("url") == url
+                          and (not row.get("source_capture_id") or page.get("capture_id") == row["source_capture_id"])]
         if len(matching_pages) != 1:
             continue
         page = matching_pages[0]

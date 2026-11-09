@@ -1,7 +1,7 @@
 /* Packaged, isolated-world executor. No model-provided JavaScript or selectors. */
 (() => {
   'use strict';
-  const version = '0.5.2';
+  const version = '0.5.20';
   if (globalThis.__agenticTabExecutor?.version === version) return;
   const token = crypto.randomUUID();
   let observedUrl = null;
@@ -13,7 +13,7 @@
   const safeUrl = value => {
     const u = new URL(value, location.href);
     if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password) throw new Error('unsupported');
-    const allowed = /^(?:id|item|product|article|story|hotel|listing|slug|variant|page|p|(?:item|product|article|story|hotel|listing|variant)_id|checkin|checkout|check_in|check_out|group_adults|group_children|no_rooms|adults|children|rooms|dest_id|dest_type|ss)$/i;
+    const allowed = /^(?:id|item|product|article|story|hotel|listing|slug|variant|page|p|(?:item|product|article|story|hotel|listing|variant)_id|checkin|check_in|check-in|arrival|arrival_date|arrivaldate|checkout|check_out|check-out|departure|departure_date|departuredate|adults|adult|num_adults|numadults|group_adults|rooms|room|num_rooms|numrooms|no_rooms|room_count|children|num_children|group_children|dest_id|dest_type|ss)$/i;
     const query = [...u.searchParams].filter(([k,v]) => allowed.test(k) && v.length <= 128 && !/https?:|@|[\u0000-\u001f]/i.test(v)).slice(0, 12);
     u.search = new URLSearchParams(query).toString(); u.hash = ''; return u.href;
   };
@@ -44,16 +44,35 @@
   };
   const ensure = expected => { if (expected !== token || observedUrl !== location.href) throw new Error('stale_document'); if (restricted()) throw new Error('access_restriction'); };
   const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const identity = e => ({tag:e.tagName,role:e.getAttribute('role')||'',name:e.name||'',type:e.type||'',href:e.tagName==='A'?e.href:'',submits_form:!!e.form&&['BUTTON','INPUT'].includes(e.tagName)&&['submit','image'].includes(e.type),text:clean(e.innerText).slice(0,400),value:['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?String(e.value||'').slice(0,300):e.isContentEditable?clean(e.innerText).slice(0,300):e.getAttribute('aria-valuenow')||''});
+  const identity = e => {
+    const customAge = typeof globalThis.agenticInspectCustomAgeValue === 'function' ?
+      globalThis.agenticInspectCustomAgeValue(e):null;
+    return {tag:e.tagName,role:e.getAttribute('role')||'',name:e.name||'',type:e.type||'',
+      href:e.tagName==='A'?e.href:'',submits_form:!!e.form&&['BUTTON','INPUT'].includes(e.tagName)&&['submit','image'].includes(e.type),
+      text:clean(e.innerText).slice(0,400),value:customAge ? customAge.value:
+        ['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?String(e.value||'').slice(0,300):
+        e.isContentEditable?clean(e.innerText).slice(0,300):e.getAttribute('aria-valuenow')||''};
+  };
   const counter = e => typeof globalThis.agenticInspectCounter === 'function' ? globalThis.agenticInspectCounter(e) : null;
   // Transported JSON objects have no semantic property order. Compare every
   // counter fact exactly, as the managed adapter's dictionary comparison does.
   const sameCounter = (actual, expected) => !!actual && !!expected &&
     Object.keys(actual).length === Object.keys(expected).length &&
     Object.keys(expected).every(key => Object.prototype.hasOwnProperty.call(actual,key) && actual[key] === expected[key]);
-  const stale = (reason, fields=[]) => {
+  const stale = (reason, fields=[], phase='target') => {
     const error = new Error('control_changed');
-    error.counterPreflight = {reason,mismatched_fields:fields}; throw error;
+    error.counterPreflight = {reason,mismatched_fields:fields};
+    error.controlPreflight = {reason,phase,mismatched_fields:fields,mismatch_count:fields.length};
+    throw error;
+  };
+  const clickRejected = error => {
+    const preflight = error.controlPreflight || {reason:'control_changed',phase:'target',
+      mismatched_fields:[],mismatch_count:0};
+    const note = 'Click preflight: '+preflight.reason+' during '+preflight.phase+
+      (preflight.mismatched_fields.length ? ' ('+preflight.mismatched_fields.join(', ')+')':'')+
+      '. No click sent; inspect fresh controls before continuing.';
+    return {status:'value_mismatch',dispatched:false,dispatch_status:'not_dispatched',
+      control_preflight:preflight,note,guidance:note};
   };
   const counterFields = ['label','value','direction','method','minimum','maximum','owner_readonly','evidence'];
   const counterMismatch = (actual, expected) => {
@@ -110,22 +129,25 @@
   };
   const selectSignature = e => JSON.stringify([...e.options].map(option => [option.value,clean(option.textContent),option.disabled,option.closest('optgroup')?.disabled === true]));
   const actionLabel = e => clean([e.getAttribute('aria-label'),e.getAttribute('title'),e.name,e.innerText].join(' '));
-  function nativeStep(step, requireFocus=false) {
+  function nativeStep(step, requireFocus=false, phase='native_validate') {
     ensure(step.document_token);
     const e = step.element;
-    if (!e.isConnected || !visible(e) || e.disabled || e.getAttribute('aria-disabled') === 'true' || e.closest('[inert]') || sensitive(e) || forbidden.test(actionLabel(e))) throw new Error('control_changed');
+    if (!e.isConnected) stale('reference_detached',[],phase);
+    if (!visible(e) || e.disabled || e.getAttribute('aria-disabled') === 'true' || e.closest('[inert]')) stale('not_actionable',[],phase);
+    if (sensitive(e) || forbidden.test(actionLabel(e))) stale('action_restricted',[],phase);
     if (step.kind === 'fill' && (e.readOnly || e.getAttribute('aria-readonly') === 'true')) throw new Error('unsupported');
     const current = identity(e);
-    if (Object.keys(current).some(key => !(step.kind === 'select' && key === 'value') && current[key] !== step.identity[key]) ||
-        step.kind === 'select' && selectSignature(e) !== step.options_signature ||
-        step.counter && !sameCounter(counter(e),step.counter)) throw new Error('control_changed');
+    const changed = Object.keys(current).filter(key => !(step.kind === 'select' && key === 'value') && current[key] !== step.identity[key]);
+    if (changed.length) stale('identity_changed',changed,phase);
+    if (step.kind === 'select' && selectSignature(e) !== step.options_signature) stale('options_changed',['options'],phase);
+    if (step.counter && !sameCounter(counter(e),step.counter)) stale('counter_changed',counterMismatch(counter(e),step.counter),phase);
     // CDP routes keys to the bound page, not the side panel. Require the exact
     // page-local field, without making a side-panel document-focus flag a gate.
-    if (requireFocus && activeElement() !== e) throw new Error('control_changed');
+    if (requireFocus && activeElement() !== e) stale('focus_changed',['focused'],phase);
     const box = e.getBoundingClientRect();
     const left = Math.max(0,box.left), right = Math.min(innerWidth,box.right);
     const top = Math.max(0,box.top), bottom = Math.min(innerHeight,box.bottom);
-    if (right <= left || bottom <= top) throw new Error('control_changed');
+    if (right <= left || bottom <= top) stale('outside_viewport',['rect'],phase);
     const point = {x:(left+right)/2,y:(top+bottom)/2};
     let hit = document.elementFromPoint(point.x,point.y);
     while (hit?.shadowRoot) {
@@ -133,7 +155,7 @@
       if (!inner || inner === hit) break;
       hit = inner;
     }
-    if (!hit || hit !== e && !e.contains(hit)) throw new Error('control_changed');
+    if (!hit || hit !== e && !e.contains(hit)) stale('hit_target_changed',['hit_target'],phase);
     return {id:step.id,kind:step.kind,point,value:step.value,selection_steps:step.selection_steps};
   }
   async function input(kind,e,value='') {
@@ -158,14 +180,16 @@
     const original = identity(e), originalCounter = counter(e);
     e.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
     if (kind === 'key') e.focus({preventScroll:true});
-    if (!e.isConnected || Object.keys(original).some(key => identity(e)[key] !== original[key]) ||
-        originalCounter && !sameCounter(counter(e),originalCounter)) throw new Error('control_changed');
+    if (!e.isConnected) stale('reference_detached',[],'after_scroll');
+    const afterScroll = identity(e), changed = Object.keys(original).filter(key => afterScroll[key] !== original[key]);
+    if (changed.length) stale('identity_changed',changed,'after_scroll');
+    if (originalCounter && !sameCounter(counter(e),originalCounter)) stale('counter_changed',counterMismatch(counter(e),originalCounter),'after_scroll');
     const selectionSteps = kind === 'select' ? [...e.options].filter(option => !option.disabled && !option.closest('optgroup')?.disabled).findIndex(option => option.value === value) : 0;
     if (kind === 'select' && (e.multiple || selectionSteps < 0 || selectionSteps > 40)) throw new Error('unsupported');
     const step = {id:crypto.randomUUID(),kind,element:e,identity:original,counter:originalCounter,
       options_signature:kind === 'select' ? selectSignature(e):null,
       document_token:tx.document_token,value,selection_steps:selectionSteps};
-    const prepared = nativeStep(step);
+    const prepared = nativeStep(step,false,'native_prepare');
     return new Promise((resolve,reject) => {
       step.resolve = resolve; step.reject = reject;
       step.timer = setTimeout(() => {
@@ -218,28 +242,39 @@
     return [...dates];
   };
   const dateText = e => [e.getAttribute('data-date'),e.getAttribute('datetime'),e.getAttribute('aria-label'),(e.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => (e.getRootNode().getElementById?.(id) || document.getElementById(id))?.textContent || '').join(' '),e.getAttribute('title'),e.innerText].join(' ');
-  const selectedDay = (e,allowHidden=false) => e.isConnected && (allowHidden || visible(e)) && (e.matches('input[type="checkbox"],input[type="radio"]') && e.checked || e.getAttribute('aria-selected') === 'true' || e.getAttribute('aria-checked') === 'true' || /^(?:selected|checked)$/.test(e.getAttribute('data-state') || ''));
+  const inspectDay = e => typeof globalThis.agenticInspectDate === 'function' ? globalThis.agenticInspectDate(e) : null;
+  const selectedDay = (e,allowHidden=false) => {
+    if (!e.isConnected || !allowHidden && !visible(e)) return false;
+    const date = inspectDay(e);
+    return date?.date_kind === 'day_choice' && date.selected === 'true';
+  };
   async function clickDate(e,facts,payload) {
     if (e.tagName === 'A' || facts.submits_form) return null;
+    // Read the same positive day semantics used by observation. An opener may
+    // announce its selected date without itself being a calendar day choice.
+    const current = inspectDay(e);
+    if (current?.date_kind !== 'day_choice') {
+      if (facts.date_kind === 'day_choice') throw new Error('control_changed');
+      return null;
+    }
+    if (Object.prototype.hasOwnProperty.call(facts,'date_kind') && facts.date_kind !== current.date_kind) throw new Error('control_changed');
     const text = [facts.date,facts.label,facts.text].join(' '), dates = fullDates(text);
-    const semantic = e.matches('[role="gridcell"]') || !!e.closest('[role="gridcell"],[role="grid"]') || !!facts.date || dates.length === 1 && e.matches('button,[role="button"],[role="checkbox"],[role="radio"]');
-    if (!semantic) return null;
     if (dates.length !== 1) {
       if (dates.length > 1) throw new Error('control_changed');
       if (/\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}\s+[a-z\u00c0-\u024f]{3,12}\.?,?\s+\d{4}|[a-z\u00c0-\u024f]{3,12}\.?\s+\d{1,2}(?:,\s*|\s+)\d{4})\b/i.test(text)) return {status:'value_mismatch',expected:null,observed:null,calendar:{date:null,status:'unconfirmed',dispatched:false,target:'observed_control'},note:'This calendar date could not be interpreted unambiguously. No click was sent; inspect its full date label.'};
       return null;
     }
-    const expected = dates[0], own = fullDates(dateText(e));
-    if (own.length !== 1 || own[0] !== expected) throw new Error('control_changed');
-    let owner = e;
+    const expected = dates[0];
+    // A numeric inner button can inherit a full date from its own gridcell;
+    // require that exact live relationship instead of demanding a second label.
+    if (current.date !== expected) throw new Error('control_changed');
+    let owner = current.owner || e;
     if (facts.date_owner_id != null) {
       const id = String(facts.date_owner_id).replace(/^0:/,'');
       if (!/^\d{1,3}$/.test(id)) throw new Error('control_changed');
       const owners = roots().flatMap(root => [...root.querySelectorAll('[data-agentic-loop-id="'+id+'"]')]);
       if (owners.length !== 1 || !owners[0].matches('[role="gridcell"]') || !(owners[0] === e || owners[0].contains(e))) throw new Error('control_changed');
-      owner = owners[0];
-      const ownerDates = fullDates(dateText(owner));
-      if (ownerDates.length !== 1 || ownerDates[0] !== expected) throw new Error('control_changed');
+      if (owners[0] !== owner || inspectDay(owner)?.date !== expected) throw new Error('control_changed');
     }
     const available = n => visible(n) && n.getBoundingClientRect().width > 0 && n.getBoundingClientRect().height > 0 && !n.disabled && n.getAttribute('aria-disabled') !== 'true' && !n.closest('[inert]') && !sensitive(n);
     const sameDay = (n,dayOwner=owner) => {
@@ -249,7 +284,7 @@
     };
     // Only descend inside the observed target. Never jump to a sibling date or
     // another calendar. A day-only inner label needs the observed full-date owner.
-    const rendered = facts.date_owner_id == null ? [] : [...e.querySelectorAll('button,[role="button"],[role="checkbox"],[role="radio"],input[type="checkbox"],input[type="radio"]')].filter(available);
+    const rendered = owner !== e || !e.matches('[role="gridcell"]') ? [] : [...e.querySelectorAll('button,[role="button"],[role="checkbox"],[role="radio"],input[type="checkbox"],input[type="radio"]')].filter(available);
     if (rendered.some(n => fullDates(dateText(n)).length && !sameDay(n))) throw new Error('control_changed');
     const nested = rendered.filter(n => sameDay(n));
     const leaves = nested.filter(n => !nested.some(other => other !== n && n.contains(other)));
@@ -266,13 +301,17 @@
         if (replacements.length !== 1) return '';
         dayOwner = replacements[0];
       }
-      return JSON.stringify([dayOwner,...dayOwner.querySelectorAll('[aria-selected],[aria-checked],[data-state],input[type="checkbox"],input[type="radio"]')].filter(n => sameDay(n,dayOwner) && selectedDay(n,allowHidden)).map(n => [n.getAttribute('aria-label'),n.getAttribute('aria-selected'),n.getAttribute('aria-checked'),n.getAttribute('data-state'),n.checked]));
+      return JSON.stringify([dayOwner,...dayOwner.querySelectorAll('[aria-selected],[aria-checked],[data-state],button,[role="button"],[role="checkbox"],[role="radio"],input[type="checkbox"],input[type="radio"]')].filter(n => sameDay(n,dayOwner) && selectedDay(n,allowHidden)).map(n => [n.getAttribute('aria-label'),n.getAttribute('aria-selected'),n.getAttribute('aria-checked'),n.getAttribute('data-state'),n.checked]));
     };
     const snapshot = () => JSON.stringify([scope.isConnected,visible(scope),clean(scope.innerText).slice(0,2000),...scope.querySelectorAll('[aria-selected],[aria-checked],[data-state]')].map(n => n instanceof Element ? [n.getAttribute('aria-label'),n.getAttribute('aria-selected'),n.getAttribute('aria-checked'),n.getAttribute('data-state')] : n));
     const metadata = {date:expected,target:actionable === e ? 'observed_control':'inner_action',dispatched:false};
-    // aria-selected may mark every interior day in a previous range. Only a
-    // native checked choice is idempotent without knowing the requested endpoint.
-    if (actionable.matches('input[type="checkbox"],input[type="radio"]') && actionable.checked) return {status:'action_performed',calendar:{...metadata,status:'already_selected'},note:'This native day choice is already checked; no click was sent. Stay dates still require a fresh form-summary check.'};
+    // aria-selected alone may describe the interior of a previous range. Skip
+    // only a checked choice, explicitly identified selected day/endpoint, or a
+    // range independently verified by the task's fresh form-summary evidence.
+    const actionableDate = inspectDay(actionable);
+    const selectionIdentified = actionable.matches('input[type="checkbox"],input[type="radio"]') && actionable.checked ||
+      !!actionableDate?.date_endpoint || actionableDate?.selected_label === true || facts.calendar_range_verified === true;
+    if (facts.calendar_selection_required !== true && selectionIdentified && selectedDay(actionable)) return {status:'action_performed',calendar:{...metadata,status:'already_selected'},note:'This day choice is already selected; no click was sent. Stay dates still require a fresh form-summary check.'};
     const before = snapshot(), previousSelection = selection(true);
     const inputName = nativeTransaction ? 'browser-level':'DOM';
     ensure(payload.document_token);
@@ -303,6 +342,15 @@
     try { e = target(d, facts); }
     catch(error) {
       if (action === 'set_counter' && error?.message === 'control_changed') return counterRejected(d,error);
+      if (action === 'click' && ['day_choice','opener'].includes(facts.date_kind) && error?.message === 'control_changed') {
+        const preflight=error.counterPreflight || {reason:'date_reference_changed',mismatched_fields:[]};
+        const note='Calendar preflight: '+preflight.reason+
+          (preflight.mismatched_fields.length?' ('+preflight.mismatched_fields.join(', ')+')':'')+
+          '. No input was sent; inspect fresh calendar controls.';
+        return {status:'date_unconfirmed',calendar:{date:facts.date||null,status:'changed_before_input',dispatched:false},
+          control_preflight:preflight,dispatched:false,note,guidance:note};
+      }
+      if (action === 'click' && error?.message === 'control_changed') return clickRejected(error);
       throw error;
     }
     if (action === 'fill') {
@@ -333,11 +381,28 @@
     }
     if (action === 'set_counter') {
       const before = counter(e);
-      if (!before || !/^\d{1,2}$/.test(d.value)) throw new Error('unsupported');
+      const maxSteps = 30, maxTarget = 30;
+      const rejectCounter = (reason,note) => {
+        const expected = /^\d{1,2}$/.test(d.value) ? Number(d.value):null;
+        const value = before?.value ?? null;
+        return {status:'counter_unconfirmed',counter:before?.label || facts.counter?.label || facts.label || '',
+          before:value,expected,observed:value,steps:0,attempts:0,dispatched:false,
+          counter_outcome:'blocked_before_input',retryable:false,
+          counter_rejection:{reason,delta:expected !== null && value !== null ? expected-value:null,
+            max_steps:maxSteps,max_target:maxTarget,minimum:before?.minimum ?? null,maximum:before?.maximum ?? null},
+          note,guidance:note};
+      };
+      if (!before) return rejectCounter('unreadable_counter','The selected counter has no readable current value. No input was sent; inspect the guest panel.');
+      if (!/^\d{1,2}$/.test(d.value)) return rejectCounter('invalid_target','A counter needs the requested absolute integer target. No input was sent.');
       const expected = Number(d.value), delta = expected - before.value;
-      if (expected > 30 || Math.abs(delta) > 10 || (before.minimum != null && expected < before.minimum) || (before.maximum != null && expected > before.maximum) || e.readOnly || before.owner_readonly) throw new Error('unsupported');
+      if (expected > maxTarget) return rejectCounter('target_limit','This counter action supports targets from 0 to '+maxTarget+'. No input was sent.');
+      if (Math.abs(delta) > maxSteps) return rejectCounter('step_limit','The requested change exceeds '+maxSteps+' verified steps. No input was sent.');
+      if (before.minimum != null && expected < before.minimum) return rejectCounter('below_minimum','The requested count is below the website\'s observed minimum. No input was sent.');
+      if (before.maximum != null && expected > before.maximum) return rejectCounter('above_maximum','The requested count exceeds the website\'s observed maximum. No input was sent.');
+      if (e.readOnly || before.owner_readonly) return rejectCounter('read_only','The observed numeric control is read-only. No input was sent; inspect its editable controls.');
       const direction = delta > 0 ? 'increase':'decrease';
-      if (delta && ![direction,'unknown','both'].includes(before.direction)) throw new Error('unsupported');
+      if (delta && ![direction,'unknown','both'].includes(before.direction)) return rejectCounter('wrong_direction','The selected counter actuator points away from the requested target. No input was sent.');
+      if (delta && ['number_input','spinbutton'].includes(before.method) && (e.tagName !== 'INPUT' || e.type !== 'number')) return rejectCounter('unsupported_numeric_control','This numeric display is not an editable number input. No input was sent; inspect its visible buttons.');
       if (delta) {
         // Focus only the verified actuator, then reject any focus-time change
         // before sending input; never edit a detached or replaced button.
@@ -376,7 +441,7 @@
         return null;
       };
       let observed = before.value, steps = 0, attempts = 0, reason = 'target_reached';
-      while (observed !== expected && steps < 10) {
+      while (observed !== expected && steps < maxSteps) {
         ensure(payload.document_token);
         const fresh = readCounter();
         if (!e.isConnected || !visible(e) || e.disabled || e.getAttribute('aria-disabled') === 'true' || e.getAttribute('aria-readonly') === 'true' || e.closest('[inert]') || !fresh || fresh.label !== before.label || fresh.value !== observed || ![direction,'unknown','both'].includes(fresh.direction) || (fresh.minimum != null && expected < fresh.minimum) || (fresh.maximum != null && expected > fresh.maximum)) { reason = 'control_changed_before_input'; break; }
@@ -413,6 +478,7 @@
       }
     }
     if (action === 'click') {
+      try {
       const calendar = await clickDate(e,facts,payload);
       if (calendar) return calendar;
       if (e.tagName === 'A' && e.href) {
@@ -426,11 +492,15 @@
         // before native dispatch (or the isolated fixture's DOM fallback).
         if (e.matches('input,textarea,select') || e.isContentEditable) {
           e.focus();
-          if (!e.isConnected) throw new Error('control_changed');
+          if (!e.isConnected) stale('reference_detached',[],'after_focus');
         }
         await input('click',e);
       }
       return {status:'action_performed',note:'Action dispatched once. Inspect a fresh observation to verify its effect.'};
+      } catch(error) {
+        if (error?.message === 'control_changed' && !['day_choice','opener'].includes(facts.date_kind)) return clickRejected(error);
+        throw error;
+      }
     }
     if (action === 'press') {
       if (d.value === 'Escape') { await input('key',e,'Escape'); return {status:'action_performed'}; }
@@ -484,9 +554,11 @@
       if (operation === 'capture') {
         ensure(payload.document_token); const original = location.href;
         if (typeof captureDocument !== 'function') throw new Error('unsupported');
-        const steps = Math.max(0,Math.min(8,Number(payload.scroll_steps)||0));
+        const steps = payload.record_window ? 0 : Math.max(0,Math.min(8,Number(payload.scroll_steps)||0));
         for(let n=0;n<steps;n++) { ensure(payload.document_token); window.scrollBy({top:650,behavior:'instant'}); await pause(250); }
-        ensure(payload.document_token); const capture = captureDocument();
+        ensure(payload.document_token); const capture = captureDocument(payload.record_window ? {
+          record_window:true,record_offset:payload.record_offset,record_count:10
+        } : {});
         capture.coverage = {...capture.coverage,scroll_steps:steps,at_page_end:Math.ceil(scrollY + innerHeight) >= document.documentElement.scrollHeight,preparation:'bounded_browser',content_settled:false};
         if (original !== location.href) throw new Error('stale_document');
         return {capture,document_token:token,url:safeUrl(location.href)};

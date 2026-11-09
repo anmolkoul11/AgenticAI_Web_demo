@@ -57,8 +57,110 @@ def all_controls(context):
     return [item for frame in context["observation"]["frames"] for item in frame["controls"]]
 
 
+def test_verified_dates_close_calendar_before_an_unrelated_required_search():
+    values = payload([
+        {"id": "0:site-query", "tag": "INPUT", "type": "search", "label": "Search", "value": "",
+         "required": True, "value_missing": True},
+        {"id": "0:day", "tag": "BUTTON", "type": "button", "label": "Selected October 28, 2026",
+         "date": "2026-10-28", "date_kind": "day_choice", "selected": "true", "date_widget_id": "calendar:0"},
+        {"id": "0:done", "tag": "BUTTON", "type": "button", "label": "Done", "date_widget_id": "calendar:0"},
+    ], requirements=[
+        {"field": field, "expected": day, "application": "form", "status": "verified"}
+        for field, day in (("check_in", "2026-10-28"), ("check_out", "2026-10-30"))
+    ], pending=["adults", "rooms"])
+    values["task_checklist"]["unresolved_form_fields"] = [
+        {"control_id": "0:site-query", "label": "Search", "required": True, "value_missing": True}
+    ]
+    packed = build_navigation_context(values)
+    assert packed["interaction_focus"]["phase"] == "confirm_calendar"
+    assert packed["interaction_focus"]["control_ids"] == ["0:done"]
+    kept = {item["id"]: item for item in all_controls(packed)}
+    assert {"0:day", "0:done"} <= kept.keys()
+    assert kept["0:done"]["supported_keys"] == ["Escape"]
+    values["observation"]["frames"][0]["controls"].append(
+        {"id": "0:age", "tag": "SELECT", "label": "Child age", "required": True, "value_missing": True}
+    )
+    values["task_checklist"]["unresolved_form_fields"].append(
+        {"control_id": "0:age", "label": "Child age", "required": True, "value_missing": True}
+    )
+    assert build_navigation_context(values)["interaction_focus"]["phase"] == "complete_required_fields"
+
+
 def size(value):
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def discovery_payload():
+    values = payload(
+        [
+            {"id": f"0:record-{index}", "tag": "A", "label": "Individual hotel record " * 12,
+             "href": f"https://example.org/property/{index}"}
+            for index in range(100)
+        ] + [
+            {"id": "0:query", "tag": "INPUT", "type": "search", "label": "Search", "value": ""},
+            {"id": "0:hotels", "tag": "A", "label": "Hotels", "href": "https://example.org/category"},
+        ],
+        requirements=[{"field": "destination", "expected": "New Jersey", "application": "form",
+                       "status": "pending", "control_id": "0:query", "next_action": "fill"}],
+    )
+    values["task"] = "Find hotels in New Jersey for November 28-30, 2026, with 4 adults and 3 rooms."
+    values["task_checklist"]["navigation_stage"] = {
+        "phase": "discover_category", "category": "hotels", "stay_form_visible": False,
+        "control_ids": ["0:hotels"], "category_control_ids": ["0:hotels"],
+        "query_control_ids": ["0:query"],
+        "hint": "Open the visible Hotels category before individual properties or the stay form.",
+    }
+    return values
+
+
+def test_category_link_survives_small_focused_context_while_stay_fields_are_pending():
+    values = discovery_payload()
+    baseline = copy.deepcopy(values)
+    result = build_navigation_context(values)
+    assert result["context_metrics"]["tier"] == "focused"
+    assert result["interaction_focus"]["phase"] == "discover_category"
+    assert result["interaction_focus"]["control_ids"] == ["0:hotels"]
+    kept = {item["id"]: item for item in all_controls(result)}
+    assert {"0:query", "0:hotels"} <= set(kept)
+    assert kept["0:hotels"]["supported_actions"] == ["click"]
+    assert not any(cid.startswith("0:record-") for cid in kept)
+    assert size(result) <= 6500
+    assert values == baseline
+
+
+def test_empty_general_query_does_not_hide_category_but_unknown_child_age_still_wins():
+    values = discovery_payload()
+    query = {"control_id": "0:query", "label": "Search", "required": True, "value_missing": True}
+    values["task_checklist"]["unresolved_form_fields"] = [query]
+    assert build_navigation_context(values)["interaction_focus"]["phase"] == "discover_category"
+    values["observation"]["frames"][0]["controls"].append({
+        "id": "0:age", "tag": "SELECT", "label": "Age of child 1", "value": "", "required": True,
+    })
+    values["task_checklist"]["unresolved_form_fields"].append({
+        "control_id": "0:age", "label": "Age of child 1", "required": True, "value_missing": True,
+    })
+    focus = build_navigation_context(values)["interaction_focus"]
+    assert focus["phase"] == "complete_required_fields"
+    assert focus["control_ids"] == ["0:age"]
+
+
+def test_prepared_stay_form_does_not_recommend_returning_to_a_category_link():
+    values = discovery_payload()
+    values["task_checklist"]["navigation_stage"].update(phase="prepare_stay", stay_form_visible=True)
+    result = build_navigation_context(values)
+    assert result["interaction_focus"]["phase"] == "fill_fields"
+    assert result["interaction_focus"]["control_ids"] == ["0:query"]
+    assert "0:hotels" not in {item["id"] for item in all_controls(result)}
+
+
+def test_discovery_stage_never_reuses_ids_from_a_previous_page():
+    values = discovery_payload()
+    values["task_checklist"]["navigation_stage"].update(
+        control_ids=["old:hotel"], category_control_ids=["old:hotel"],
+    )
+    result = build_navigation_context(values)
+    assert "old:hotel" not in json.dumps(result)
+    assert result["task_checklist"]["navigation_stage"]["category_control_ids"] == []
 
 
 def test_new_required_child_age_survives_focused_context_before_widget_confirmation():
@@ -1057,6 +1159,92 @@ def test_confirmed_search_with_linked_detail_request_does_not_end_collection():
     focus = build_navigation_context(values)["interaction_focus"]
     assert focus["phase"] == "collect_results"
     assert "continue collecting requested linked pages" in focus["hint"]
+
+
+def matching_results_values():
+    values = ready_search_values()
+    checklist = values["task_checklist"]
+    returned_stay = {
+        "destination": "New York", "check_in": "2026-10-28", "check_out": "2026-10-30",
+        "adults": "3", "rooms": "2",
+    }
+    checklist.update(
+        matching_results_observed=True,
+        result_scope={
+            "status": "verified", "source": "returned_page", "document_id": "document-one",
+            "requested": returned_stay,
+            "fields": [{"field": field, "expected": value, "observed": value, "status": "verified"}
+                       for field, value in returned_stay.items()],
+            "contradictions": [],
+        },
+        search_transition={
+            "attempted": False, "confirmed": False, "dispatch_status": "not_attempted",
+            "attempt_status": "matching_results_observed", "result_state": "observed",
+            "scope": "observed_matching_results_only", "result_document_id": "document-one",
+            "submission_provenance": {
+                "actor": "website", "action": None, "evidence_method": "returned_url",
+                "private_source": "must not enter the compact model context",
+            },
+        },
+    )
+    return values
+
+
+def test_matching_returned_results_collect_without_refilling_missing_live_form_proof():
+    values = matching_results_values()
+    checklist = values["task_checklist"]
+    checklist["requirements"][0].update(status="pending", next_action="fill")
+    checklist["pending_fields"] = ["destination"]
+    checklist["collection_mode"] = "linked_details"
+    baseline = copy.deepcopy(values)
+    result = build_navigation_context(values)
+    assert result["interaction_focus"]["phase"] == "collect_results"
+    assert not result["interaction_focus"]["control_ids"]
+    assert "continue collecting requested linked pages" in result["interaction_focus"]["hint"]
+    assert "No Search click was recorded" in result["interaction_focus"]["hint"]
+    assert result["task_checklist"]["matching_results_observed"] is True
+    assert result["task_checklist"]["search_submitted"] is False
+    assert result["task_checklist"]["search_transition"]["attempted"] is False
+    assert "private_source" not in repr(result)
+    assert values == baseline
+
+
+def test_retained_matching_results_keep_linked_detail_collection_without_new_search():
+    values = matching_results_values()
+    values["observation"]["document_id"] = "hotel-detail-document"
+    checklist = values["task_checklist"]
+    checklist["collection_mode"] = "linked_details"
+    checklist["search_transition"]["retained_for_linked_details"] = True
+    for item in checklist["requirements"]:
+        item["method"] = "retained_search_context"
+    result = build_navigation_context(values)
+    assert result["interaction_focus"]["phase"] == "collect_results"
+    assert "This detail page's availability and prices still need source evidence" in result["interaction_focus"]["hint"]
+    assert result["task_checklist"]["result_scope"]["document_id"] == "document-one"
+    assert result["task_checklist"]["matching_results_observed"] is True
+    assert result["task_checklist"]["search_submitted"] is False
+
+
+@pytest.mark.parametrize(
+    "invalid", ["unverified_scope", "wrong_document", "stale_observation", "agent_provenance", "loading"],
+)
+def test_matching_results_flag_needs_current_independent_returned_scope(invalid):
+    values = matching_results_values()
+    checklist = values["task_checklist"]
+    if invalid == "unverified_scope":
+        checklist["result_scope"]["status"] = "mismatch"
+    elif invalid == "wrong_document":
+        checklist["result_scope"]["document_id"] = "previous-document"
+    elif invalid == "stale_observation":
+        values["observation"]["document_id"] = "new-document"
+    elif invalid == "agent_provenance":
+        checklist["search_transition"]["submission_provenance"]["actor"] = "agent"
+    else:
+        checklist["search_response_pending"] = True
+    result = build_navigation_context(values)
+    assert result["interaction_focus"]["phase"] != "collect_results"
+    assert result["task_checklist"]["matching_results_observed"] is False
+    assert result["task_checklist"]["search_submitted"] is False
 
 
 def test_unverified_form_and_explicit_no_candidate_flag_never_authorize_submission():
