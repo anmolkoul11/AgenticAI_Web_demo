@@ -1,0 +1,38 @@
+AGENTIC STUDIO - WINDOWS QUICK START
+
+WHAT YOU RECEIVE
+AgenticStudio-1.0.0-win-x64.zip is a portable app, not a Setup.exe installer.
+Python, the backend and Chromium are included. No Docker or commands are needed.
+Keep AgenticStudio.exe, _internal and BrowserCompanion together.
+
+OPEN THE APP
+1. Right-click the ZIP and choose Extract All. Choose a permanent folder.
+2. Open the extracted folder and double-click AgenticStudio.exe.
+3. Keep the small status window open. Your dashboard opens in your browser.
+4. Create a local account. Open API connection and add your own OpenAI API key.
+5. Choose Open a new browser, describe your task and start. No extension is needed
+   for this option. Review the results, then Save and download Excel, CSV or JSON.
+Complete website sign-in, CAPTCHA or missing details when prompted.
+If your development dashboard is already running, close it first.
+
+USE YOUR EXISTING CHROME OR EDGE TAB - OPTIONAL
+1. In the app's status window, click Extension setup to open the included folder.
+2. Open chrome://extensions or edge://extensions in your browser.
+3. Turn on Developer mode, choose Load unpacked, and select BrowserCompanion.
+   Disable any older developer copy first. You do not need the separate ZIP.
+4. Keep the dashboard signed in in that browser. Open your website tab, open
+   Browser Companion, describe your task and click Start.
+The extension is included in the download but is added to the browser separately.
+
+WHERE IT RUNS
+The backend starts automatically on your own computer, not the developer's PC.
+Your prompt and captured page content go to OpenAI over the internet.
+API usage is billed to your configured account.
+Accounts/results: %LOCALAPPDATA%\AgenticStudio\data.
+Use Open saved-data folder in the status window to find them.
+
+Keep the app and dashboard tab open during tasks. Stop the task, then choose
+Stop and close in the status window when finished. Closing a browser tab alone
+will not stop the app. Back up your saved-data folder separately.
+
+This is an unsigned pilot package awaiting manual verification.

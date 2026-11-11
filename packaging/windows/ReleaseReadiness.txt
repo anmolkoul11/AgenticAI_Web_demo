@@ -1,0 +1,24 @@
+Publisher release notes
+
+This folder is an unsigned release candidate, not proof of end-to-end acceptance.
+Build tooling does not run workflows, tests, model calls or install the product.
+
+Before distributing to customers:
+- Perform clean Windows-machine installation and both current-tab/new-browser
+  manual acceptance, including all four supported website scenarios.
+- Confirm credentials, data and local backups are absent from the release.
+- Supply the publisher's application terms/license and privacy disclosure.
+  This repository does not currently declare a root project license; do not
+  assume it is open source. ThirdPartyNotices contains package versions and
+  discovered license files for publisher review, not legal approval.
+- Review browser and bundled browser license notices, including Chromium's
+  notices supplied with its binary distribution.
+- Sign the application and installer with the publisher's approved certificate.
+  Signing is not performed automatically and no key is bundled by this build.
+- Publish Browser Companion through the approved browser store or enterprise
+  deployment process. Store approval is separate from creating its ZIP.
+
+No automatic updater, remote hosting, shared organization API billing or
+background Windows service is installed. The app starts for the current user
+and serves only 127.0.0.1:8120 while its controller is running. Existing records
+are preserved across normal per-user upgrades and uninstallation.
