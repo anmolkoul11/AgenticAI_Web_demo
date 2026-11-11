@@ -1767,7 +1767,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                     try:
                                         try:
                                             preparation = prepare_browser_content(
-                                                page, control, 0 if tools.capture_options or values.collection_extent == "all_results" else values.browser_scroll_steps
+                                                page, control, 0 if tools.capture_options.get("record_window") or values.collection_extent == "all_results" else values.browser_scroll_steps
                                             )
                                         except PlaywrightError as exc:
                                             raise capture_failure(exc, phase="prepare") from None

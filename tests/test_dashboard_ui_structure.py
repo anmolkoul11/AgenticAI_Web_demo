@@ -52,15 +52,14 @@ def test_dashboard_markup_and_script_contract():
         "web-browser-mode",
         "web-browser-channel",
         "web-browser-mode-help",
-        "web-normal-confirm-label",
-        "web-normal-confirm",
     } <= set(page.ids)
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     assert 'value="normal" selected' in html
     assert 'value="restricted" selected' not in html
     assert 'value="restricted"' in html
     assert "values.normal_browser_confirmed" in script
-    assert '$("web-normal-confirm").required = browser && normal;' in script
+    assert 'id="web-normal-confirm"' not in html
+    assert "startConfirmed" in script
     assert 'noLoginOption.value = "none"' in script
     assert 'loginChoice.id = "web-login-choice"' in script
     assert "article discovery" not in script

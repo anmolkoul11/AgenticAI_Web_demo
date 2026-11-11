@@ -491,6 +491,7 @@ def plan(
             rejected = []
             field_issues = []
             field_repairs = []
+            topic_assessments = []
             review_counts = {}
             schema_issues = {}
             candidate, effective, repairs = prepare_extraction(
@@ -513,6 +514,7 @@ def plan(
                 preserve_sources=linked,
                 review_counts=review_counts,
                 field_repairs=field_repairs,
+                topic_assessments=topic_assessments,
             )
             enrichment = None
             if linked:
@@ -631,6 +633,7 @@ def plan(
                     "filters": [c.model_dump() for c in candidate.filters],
                     "request_constraint_coverage": request_coverage,
                     "rejected_records": rejected,
+                    **({"topic_assessments": topic_assessments} if topic_assessments else {}),
                     "field_issues": field_issues,
                     "field_repairs": field_repairs,
                     **pricing_metadata,
@@ -777,6 +780,7 @@ def plan(
                     if constraint_unverified
                     else "open_browser_for_links",
                     "rejected_records": rejected,
+                    **({"topic_assessments": topic_assessments} if topic_assessments else {}),
                     "field_issues": field_issues,
                     "field_repairs": field_repairs,
                     "model": context["model"],
@@ -1024,6 +1028,7 @@ def plan(
                 "records": rows,
                 "review_counts": review_counts,
                 "rejected_records": rejected,
+                **({"topic_assessments": topic_assessments} if topic_assessments else {}),
                 "field_issues": field_issues,
                 "field_repairs": field_repairs,
                 "field_statuses": pricing_field_statuses(
@@ -1351,9 +1356,10 @@ def _execute_new(service, plan_id, approval, *, accept_partial=False):
                 "run_id": context["run_id"],
                 "columns": ["listing_id"]
                 + [c["name"] for c in proposal["columns"]]
+                + (["record_url"] if proposal.get("enrichment")
+                   or any(row.get("record_url") for row in rows) else [])
                 + (
                     [
-                        "record_url",
                         "detail_status",
                         "evidence_sources",
                         "enrichment_conflicts",
@@ -1381,6 +1387,7 @@ def _execute_new(service, plan_id, approval, *, accept_partial=False):
                 ),
                 "constraint_unverified_records": proposal.get("constraint_unverified_records", []),
                 "semantic_selection": proposal.get("semantic_selection"),
+                **({"topic_assessments": proposal["topic_assessments"]} if proposal.get("topic_assessments") else {}),
                 "warnings": proposal["warnings"],
                 **({"enrichment": proposal["enrichment"]} if proposal.get("enrichment") else {}),
                 "captured_pages": proposal.get("captured_pages", []),

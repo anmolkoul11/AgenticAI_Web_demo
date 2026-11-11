@@ -32,7 +32,7 @@ def test_running_agent_has_live_activity_and_paused_agent_waits_without_animatio
     assert data["paused"]["waiting"] and not data["paused"]["running"]
 
 
-def test_agent_consent_survives_polling_and_submission_sends_explicit_permission(
+def test_agent_start_action_is_available_after_polling_and_sends_explicit_permission(
     agent_ui,
 ):
     agent_ui.evaluate("""() => {
@@ -42,21 +42,21 @@ def test_agent_consent_survives_polling_and_submission_sends_explicit_permission
     start = agent_ui.get_by_role("button", name="Run browser agent · paid API", exact=True)
     assert start.count() == 1
     assert start.is_visible()
-    assert start.is_disabled()
-    agent_ui.get_by_role(
+    assert start.is_enabled()
+    assert agent_ui.get_by_role(
         "checkbox", name="I authorize autonomous information-retrieval", exact=False
-    ).check()
+    ).count() == 0
     agent_ui.evaluate("renderBrowserOptions({state:'waiting',page_health:{}})")
     assert start.is_enabled()
     sent = agent_ui.evaluate("""async () => {
       window.fixtureApi=async (path,data)=>{window.agentPayload={path,data};return {};};
-      await agentStart.onclick();return window.agentPayload;
+      await agentStart.onclick({currentTarget:agentStart});return window.agentPayload;
     }""")
     assert sent["path"].endswith("/browser/agent_start")
     assert sent["data"]["agent_confirmed"] is True
-    assert not agent_ui.get_by_role(
+    assert agent_ui.get_by_role(
         "checkbox", name="I authorize autonomous information-retrieval", exact=False
-    ).is_checked()
+    ).count() == 0
 
 
 def test_paused_agent_displays_actual_readback_and_retained_capture_choice(agent_ui):
@@ -174,19 +174,20 @@ def test_counter_failure_exposes_target_detected_controls_and_running_agent_vers
     ).is_visible()
 
 
-def test_screenshot_consent_is_separate_optional_and_sent_only_when_checked(agent_ui):
-    visual = agent_ui.get_by_role("checkbox", name="Also allow viewport screenshots", exact=False)
-    assert not visual.is_checked()
-    visual.check()
+def test_screenshot_choice_is_optional_and_sent_only_when_selected(agent_ui):
+    agent_ui.evaluate("renderBrowserOptions({state:'waiting',page_health:{}})")
+    visual = agent_ui.locator("#web-agent-visual")
+    assert visual.input_value() == "no"
+    visual.select_option("yes")
     sent = agent_ui.evaluate("""async () => {
-      webSelected='fixture'; agentCheckbox.checked=true;
+      webSelected='fixture';
       window.agentPayload=null;
       api=async (path,data)=>{window.agentPayload={path,data};return {status:'requested'};};
-      await agentStart.onclick();return window.agentPayload;
+      await agentStart.onclick({currentTarget:agentStart});return window.agentPayload;
     }""")
     assert sent["data"]["agent_visual_confirmed"] is True
     assert sent["data"]["agent_confirmed"] is True
-    assert not visual.is_checked()
+    assert visual.input_value() == "no"
 
 
 def test_action_effect_feedback_and_interpretation_are_visible_without_json(agent_ui):

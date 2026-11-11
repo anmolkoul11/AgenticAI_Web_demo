@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Annotated, Literal
 
 import httpx
 from openai import OpenAI
@@ -26,8 +26,10 @@ from agentic_web_demo.custom_constraints import (
     requested_constraints,
 )
 from agentic_web_demo.custom_fetch import WebsiteError, origin, public_url
+from agentic_web_demo.enrichment import safe_url
 from agentic_web_demo.record_identity import identity_field
 from agentic_web_demo.source_fields import (
+    ambiguous_linked_headline,
     article_content,
     article_record_issue,
     excerpt_issue,
@@ -43,6 +45,7 @@ from agentic_web_demo.source_fields import (
     normalized,
     primary_headline,
     quote_in_block,
+    selected_record_headline,
 )
 
 
@@ -75,6 +78,10 @@ class ExtractedRow(Strict):
     relevance: Literal["relevant", "not_relevant", "uncertain"] | None = None
     relevance_reason: str = Field(default="", max_length=300)
     relevance_evidence: str = Field(default="", max_length=6500)
+    headline_block_id: str | None = Field(default=None, pattern=r"^b[0-9]{1,6}$")
+    label_block_ids: list[Annotated[str, Field(pattern=r"^b[0-9]{1,6}$")]] = Field(
+        default_factory=list, max_length=8
+    )
 
 
 class SemanticSelection(Strict):
@@ -282,6 +289,11 @@ uncertain, and provide a short reason and a verbatim headline/snippet quote that
 the classification. A topic can be relevant by meaning without matching literal keywords.
 Relevance must also respect the requested record type: a sports game, navigation section,
 advertisement or unrelated media is not an article merely because its label mentions sports.
+Relevant editorial items with audio or video and an actual content headline may be included,
+unless written-only content was requested. Preserve any captured media-format label separately;
+the audio/video label or programme name is not the item's headline.
+Assess topic relevance from the item's own headline and snippet, not solely from a
+programme or category label shared by many items.
 Homepage headline links can represent articles; their bodies need not have been opened.
 If the captured wording cannot establish the requested kind/topic, mark relevance uncertain.
 Relevance is row metadata: use the row's relevance, relevance_reason and
@@ -393,6 +405,18 @@ headline. On a detail page, if it is absent, use null and explain; do not substi
 paragraph. On an index page use its captured record heading or full headline link label
 bound to that record URL; it may be an H2/H3 and does NOT require an H1. Prefer that heading
 over a short promotional kicker for the same URL. Do not manufacture a headline from a slug.
+For structured article/headline records, set headline_block_id to the supplied block ID of
+the actual content headline (a heading or full headline link). Set label_block_ids to any
+same-record programme/series/category headings. These are row metadata, never source columns.
+One card can have an H2 programme label and an H3 episode headline; another can have an H2
+article headline and an H3 subheading. Choose by meaning and the same record's wording,
+not heading level, text length, topic keyword repetition or the first heading encountered.
+Use the content-specific headline as article_title. A useful programme_name/series_name
+field may preserve its literal label separately; do not concatenate it into the headline.
+Both selections must belong to that exact card/URL; do not borrow a headline from another
+episode of the same programme. If the available source cannot distinguish the headline,
+use null and disclose the ambiguity. For non-article rows or plain text without block IDs,
+use headline_block_id null and label_block_ids empty. Do not invent block IDs.
 article_excerpt belongs to a paragraph from the detail body (content_role=body), not its
 headline, an unrelated video description, navigation or a homepage teaser. Preserve inline
 names and wording. Do not wrap cell VALUES in extra quotation marks; display wrappers are
@@ -498,7 +522,7 @@ def interpret(values, pages, settings, *, column_contract=None):
         return Extraction.model_validate(response.output_parsed), {
             "provider": "openai",
             "model": settings.model,
-            "prompt_version": "website-extractor-v18",
+            "prompt_version": "website-extractor-v19",
             "usage": response.usage.model_dump() if response.usage else {},
         }
 
@@ -581,6 +605,8 @@ def matches(record, condition):
 
 
 RESERVED = {
+    "headline_block_id",
+    "label_block_ids",
     "source_capture_id",
     "listing_id",
     "record_id",
@@ -912,6 +938,7 @@ def validate_extraction(
     preserve_sources=False,
     review_counts=None,
     field_repairs=None,
+    topic_assessments=None,
 ):
     names = [c.name for c in candidate.columns]
     reserved = RESERVED
@@ -989,6 +1016,25 @@ def validate_extraction(
         # Topic selection precedes source-cell checks. Unrelated content is excluded,
         # not reported as invalid merely because an unused optional label was invented.
         # Schema conflicts and unavailable page references above still fail validation.
+        if (article_records and topic_assessments is not None
+                and candidate.semantic_selection is not None
+                and item.relevance in {"not_relevant", "uncertain"}):
+            page = pages[item.page_index]
+            identity_cell = next((cell for cell in item.cells if cell.field == record_identity), None)
+            title = normalized(identity_cell.value) if identity_cell and identity_cell.value else ""
+            matching = [block for block in page.get("blocks", [])
+                        if block.get("association") != "ambiguous"
+                        and normalized(block.get("text", "")) == title]
+            hrefs = {block["href"] for block in matching if block.get("href")}
+            quote = source_quote(item.relevance_evidence, page["text"])
+            topic_assessments.append({
+                "record_id": f"record-{index + 1:04d}",
+                "title": title if matching else None,
+                "record_url": next(iter(hrefs)) if len(hrefs) == 1 else None,
+                "source_url": page["url"], "classification": item.relevance,
+                "reason": item.relevance_reason, "evidence": quote,
+                "source_support": "captured_quote" if quote else "unverified",
+            })
         if candidate.semantic_selection is not None and item.relevance == "not_relevant":
             unrelated += 1
             excluded += 1
@@ -1038,27 +1084,76 @@ def validate_extraction(
             and all(url in {page["url"], page.get("requested_url")} for url in url_cells)
             and is_headline_field(record_identity, candidate.content_type)
         )
-        correction_heading = primary if main_detail_heading else bound_heading
-        if correction_heading and is_headline_field(record_identity, candidate.content_type):
+        headline_identity = article_records and is_headline_field(record_identity, "articles")
+        selected_heading, role_issues = (None, [])
+        if headline_identity:
+            selected_heading, role_issues = selected_record_headline(item, page, url_cells)
+            if not selected_heading and not role_issues and not main_detail_heading:
+                title = next(cell.value for cell in item.cells if cell.field == record_identity)
+                matches = [
+                    block for block in page.get("blocks", [])
+                    if title is not None and block.get("kind") in {"heading", "link"}
+                    and normalized(block.get("text", "")) == normalized(title)
+                ]
+                groups = {block["group_id"] for block in matches if block.get("group_id")}
+                urls = set(url_cells) or {
+                    block["href"] for block in page.get("blocks", []) if block.get("href")
+                    and (block in matches or block.get("group_id") in groups)
+                }
+                if any(ambiguous_linked_headline(page, url) for url in urls):
+                    role_issues = ["headline_role_unverified"]
+            if role_issues:
+                if rejected is None:
+                    raise WebsiteError(
+                        "The record headline role is unverified. Review its source headings and labels."
+                    )
+                rejected.append({
+                    "record_id": f"record-{index + 1:04d}", "source_url": page["url"],
+                    "issues": [{"field": record_identity, "reason": reason,
+                                "headline_block_id": item.headline_block_id} for reason in role_issues],
+                })
+                continue
+        correction_heading = primary if main_detail_heading else selected_heading or bound_heading
+        selected_identity = bool(selected_heading and correction_heading is selected_heading)
+        if correction_heading and (
+            headline_identity or is_headline_field(record_identity, candidate.content_type)
+        ):
             cell = next(cell for cell in item.cells if cell.field == record_identity)
-            if cell.value != correction_heading["text"]:
+            selected_quote = source_quote(cell.evidence, page["text"]) if selected_identity else None
+            if (
+                cell.value != correction_heading["text"]
+                or selected_identity and (
+                    not selected_quote or not quote_in_block(selected_quote, correction_heading)
+                )
+            ):
                 repaired.append(
                     {
                         "field": cell.field,
                         "old_value": cell.value,
                         "value": correction_heading["text"],
                         "evidence": correction_heading["text"],
+                        **({"old_evidence": cell.evidence} if selected_identity else {}),
                         "reason": "headline_from_unique_captured_h1"
                         if main_detail_heading
+                        else "headline_from_selected_source_block" if selected_identity
                         else "headline_from_url_bound_captured_heading",
                     }
                 )
                 cell.value = correction_heading["text"]
                 cell.evidence = correction_heading["text"]
         identity_cell = next(cell for cell in item.cells if cell.field == record_identity)
+        identity_blocks = page.get("blocks", [])
+        if selected_identity:
+            selected_group = selected_heading.get("group_id")
+            selected_href = selected_heading.get("href")
+            identity_blocks = [block for block in identity_blocks if (
+                block.get("group_id") == selected_group if selected_group else
+                block.get("id") == selected_heading["id"]
+                or selected_href and block.get("href") == selected_href
+            )]
         matched_identities = [
             block
-            for block in page.get("blocks", [])
+            for block in identity_blocks
             if block.get("kind") in {"heading", "link"}
             and block.get("href")
             and block.get("association") != "ambiguous"
@@ -1066,6 +1161,7 @@ def validate_extraction(
             and normalized(block["text"]) == normalized(identity_cell.value)
             and (
                 not is_headline_field(record_identity, candidate.content_type)
+                or selected_identity
                 or headline_issue(identity_cell.value, page) is None
             )
         ]
@@ -1074,7 +1170,7 @@ def validate_extraction(
         # captured record container. Page-wide links are never repair evidence.
         identity_groups = {
             block["group_id"]
-            for block in page.get("blocks", [])
+            for block in identity_blocks
             if block.get("group_id")
             and block.get("association") != "ambiguous"
             and block.get("kind") in {"heading", "link"}
@@ -1254,7 +1350,10 @@ def validate_extraction(
                 elif is_headline_field(
                     column.name, "articles" if article_records else candidate.content_type
                 ):
-                    role_error = headline_issue(cell.value, page)
+                    role_error = (
+                        None if selected_identity and cell.field == record_identity
+                        else headline_issue(cell.value, page)
+                    )
                     if role_error:
                         issues.append(
                             {
@@ -1340,7 +1439,8 @@ def validate_extraction(
             quote_text = normalized(quote)
             groups = {
                 block["group_id"]
-                for block in page.get("blocks", [])
+                for block in (identity_blocks if selected_identity and field == record_identity
+                              else page.get("blocks", []))
                 if block.get("group_id")
                 and quote_in_block(quote_text, block)
             }
@@ -1449,6 +1549,13 @@ def validate_extraction(
             evidence=evidence,
             **({"source_capture_id": page["capture_id"]} if page.get("capture_id") else {}),
         )
+        # Keep the captured item link even when the inferred output schema has
+        # no URL column. This is provenance, not a new model field or a fetch.
+        # Ambiguous/page-wide links cannot supply an individual record URL.
+        if len(captured_urls) == 1:
+            target = safe_url(next(iter(captured_urls)))
+            if target:
+                record["record_url"] = target
         rows.append(record)
         if repaired and field_repairs is not None:
             field_repairs.append(

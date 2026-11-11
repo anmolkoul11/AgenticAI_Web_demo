@@ -1,11 +1,24 @@
 {
   "manifest_version": 3,
   "name": "Agentic Studio Browser Companion",
-  "version": "0.5.21",
+  "version": "0.5.23",
   "description": "Run a reviewed information-retrieval workflow in your selected tab with your local Agentic Studio.",
   "permissions": ["activeTab", "scripting", "storage", "sidePanel", "debugger"],
   "host_permissions": ["http://localhost:8120/*", "http://127.0.0.1:8120/*"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "background": {"service_worker": "worker.js"},
   "side_panel": {"default_path": "sidepanel.html"},
-  "action": {"default_popup": "popup.html"}
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  }
 }

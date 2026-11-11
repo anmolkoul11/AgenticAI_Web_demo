@@ -599,7 +599,7 @@ def test_api_adapter_uses_account_settings_no_storage_and_no_retries(monkeypatch
 def test_dashboard_exposes_agent_as_a_separate_opt_in_path():
     script = (ASSETS / "custom.js").read_text(encoding="utf-8")
     assert "Run browser agent · paid API" in script
-    assert "agent_confirmed: agentCheckbox.checked" in script
+    assert "agent_confirmed: actionConfirmed" in script
     assert "Browser-agent action evidence" in script
     assert "Prepare complete hotel search · no API call" in script
 

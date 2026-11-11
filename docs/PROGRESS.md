@@ -1,5 +1,159 @@
 # Progress
 
+## Individual listing links - 2026-11-11, manual verification pending
+
+Booking plan `00c94096-b842-43b9-885e-e879c7914b12` saved 50 hotels. All 50
+had an exact hotel-name block with one individual hotel href in the retained
+source, but the inferred eight-column schema omitted a URL field. The output
+contract therefore had no URL role; only the capture-page `source_url` survived
+in saved run `e17d50a2-2062-4be4-b730-2f90ddb4fe9b` and its export.
+
+Extraction now retains an existing unique identity-bound captured URL as
+`record_url` metadata, independently of model-selected columns. The original
+`source_url` remains the capture reference. Ambiguous, unrelated page-wide or
+unusable URLs are not guessed. Metadata is added after the existing duplicate
+and filter decisions. Preview tables and saved snapshot columns retain the
+individual link; existing cards already prefer it. Linked-source reconciliation
+keeps its existing behavior. No navigation, capture, date/guest, pricing,
+relevance, save-approval or model-prompt behavior changed; no extra API calls.
+
+Added offline regression cases in `tests/test_record_link_metadata.py` for
+omitted URL columns, record-group links, ambiguity, unrelated links and approved
+snapshot persistence. No tests, validators, application/browser startup or live
+workflows were run. Restart the backend and refresh the dashboard for UI version
+`2026-11-11.1`, then make a fresh Booking capture; existing approved exports are
+unchanged. Check that individual hotel links open the hotel while the source
+reference still opens the results page. Also manually recheck Tripadvisor and
+the news workflows. Suggested local regression command for the user:
+
+```powershell
+uv run --locked pytest tests/test_record_link_metadata.py tests/test_detail_enrichment.py tests/test_headline_role_extraction.py tests/test_custom_website.py -v
+```
+
+## Content headlines versus programme labels - 2026-11-10, manual verification pending
+
+The BBC screenshot and saved plan `3772a8f3...` confirmed that both the programme
+heading and episode headline were captured under the same URL. The model chose
+the H2 programme label (for example Football Daily). Existing validation found
+two headings, had no unique preferred heading, and then accepted either literal
+heading as an article title. This was not a bad automatic headline repair.
+
+Extractor **website-extractor-v19** asks the existing extraction call to select
+the actual headline block and identify separate label blocks. The source roles
+must reference captured heading/link IDs and the same record group/URL. A
+validated selection can repair a programme-valued title or its wrong evidence;
+it does not choose H2/H3 by rank, longest text, repeated words or a URL slug.
+Native detail H1 handling and the legacy unique-heading path remain. Missing
+role selection on a genuinely ambiguous multi-heading record is flagged.
+Selected groups remain bound through subsequent field validation, including
+identical headlines under different URLs. Batch coverage uses that selected
+group instead of counting every card sharing a programme name.
+
+The user explicitly wants relevant editorial items with audio included under
+their real content headline. Captured programme and media-format labels can
+remain separate fields; no audio/video exclusion was introduced. Hotel source
+identities, search/date/guest behavior, pricing, and saving are unchanged.
+Source-role choice is still a semantic model decision: validation proves the
+chosen wording and association, not independent semantic truth. No extra model
+call, automatic retry or browser action was added.
+
+Authored helper, extraction, group-isolation, repeated-programme, mixed H2/H3,
+link-headline and hotel-isolation regressions. No tests, test collection,
+syntax/lint checks, validators, application/browser startup, live workflows or
+paid API calls were run. Restart the backend and start a new extraction; frozen
+old previews and saved records are not rewritten. See `ARTICLE_COLLECTION_FIX.md`.
+
+## Article capture and topic collection - 2026-11-10, manual verification pending
+
+Inspected user3's NYTimes sports plan `a8440677...` and BBC runs `5266fe38...`,
+`90818a14...`, and plan `3772a8f3...`. NYTimes retained 50 raw source cards;
+two were accepted and 48 were AI-assessed unrelated, with no business-rule
+filter exclusions. The retained sources contained only two clear sports links,
+both accepted. This does not prove that any specific relevant captured article
+was rejected; the old preview did not retain each excluded candidate's reason.
+Its structural card ordering also consumed the cap before later page content.
+
+BBC did capture the homepage. One run then repeated Capture and prohibited
+section navigation. Another reached collection but its first record window
+failed: full capture had 131 URL-associated groups, while the card-window
+inventory detected zero wrapped records. The empty window became the generic
+extension `execution_failed` message.
+
+Backend **browser-agent-v20.31**, Companion **0.5.23**, dashboard
+**2026-11-10.1** add article-only source ordering and bounded literal topic/section
+prioritization, plus capture windows for independent linked headlines without
+card wrappers. After a grounded current-page article capture, the same settled
+document hands off to extraction without another paid navigation decision.
+Detail/search tasks, changed documents, busy pages and ungrounded captures do
+not use that shortcut. Topic cues order candidates, never decide acceptance.
+
+Excluded article candidates now keep their AI reason and matching source quote
+in preview/history and saved snapshots, displayed under a collapsed review
+panel. Unverified titles/quotes are labelled rather than presented as captured
+facts. Exact paragraph headlines now count in article batch coverage; incidental
+body mentions do not count. Existing record/byte/call limits remain in place.
+
+Booking's explicit Search, Tripadvisor's live updates, dates, counters, stay and
+price verification, approvals, and known hotel-card ordering are unchanged.
+The additional source ordering/priorities are enabled for article tasks only.
+Regression cases were authored, including hotel isolation and unchanged known
+hotel-card windows. No tests, collection, syntax/lint checks, validators,
+application/browser startup, live workflows or paid calls were run.
+
+See `ARTICLE_COLLECTION_FIX.md` for manual scenarios and local test commands.
+Restart the backend, refresh the dashboard, reload Companion 0.5.23 and refresh
+the website before starting a fresh task; old retained previews are unchanged.
+
+## Dashboard and branding regression cases - 2026-11-09, authored only
+
+Added shared-logo/PNG-packaging checks and expanded dashboard cases for scoped
+Start/Resume/Save, collapsed screenshot settings, optional data sharing,
+complete/partial previews, missing keys, and duplicate submission protection.
+Existing affected fixtures now use the explicit button events. The targeted
+commands and manual website scenarios are in `DASHBOARD_REGRESSION_TEST_CASES.md`.
+No tests, test collection, linters, validators, browser/application startup,
+live workflows or paid API calls were run; the user will execute the cases.
+
+## Shared dashboard and Companion logo - 2026-11-09
+
+The dashboard, Companion side panel and popup now use the same navy **a.** mark
+with a mint dot. The vector asset is stored at `dashboard/static/logo.svg` and
+copied into the extension's `icons/logo.svg`. Matching PNG exports supply the
+16/32/48/128 pixel toolbar and extension-management icons; both interfaces also
+use the shared mark as their favicon. The old extension sparkle is removed.
+
+Companion is **0.5.22** with matching executor version. Refresh the dashboard,
+reload the extension and refresh the website tab. The generated logo was viewed;
+no tests, validators, browser/application startup or workflow/API calls ran.
+
+## Dashboard confirmation and copy cleanup - 2026-11-09, manual verification pending
+
+Dashboard UI **2026-11-09.2** removes repeated confirmation checkboxes from
+Website Studio, Hotel demo and API setup. Start/Create, reviewed Run, Resume
+and Save are the explicit scoped actions. The UI derives the existing
+authorization flags from those actual button events; backend validation,
+reviewed revisions and final save remain in place. Settings changes and status
+polling do not start paid calls.
+
+One short notice explains paid AI/content use near Start, with normal-network
+access disclosed when selected. Screenshots and optional publishing use No/Yes
+settings. Functional choices such as selected links, manual collection, all
+cities and remembering a key remain available. Optional task settings are
+collapsed, repeated setup/review/storage copy is shorter, and the saved status
+uses a concise confirmation instead of repeated human-review boilerplate.
+
+Partial previews offer **Save available results** beside a short coverage note.
+Button guards prevent duplicate submissions; Save becomes available as soon as
+the current preview and revision are loaded. No website navigation, model
+decision or extraction rules were changed. Initial automatic approval review
+rejected removing disclosures without a scoped confirmation; the final design
+preserves concise notices and explicit action confirmation instead.
+
+Regression sources were updated for the new actions. No tests, validators,
+application/browser startup, live workflows or paid API calls ran. Restart the
+backend and refresh the dashboard. Manual acceptance should cover Start,
+optional screenshots, Resume, complete/partial Save, Hotel demo Run and API setup.
+
 ## Manual feedback and future fixes - 2026-11-09
 
 The user reports that the record-limit and shared-state changes work in live

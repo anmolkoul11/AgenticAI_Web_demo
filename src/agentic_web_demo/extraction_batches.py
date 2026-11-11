@@ -6,7 +6,7 @@ from openai import APIError
 
 from agentic_web_demo.custom_fetch import WebsiteError
 from agentic_web_demo.record_identity import identity_field
-from agentic_web_demo.source_fields import normalized
+from agentic_web_demo.source_fields import article_content, normalized
 
 
 def interpret_result_batches(values, pages, settings, interpret, progress, alive):
@@ -39,13 +39,27 @@ def interpret_result_batches(values, pages, settings, interpret, progress, alive
         if not fields:
             fields = [column.name for column in candidate.columns]
         identity = identity_field([column.name for column in candidate.columns])
+        article_rows = article_content(candidate.content_type) or article_content(values.instructions)
         covered = set()
         for row in candidate.rows:
+            if article_rows and row.headline_block_id:
+                # A repeated programme label can occur on many episode cards.
+                # The selected literal headline binds this returned row to one
+                # source group; source validation checks that choice afterward.
+                selected = [block for block in page.get("blocks", [])
+                            if block.get("id") == row.headline_block_id
+                            and block.get("kind") in {"heading", "link"}
+                            and block.get("association") == "record" and block.get("group_id")]
+                if len(selected) == 1:
+                    covered.add(selected[0]["group_id"])
+                continue
             cell = next((cell for cell in row.cells if cell.field == identity and cell.value), None)
             if cell:
                 covered.update(block["group_id"] for block in page.get("blocks", [])
                                if block.get("group_id") and normalized(cell.value) in normalized(block["text"])
-                               and block.get("kind") in {"heading", "link", "table_row"})
+                               and (block.get("kind") in {"heading", "link", "table_row"}
+                                    or article_rows
+                                    and normalized(cell.value) == normalized(block["text"])))
         coverage.append({"batch": index + 1, "source_groups": len(groups), "returned_groups": len(covered & groups),
                          "unreturned_groups": len(groups - covered)})
         for row in candidate.rows:

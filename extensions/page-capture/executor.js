@@ -1,7 +1,7 @@
 /* Packaged, isolated-world executor. No model-provided JavaScript or selectors. */
 (() => {
   'use strict';
-  const version = '0.5.21';
+  const version = '0.5.23';
   if (globalThis.__agenticTabExecutor?.version === version) return;
   const token = crypto.randomUUID();
   let observedUrl = null;
@@ -557,8 +557,10 @@
         const steps = payload.record_window ? 0 : Math.max(0,Math.min(8,Number(payload.scroll_steps)||0));
         for(let n=0;n<steps;n++) { ensure(payload.document_token); window.scrollBy({top:650,behavior:'instant'}); await pause(250); }
         ensure(payload.document_token); const capture = captureDocument(payload.record_window ? {
-          record_window:true,record_offset:payload.record_offset,record_count:10
-        } : {});
+          record_window:true,record_offset:payload.record_offset,record_count:10,
+          article_records:payload.article_records === true,
+          record_priority_terms:payload.record_priority_terms
+        } : {article_records:payload.article_records === true,record_priority_terms:payload.record_priority_terms});
         capture.coverage = {...capture.coverage,scroll_steps:steps,at_page_end:Math.ceil(scrollY + innerHeight) >= document.documentElement.scrollHeight,preparation:'bounded_browser',content_settled:false};
         if (original !== location.href) throw new Error('stale_document');
         return {capture,document_token:token,url:safeUrl(location.href)};

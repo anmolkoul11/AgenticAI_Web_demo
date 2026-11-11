@@ -16,10 +16,10 @@ REVISION = "a" * 32
 def test_complete_search_is_separate_from_paid_single_step_planning():
     script = (ASSETS / "custom.js").read_text(encoding="utf-8")
     assert "Prepare complete hotel search · no API call" in script
-    assert "Approve & run search only" in script
-    assert "Approve, search & extract · paid API" in script
+    assert 'hotelRun.textContent = "Run search"' in script
+    assert "Search & extract · paid AI" in script
     assert "hotel_revision: hotelReviewedRevision" in script
-    assert "hotel_confirmed: hotelCheckbox.checked" in script
+    assert "hotel_confirmed: actionConfirmed" in script
     assert "hotelApprovalState" in script
     assert "hotel_plan" in script and "web-plan-navigation" in script
     assert BrowserAction(hotel_revision=REVISION, hotel_confirmed=True).hotel_confirmed
@@ -47,31 +47,29 @@ def review(ui, *, revision=REVISION):
     )
 
 
-def test_goal_review_is_explicit_and_stable_polling_preserves_confirmation(hotel_ui):
+def test_goal_review_has_direct_actions_and_tracks_the_current_revision(hotel_ui):
     review(hotel_ui)
     run = hotel_ui.locator("#web-hotel-approve")
-    assert run.is_visible() and run.is_disabled()
+    assert run.is_visible() and run.is_enabled()
     assert hotel_ui.get_by_text("check in: 2026-10-28", exact=False).is_visible()
-    checkbox = hotel_ui.get_by_role("checkbox", name="I reviewed these targets", exact=False)
-    checkbox.check()
-    assert run.is_enabled()
+    assert hotel_ui.get_by_role("checkbox", name="I reviewed these targets", exact=False).count() == 0
     review(hotel_ui)
-    assert checkbox.is_checked() and run.is_enabled()
+    assert run.is_enabled()
     review(hotel_ui, revision="b" * 32)
-    assert not checkbox.is_checked() and run.is_disabled()
+    assert run.is_enabled()
+    assert hotel_ui.evaluate("hotelReviewedRevision") == "b" * 32
     assert hotel_ui.evaluate("window.fixtureCalls") == []
 
 
 @pytest.mark.parametrize("action", ["hotel_approve", "hotel_extract"])
 def test_goal_approval_sends_exact_review_and_separate_capture_choice(hotel_ui, action):
     review(hotel_ui)
-    hotel_ui.get_by_role("checkbox", name="I reviewed these targets", exact=False).check()
     payload = hotel_ui.evaluate(
         """action => {
           webSelected='fixture-job';
           window.fixtureApi=async (path,data) => {window.approvalPayload={path,data};return {};};
           const button=action==='hotel_extract'?hotelExtract:hotelRun;
-          return button.onclick().then(()=>window.approvalPayload);
+          return button.onclick({currentTarget:button}).then(()=>window.approvalPayload);
         }""",
         action,
     )

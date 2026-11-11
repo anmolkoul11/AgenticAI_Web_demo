@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-11-09.1";
+const UI_VERSION = "2026-11-11.1";
 document.documentElement.dataset.agenticUiVersion = UI_VERSION;
 document.documentElement.dataset.agenticConnection = "loading";
 let instanceId = null, connectionBlocked = false;
@@ -19,7 +19,7 @@ function connectionWarning(text) {
   $("api-key").value = ""; $("password").value = ""; $("register-password").value = "";
   $("web-login-password").value = ""; $("web-login-user").value = "";
   $("admin-password").value = "";
-  $("consent").checked = false; $("approved").checked = false; $("execute").disabled = true;
+  $("execute").disabled = true;
   renderApiConnectionStatus();
 }
 async function checkConnection() {
@@ -54,7 +54,8 @@ let csrf = "", selected = null, timer = null, records = [], decisions = [], sign
 let activeView = "custom", isAdmin = false, modelConfigured = false, recordsLoaded = false, currentUsername = null;
 let modelConnectionKnown = false;
 let modelConnectionRevision = 0;
-const API_SETUP_MESSAGE = "No API key is set for this session. Open API connection, paste your key, choose a model and select Save / replace connection.";
+let planSubmitting = false, executionSubmitting = false, keySubmitting = false;
+const API_SETUP_MESSAGE = "Add your key and model under API connection, then choose Save API connection.";
 const statusLabels = {queued: "Queued", running: "Running", awaiting_review: "Review needed", completed: "Completed", needs_input: "Needs information", unsupported: "Unsupported request", policy_rejected: "Outside search policy", failed: "Failed", interrupted: "Interrupted"};
 const stageLabels = {plan_request: "Interpret request", validate_plan: "Validate search", extract: "Sign in & extract", save: "Save records", export: "Export results", evaluate: "Evaluate rules", publish: "Publish events", receive: "Receive events", verify: "Verify receipts"};
 function setBadge(element, text, tone = "neutral") { element.textContent = text; element.dataset.tone = tone; }
@@ -63,10 +64,10 @@ function renderApiConnectionStatus() {
   $("api-setup-notice").hidden = !missing;
   $("api-connection-state").hidden = !missing;
   if (!modelConnectionKnown) return;
-  setBadge($("model-badge"), modelConfigured ? "API key · configured, unverified" : "API key · setup required", modelConfigured ? "active" : "warning");
+  setBadge($("model-badge"), modelConfigured ? "API key · added" : "API key · setup required", modelConfigured ? "active" : "warning");
   $("model-help").hidden = $("mode").value !== "model-assisted" || modelConfigured;
   $("key-status").textContent = modelConfigured ?
-    "API key configured for this session. Provider access has not been verified." : API_SETUP_MESSAGE;
+    "API key added for this session." : API_SETUP_MESSAGE;
 }
 function setModelConnectionState(configured) {
   const changed = !modelConnectionKnown || modelConfigured !== configured;
@@ -144,7 +145,7 @@ function showFeedback(job) {
     const item = document.createElement("li"); item.textContent = labels[field] || String(field).replaceAll("_", " "); $("feedback-fields").append(item);
   }
   const planning = job.kind === "plan";
-  $("feedback-next").textContent = planning ? "Edit the complete search below and submit a new proposal. Nothing is retried automatically. Natural-language submissions require renewed paid API consent." : "Inspect the job evidence and service connections before starting another execution. Earlier stages may already have saved data or published events.";
+  $("feedback-next").textContent = planning ? "Update your search and try again." : "Check this run's details before starting another task.";
   $("edit-request").hidden = !planning; $("use-form").hidden = !planning;
 }
 function editSearch(useForm = false) {
@@ -154,7 +155,7 @@ function editSearch(useForm = false) {
   modeChanged();
   const field = $("mode").value === "model-assisted" ? $("request") : $("check-in");
   field.focus({preventScroll: true});
-  message("Review all search fields before submitting. The guided form does not automatically copy model interpretations.");
+  message("Update the search details, then create a new preview.");
 }
 const terminal = status => !["queued", "running"].includes(status);
 function message(text = "") {
@@ -183,8 +184,8 @@ function modeChanged() {
   const model = $("mode").value === "model-assisted";
   $("structured").hidden = model; $("structured").disabled = model;
   $("natural").hidden = !model; $("natural").disabled = !model;
-  $("consent").checked = false;
-  $("mode-help").textContent = model ? "AI drafts the plan; you review it. A model request incurs API usage." : "You supply exact criteria. No AI call or model cost is needed.";
+  $("mode-help").textContent = model ? "Create AI preview sends your request to your paid AI service." : "Enter your search details. No AI call needed.";
+  if (!planSubmitting) $("create").textContent = model ? "Create AI preview →" : "Create preview →";
   $("model-help").hidden = !model || modelConfigured;
 }
 async function readiness() {
@@ -206,7 +207,7 @@ async function workspace() {
   if (modelConfigured) $("model-id").value = cfg.model;
   showView(activeView);
   $("configuration").textContent = `Signed in: ${cfg.username} · Target: ${cfg.target} · Model: ${cfg.model} · Hotel price and rating rules come from each approved request.`;
-  $("key-status").textContent = modelConfigured ? `${cfg.model}: session key configured, access not verified.` : API_SETUP_MESSAGE;
+  $("key-status").textContent = modelConfigured ? `${cfg.model}: key added for this session.` : API_SETUP_MESSAGE;
   $("storage-status").textContent = `${cfg.secure_storage_label}. Saved key: ${cfg.credential_saved ? "yes" : "no"}. ${cfg.credential_notice || ""}`;
   $("remember-key").disabled = !cfg.secure_storage_available;
   $("remember-key").checked = false;
@@ -268,7 +269,7 @@ function table() {
   }
 }
 async function select(id) {
-  clearTimeout(timer); selected = id; $("approved").checked = false; $("execute").disabled = true;
+  clearTimeout(timer); selected = id; $("execute").disabled = true;
   currentJob = null; records = []; decisions = []; recordsLoaded = false; metrics(); $("filter").value = ""; $("decision-filter").value = "all"; table(); $("downloads").hidden = true;
   $("review").hidden = true; $("feedback").hidden = true;
   $("review-empty").hidden = true; $("job-title").textContent = "Loading job…";
@@ -284,8 +285,8 @@ async function poll(id) {
   showFeedback(job);
   if (!$("feedback").hidden && activeView === "studio" && previousStatus !== `${id}:${job.status}`) { $("feedback").focus({preventScroll: true}); }
   $("feedback").dataset.jobStatus = `${id}:${job.status}`;
-  $("create").disabled = !terminal(job.status);
-  $("create").textContent = terminal(job.status) ? "Create proposal →" : "Job in progress…";
+  $("create").disabled = planSubmitting || !terminal(job.status);
+  $("create").textContent = terminal(job.status) ? $("mode").value === "model-assisted" ? "Create AI preview →" : "Create preview →" : "Task in progress…";
   setBadge($("job-badge"), statusLabels[job.status] || job.status, statusTone(job.status));
   $("job-title").textContent = `${job.framework === "crewai" ? "CrewAI" : "LangGraph"} · ${job.kind === "plan" ? "Search proposal" : "Workflow execution"}`;
   $("job-state").textContent = job.guidance || job.result?.guidance || "Working on the current stage…";
@@ -347,6 +348,7 @@ async function poll(id) {
     $("execute").dataset.plan = result.proposal.plan_id;
     $("execute").dataset.revision = result.revision;
   }
+  $("execute").disabled = connectionBlocked || executionSubmitting || job.status !== "awaiting_review" || !result.proposal || !result.revision;
   if (terminal(job.status)) {
     if (result.run_id) {
       try {
@@ -379,12 +381,16 @@ $("register-form").onsubmit = async event => {
 };
 $("key-form").onsubmit = async event => {
   event.preventDefault();
+  const approval = event.submitter;
+  const authorized = approval?.id === "save-key" && approval.name === "connection-action" && approval.value === "save";
+  if (keySubmitting || !authorized) return;
+  keySubmitting = true; approval.disabled = true;
   const payload = {api_key: $("api-key").value, model: $("model-id").value,
-    remember: $("remember-key").checked, authorized: $("key-authorized").checked};
+    remember: $("remember-key").checked, authorized};
   $("api-key").value = "";
   try { const result = await api("/api/model-key", payload); message(result.guidance); await workspace(); }
   catch (e) { message(e.message); }
-  finally { payload.api_key = ""; $("key-authorized").checked = false; }
+  finally { payload.api_key = ""; keySubmitting = false; approval.disabled = false; }
 };
 $("forget-key").onclick = async () => {
   if (!confirm("Remove your saved key from this computer and clear keys in your account sessions? Already-started work may finish.")) return;
@@ -420,6 +426,9 @@ $("clear-key").onclick = async () => {
 };
 $("plan-form").onsubmit = async event => {
   event.preventDefault(); message();
+  const approval = event.submitter;
+  const explicitStart = approval?.id === "create" && approval.name === "plan-action" && approval.value === "create";
+  if (planSubmitting || !explicitStart) return;
   if ($("mode").value === "model-assisted" && !requireModelConnection()) return;
   $("min-price").setCustomValidity("");
   if ($("mode").value === "structured" && $("check-out").value <= $("check-in").value) {
@@ -430,24 +439,38 @@ $("plan-form").onsubmit = async event => {
     $("min-price").setCustomValidity("Minimum price cannot exceed maximum price.");
     $("min-price").reportValidity(); return;
   }
-  $("create").disabled = true; $("create").textContent = "Creating proposal…";
+  planSubmitting = true;
+  $("create").disabled = true; $("create").textContent = "Preparing preview…";
   const payload = {framework: $("framework").value, mode: $("mode").value};
   if (payload.mode === "structured") Object.assign(payload, {
     city: $("all-cities").checked ? null : $("city").value, all_cities: $("all-cities").checked,
     check_in: $("check-in").value, check_out: $("check-out").value,
     min_price: $("min-price").value || null,
     max_price: $("price").value, min_rating: $("rating").value});
-  else Object.assign(payload, {request: $("request").value, allow_model_api: $("consent").checked});
+  else Object.assign(payload, {request: $("request").value, allow_model_api: explicitStart});
   try { const result = await api("/api/plans", payload); showView("studio"); await select(result.job_id); $("review-card").focus({preventScroll: true}); }
-  catch (e) { message(e.message); $("create").disabled = false; $("create").textContent = "Create proposal"; } finally { $("consent").checked = false; }
+  catch (e) { message(e.message); $("create").disabled = false; $("create").textContent = "Create preview"; }
+  finally {
+    planSubmitting = false;
+    $("create").disabled = connectionBlocked || !!currentJob && !terminal(currentJob.status);
+  }
 };
-$("execute").onclick = async () => {
-  if (!$("approved").checked) return; $("execute").disabled = true; message();
-  try { const result = await api(`/api/plans/${$("execute").dataset.plan}/execute`, {revision: $("execute").dataset.revision});
+$("execute").onclick = async event => {
+  const approval = $("execute");
+  if (event.currentTarget !== approval || approval.disabled || connectionBlocked || executionSubmitting || currentJob?.status !== "awaiting_review") return;
+  const plan = approval.dataset.plan, revision = approval.dataset.revision;
+  if (!plan || !revision) return;
+  executionSubmitting = true; approval.disabled = true; message();
+  try { const result = await api(`/api/plans/${plan}/execute`, {revision});
     await select(result.job_id);
-  } catch (e) { message(e.message); $("approved").checked = false; }
+  } catch (e) { message(e.message); }
+  finally {
+    executionSubmitting = false;
+    // A failed response can still follow dispatched work. Reopen its history
+    // before choosing another execution; never enable a blind second attempt.
+    approval.disabled = true;
+  }
 };
-$("approved").onchange = () => { $("execute").disabled = !$("approved").checked; };
 $("all-cities").onchange = () => { $("city").disabled = $("all-cities").checked; };
 $("mode").onchange = modeChanged;
 $("open-connection").onclick = $("api-setup-open").onclick = openApiConnection;
@@ -458,7 +481,7 @@ $("create").addEventListener("click", event => {
 });
 $("example-request").onclick = () => {
   $("request").value = `Find hotels in Boston from ${futureDate(7)} to ${futureDate(9)}, priced at most USD 200 per night including taxes, with a rating of at least 4 out of 5. Search only the local demo portal.`;
-  $("consent").checked = false; $("request").focus();
+  $("request").focus();
 };
 for (const id of ["check-in", "check-out"]) $(id).oninput = () => $("check-out").setCustomValidity("");
 $("edit-request").onclick = () => editSearch();

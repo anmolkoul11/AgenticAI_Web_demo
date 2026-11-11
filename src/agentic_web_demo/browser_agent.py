@@ -40,6 +40,7 @@ from agentic_web_demo.browser_runtime import bound_controls, identity, state_fin
 from agentic_web_demo.browser_task import MissingFormValue, TaskLedger, age_control, discovery_query_control, occupancy_component, occupancy_components, occupancy_widget_action, search_opener, widget_control
 from agentic_web_demo.capture import clean_url
 from agentic_web_demo.custom_fetch import WebsiteError, origin
+from agentic_web_demo.source_fields import article_content, article_priority_terms
 from agentic_web_demo.stay_scope import (
     observed_result_scope,
     reconcile_captured_occupancy,
@@ -52,7 +53,7 @@ MAX_SECONDS = 300
 MAX_PAGES = 6
 MAX_COUNTER_TARGET = 30
 MAX_COUNTER_STEPS = 30
-PROMPT_VERSION = "browser-agent-v20.30"
+PROMPT_VERSION = "browser-agent-v20.31"
 SENSITIVE = (
     'input[type="password"],input[type="email"],input[type="tel"],'
     'input[autocomplete="username"],input[autocomplete="one-time-code"],'
@@ -1632,6 +1633,10 @@ class DOMBrowserTools:
         previous_pages, previous_options = self.pages, self.capture_options
         self.pages = []
         self.capture_options = {"record_window": True, "record_offset": offset, "record_count": 10}
+        if getattr(self, "article_records", False):
+            self.capture_options["article_records"] = True
+        if getattr(self, "record_priority_terms", None):
+            self.capture_options["record_priority_terms"] = self.record_priority_terms
         try:
             self.capture("page")
             return copy.deepcopy(self.pages[0])
@@ -2370,6 +2375,16 @@ class BrowserAgent:
         self.started = None
         self.seen_actions = {}
         self.task = TaskLedger(instructions)
+        if (not self.task.requested_stay and self.task.collection_scope["default_mode"] == "current_page"
+                and (article_content(instructions) or re.search(r"\bheadlines?\b", instructions, re.I))):
+            self.tools.article_records = True
+            self.tools.capture_options = {**getattr(self.tools, "capture_options", {}), "article_records": True}
+            terms = article_priority_terms(instructions)
+            if terms:
+                self.tools.record_priority_terms = terms
+                self.tools.capture_options = {
+                    **getattr(self.tools, "capture_options", {}), "record_priority_terms": terms,
+                }
         if self.output_fields:
             self.task.set_output_fields(self.output_fields)
         self.finish_rejections = 0
@@ -2383,6 +2398,7 @@ class BrowserAgent:
         self.local_submission_attempts = set()
         self.local_fill_attempts = set()
         self.local_occupancy_attempts = set()
+        self.current_page_capture = None
         self.runtime_actions = 0
         self.last_transition = None
         self.observation_refresh_streak = 0
@@ -3183,6 +3199,37 @@ class BrowserAgent:
                             "Search responded, but rendered listings are not ready. Inspect the "
                             "page and resume when loaded; Search will not be repeated."
                         )
+            # Once a current-page request has retained actual record evidence,
+            # choosing Capture again or a prohibited section link adds no data.
+            # Use the ordinary finish path so extraction/coverage checks still
+            # run, including any later batched collection. A capture from an
+            # earlier document, or a stay/detail-search task, cannot use this.
+            if (
+                self.task.collection_mode == "current_page"
+                and getattr(self.tools, "article_records", False)
+                and self.task.collection_goal
+                and not self.task.requested_stay
+                and not self.task.completion_problem()
+                and not observation.get("results", {}).get("busy")
+                and self.current_page_capture == (
+                    observation.get("document_id"), clean_url(observation["url"])
+                )
+                and any(
+                    page.get("source_kind", "page") == "page"
+                    and clean_url(page["url"]) == clean_url(observation["url"])
+                    and any(
+                        block.get("association") == "record" and block.get("group_id")
+                        and block.get("kind") in {"heading", "link"} and block.get("href")
+                        for block in page.get("blocks", [])
+                    )
+                    for page in self.tools.pages
+                )
+            ):
+                return {"decision": BrowserDecision(
+                    action="finish", control_id=None, value="page", purpose="collect",
+                    explanation="Pass the captured starting-page records to extraction without another navigation decision.",
+                    evidence="The same observed document has retained record headings and their source links.",
+                ).model_dump(), "decision_origin": "runtime"}
             if self.calls >= self.max_calls:
                 raise WebsiteError(
                     "Browser agent model-call limit reached. No further paid navigation calls."
@@ -3992,6 +4039,11 @@ class BrowserAgent:
                     # A new closed summary must be observed after the next Update.
                     self.occupancy_inspection_diagnostic = None
                 outcome = self.timed("action", self.tools.execute, decision)
+                if decision.action == "capture" and outcome.get("status") == "captured":
+                    document = state["observation"].get("document_id")
+                    self.current_page_capture = (
+                        (document, clean_url(state["observation"]["url"])) if document else None
+                    )
                 if inspection_opening and outcome.get("dispatched") is False and outcome.get("control_preflight"):
                     self.history.append({**entry, **outcome})
                     reason = outcome["control_preflight"].get("reason", "control_changed")

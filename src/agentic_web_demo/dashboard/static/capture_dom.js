@@ -644,7 +644,61 @@ function captureDocument(options = {}) {
   };
   // Give each early record a share before spending the rest on long descriptions.
   // A loaded page can exceed this bounded snapshot; omissions are disclosed.
-  const uniqueRoots=[...new Map(recordRoots.map(card=>[recordInfo(card)?.key,card])).values()];
+  // Some indexes use linked headings/paragraphs without an article/card wrapper.
+  // Full-page capture already associates these by exact href; record windows
+  // must retain the same evidence instead of returning an empty source.
+  const standalone = new Map();
+  const addStandalone = (element, href) => {
+    if (!href || recordOwner(element) || recordRoots.length && !options.article_records) return;
+    let item = standalone.get(href);
+    if (!item) {
+      item = {root: element.closest('a[href]') || element, owners: new Set(), links: []};
+      standalone.set(href, item);
+    }
+    item.owners.add(element.closest('a[href]') || element);
+  };
+  for (const heading of contentHeadings) addStandalone(heading, headingURL(heading));
+  for (const link of literalLinks) {
+    addStandalone(link.element, link.href);
+    const item = standalone.get(link.href);
+    if (item && !recordOwner(link.element)) item.links.push(link);
+  }
+  const standaloneRoots = new Map([...standalone.values()].map(item => [item.root, item]));
+  const uniqueRoots=[...new Map(recordRoots.map(card=>[recordInfo(card)?.key,card])).values(),
+    ...standaloneRoots.keys()];
+  if (options.article_records || !recordRoots.length) uniqueRoots.sort((left, right) => {
+      const position = left.compareDocumentPosition(right);
+      return position & Node.DOCUMENT_POSITION_DISCONNECTED ? 0 :
+        position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 :
+        position & Node.DOCUMENT_POSITION_PRECEDING ? 1 : 0;
+  });
+  // Only article tasks supply literal request terms. This orders the bounded
+  // source window, without excluding other records or asserting relevance.
+  const stem = word => word.length > 4 && word.endsWith('s') ? word.slice(0, -1) : word;
+  const priorityTerms = new Set((Array.isArray(options.record_priority_terms) ?
+    options.record_priority_terms.slice(0, 12) : []).filter(term =>
+      typeof term === 'string' && /^[a-z]{3,32}$/i.test(term)).map(term => stem(term.toLowerCase())));
+  if (priorityTerms.size) {
+    const matchesTopic = text => (text.toLowerCase().match(/[a-z]{3,32}/g) || [])
+      .some(word => priorityTerms.has(stem(word)));
+    const sectionHeadings = contentHeadings.filter(heading => !recordOwner(heading) &&
+      literalLabel(heading).length <= 100 && matchesTopic(literalLabel(heading)));
+    const priority = card => {
+      const standaloneRecord = standaloneRoots.get(card);
+      const title = standaloneRecord ? [...standaloneRecord.owners].map(literalLabel).join(' ') :
+        (recordInfo(card)?.key || '').split('\u0000').at(-1);
+      if (matchesTopic(title)) return 2;
+      for (let container = ancestor(card), depth = 0;
+        container && container !== primary && container !== document.body && depth < 6;
+        container = ancestor(container), depth++) {
+        if (sectionHeadings.some(heading => !card.contains(heading) && container.contains(heading) &&
+          heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)) return 1;
+      }
+      return 0;
+    };
+    const priorities = new Map(uniqueRoots.map(card => [card, priority(card)]));
+    uniqueRoots.sort((left, right) => priorities.get(right) - priorities.get(left));
+  }
   // A window of cards must not lose the list's explicit availability cautions.
   // These are literal page notices, never proof that every card fails/matches.
   if(options.record_window) {
@@ -670,14 +724,16 @@ function captureDocument(options = {}) {
     Math.floor((characterLimit - capturedChars) / Math.max(bundleRoots.length, 1))));
   for (const card of bundleRoots) {
     const start = capturedChars;
-    const localLinks = literalLinks.filter(item => recordOwner(item.element) === card);
+    const standaloneRecord = standaloneRoots.get(card);
+    const localLinks = standaloneRecord?.links ||
+      literalLinks.filter(item => recordOwner(item.element) === card);
     // Link-role labels are retained before tiny spans/cells; bounded compact URLs
     // keep this reservation proportional to the record rather than its trackers.
     preserveLinkLabels(localLinks, Math.max(200, Math.floor(bundleQuota * 0.35)));
-    for (const owner of prioritizedOwners(card)) {
+    for (const owner of standaloneRecord?.owners || prioritizedOwners(card)) {
       const remaining = bundleQuota - (capturedChars - start);
       if (remaining <= 0 || visited > 50000) break;
-      collectRoot(owner, remaining, true);
+      collectRoot(owner, remaining, !standaloneRecord);
     }
   }
   // Non-card headlines and paragraph/span link titles still survive hundreds of

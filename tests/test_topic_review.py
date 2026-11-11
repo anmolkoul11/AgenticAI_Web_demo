@@ -102,6 +102,44 @@ def test_twenty_unrelated_rows_do_not_become_twenty_validation_failures():
     assert counts["invalid"] == counts["uncertain"] == 0
 
 
+def test_excluded_article_audit_preserves_source_titles_urls_and_model_reasons():
+    values = source(instructions=QUERY, page_text=TEXT)
+    result, effective, _ = prepare_extraction(candidate(), values)
+    blocks = [{"id": f"b{index + 1}", "kind": "link", "text": title,
+               "association": "record", "group_id": f"g{index + 1}",
+               "href": f"https://example.org/story/{index}"}
+              for index, title in enumerate((TITLE, OTHER, UNCERTAIN))]
+    assessments, counts, rejected = [], {}, []
+    rows, excluded = validate_extraction(
+        result, effective, [{"url": values.urls[0], "text": TEXT, "blocks": blocks}],
+        rejected=rejected, field_issues=[], review_counts=counts,
+        topic_assessments=assessments,
+    )
+    assert len(rows) == 1 and excluded == counts["unrelated"] == 1
+    assert counts["filtered_out"] == counts["invalid"] == 0
+    assert [item["classification"] for item in assessments] == ["not_relevant", "uncertain"]
+    assert assessments[0]["title"] == OTHER
+    assert assessments[0]["record_url"] == "https://example.org/story/1"
+    assert assessments[0]["evidence"] == OTHER
+    assert assessments[0]["reason"] == "Topic assessment for this headline"
+    assert assessments[0]["source_support"] == "captured_quote"
+
+
+def test_excluded_article_audit_does_not_present_invented_titles_or_quotes_as_source():
+    values = source(instructions=QUERY, page_text=TEXT)
+    result = candidate(("not_relevant",) * 3)
+    result.rows[0].cells[1].value = "Invented source title"
+    result.rows[0].relevance_evidence = "Invented source quote"
+    result, effective, _ = prepare_extraction(result, values)
+    assessments = []
+    validate_extraction(result, effective, [{"url": values.urls[0], "text": TEXT, "blocks": []}],
+                        rejected=[], field_issues=[], topic_assessments=assessments)
+    assert assessments[0]["title"] is None
+    assert assessments[0]["record_url"] is None
+    assert assessments[0]["evidence"] is None
+    assert assessments[0]["source_support"] == "unverified"
+
+
 @pytest.mark.parametrize(
     "name", ["article_headline", "listing_title", "property_name", "product_name"]
 )
@@ -243,6 +281,8 @@ def test_no_preview_distinguishes_no_matches_from_uncertain_content(
         result = job["result"]
         assert job["status"] == "needs_input" and result["review_outcome"] == outcome
         assert "proposal" not in result and result["review_counts"]["invalid"] == 0
+        assert len(result["topic_assessments"]) == 3
+        assert result["topic_assessments"][0]["classification"] == labels[0]
         assert result["next_step"] == "open_browser_for_links" and result["request"] == QUERY
         if outcome == "no_matches":
             assert "No Soccer matches" in result["guidance"]
@@ -271,6 +311,7 @@ def test_verified_soccer_preview_and_saved_counts_with_optional_type_cleared(
         result, proposal = job["result"], job["result"]["proposal"]
         assert proposal["review_counts"]["matched"] == 1
         assert proposal["records"][0]["article_type"] is None and proposal["partial"]
+        assert len(proposal["topic_assessments"]) == 2
         execution = finished(
             service,
             custom_service.execute(
@@ -283,6 +324,7 @@ def test_verified_soccer_preview_and_saved_counts_with_optional_type_cleared(
         assert execution["status"] == "completed", execution
         snapshot = service.records(execution["job_id"])
         assert snapshot["review_counts"] == proposal["review_counts"]
+        assert snapshot["topic_assessments"] == proposal["topic_assessments"]
         assert len(snapshot["records"]) == 1
         assert snapshot["records"][0]["article_type"] is None
     finally:

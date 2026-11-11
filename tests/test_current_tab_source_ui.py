@@ -28,7 +28,7 @@ def test_only_one_website_input_is_presented_for_existing_tab_paths():
     assert 'id="web-open-url" type="hidden" disabled' in html
     assert 'const entered = $("web-urls").value.trim();' in script
     assert "website.readOnly = captured;" in script
-    assert "Browser Companion side panel, not the dashboard Run button" in html
+    assert "Browser Companion" in html
     assert 'title: "Open a new browser"' in script
     assert 'title: "Use my current tab"' in script
     assert 'title: "Snapshot my tab"' not in script
@@ -62,7 +62,7 @@ def test_snapshot_address_is_editable_before_receipt_and_run_waits_for_capture(s
     assert source_ui.locator("#web-open-normal-browser").is_visible()
     assert source_ui.locator("#web-create").is_disabled()
     assert source_ui.locator("#web-create").inner_text() == "Waiting for page capture"
-    assert "Opening a website is not a capture" in source_ui.locator("#web-capture-state").inner_text()
+    assert "Waiting for a snapshot" in source_ui.locator("#web-capture-state").inner_text()
     assert source_ui.evaluate("window.fixtureCalls") == []
 
 
@@ -70,8 +70,8 @@ def test_snapshot_waiting_reason_is_accessible_and_transfer_steps_are_actionable
     select_snapshot(source_ui)
     assert source_ui.locator("#web-source").is_enabled()
     assert source_ui.locator("#web-browser-start-note").is_hidden()
-    assert "Send to displayed dashboard account" in source_ui.locator("#web-create-help").inner_text()
-    assert source_ui.locator("#web-create").get_attribute("aria-describedby") == "web-create-help"
+    assert "Send to dashboard" in source_ui.locator("#web-create-help").inner_text()
+    assert "web-create-help" in source_ui.locator("#web-create").get_attribute("aria-describedby").split()
     source_ui.locator("#web-show-capture-steps").click()
     assert source_ui.locator("#web-capture-steps").evaluate("element => element.open")
     assert "Keeping alone does not send it" in source_ui.locator("#web-capture-steps").inner_text()
@@ -92,7 +92,7 @@ def test_snapshot_receipt_enables_extraction_without_automatic_navigation_option
         if (event.data?.type === 'agentic-capture-received-v1') window.fixtureReceipt = event.data;
       });
       $('web-framework').value = 'crewai';
-      $('web-workflow-visual').checked = true;
+      $('web-workflow-visual').value = 'yes';
       window.postMessage({type:'agentic-capture-ready-v1',
         capture_id:'12345678-1234-1234-1234-123456789abc',
         transfer_id:'87654321-4321-4321-4321-cba987654321'}, location.origin);
@@ -104,17 +104,17 @@ def test_snapshot_receipt_enables_extraction_without_automatic_navigation_option
     assert source_ui.locator("#web-create").is_visible()
     assert source_ui.locator("#web-workflow-options").is_hidden()
     assert source_ui.locator("#web-manual-mode-label").is_hidden()
-    assert "No browser navigation or agent actions" in source_ui.locator("#web-consent-text").inner_text()
-    assert "Ready to extract this snapshot" in source_ui.locator("#web-create-help").inner_text()
+    assert "snapshot" in source_ui.locator("#web-consent-text").inner_text().lower()
+    assert "Choose Extract" in source_ui.locator("#web-create-help").inner_text()
     assert source_ui.locator("#web-show-capture-steps").is_hidden()
-    assert not source_ui.locator("#web-consent").is_checked()
+    assert source_ui.locator("#web-consent").count() == 0
     assert source_ui.evaluate("automaticWorkflowSelected()") is False
     assert source_ui.evaluate("window.fixtureCalls") == [
         "/api/custom/captures/12345678-1234-1234-1234-123456789abc/claim"
     ]
 
 
-def test_received_snapshot_submits_only_capture_after_explicit_extraction_consent(source_ui):
+def test_received_snapshot_submits_only_capture_after_explicit_extract_action(source_ui):
     source_ui.evaluate("""() => {
       webCapture = {url:'https://news.example.org/world', blocks:[{id:'b1',text:'World politics'}]};
       $('web-source').value = 'capture'; $('web-source').onchange();
@@ -127,8 +127,6 @@ def test_received_snapshot_submits_only_capture_after_explicit_extraction_consen
       };
     }""")
     source_ui.fill("#web-request", "Get world politics headlines")
-    source_ui.locator("#web-authorized").check()
-    source_ui.locator("#web-consent").check()
     source_ui.locator("#web-create").click()
     source_ui.wait_for_function("window.fixtureSubmitted?.source === 'capture'")
     submitted = source_ui.evaluate("window.fixtureSubmitted")
@@ -146,13 +144,13 @@ def test_snapshot_busy_and_discard_states_explain_why_extraction_is_unavailable(
       webBusy(true);
     }""")
     assert source_ui.locator("#web-create").is_disabled()
-    assert "Another workflow is active" in source_ui.locator("#web-create-help").inner_text()
+    assert "current task" in source_ui.locator("#web-create-help").inner_text()
     source_ui.evaluate("webBusy(false)")
     assert source_ui.locator("#web-create").is_enabled()
     source_ui.locator("#web-discard-capture").click()
     assert source_ui.locator("#web-create").is_disabled()
     assert source_ui.locator("#web-show-capture-steps").is_visible()
-    assert "Extraction unlocks" in source_ui.locator("#web-create-help").inner_text()
+    assert "Send to dashboard" in source_ui.locator("#web-create-help").inner_text()
     assert source_ui.evaluate("window.fixtureCalls") == []
 
 
@@ -190,12 +188,12 @@ def test_current_tab_agent_has_optional_opener_and_explicit_sidepanel_handoff(so
     assert source_ui.locator("#web-request").is_hidden()
     assert source_ui.locator("#web-create").is_hidden()
     assert source_ui.locator("#web-extension-agent-help").is_visible()
-    assert "Start workflow" in source_ui.locator("#web-extension-agent-help").inner_text()
+    assert "Start task" in source_ui.locator("#web-extension-agent-help").inner_text()
     source_ui.fill("#web-urls", "https://www.booking.com/")
     source_ui.evaluate("window.fixtureOpened = []; window.open = (...args) => { window.fixtureOpened.push(args); return null; }")
     source_ui.locator("#web-open-normal-browser").click()
     assert source_ui.evaluate("window.fixtureOpened[0][0]") == "https://www.booking.com/"
-    assert "choose Start workflow" in source_ui.locator("#web-tab-next-step").inner_text()
+    assert "choose Start task" in source_ui.locator("#web-tab-next-step").inner_text()
     assert source_ui.evaluate("window.fixtureCalls") == []
 
 
