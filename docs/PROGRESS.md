@@ -1,5 +1,27 @@
 # Progress
 
+## Windows desktop pilot package - 2026-11-11, manual verification pending
+
+Prepared the `release-v1.0` desktop distribution: a local status window starts
+Website Studio on `127.0.0.1:8120` and opens a normal browser tab, preserving the
+existing Companion relay. Python, locked runtime dependencies and Chromium are
+bundled; the customer launch path does not start the synthetic hotel portal or
+require uv/Docker. Developer startup remains separate. Accounts/results use
+`%LOCALAPPDATA%/AgenticStudio/data`, outside the install directory, with the
+existing optional OS credential store. AI inference still uses the configured
+provider online. Website navigation and extraction behavior are unchanged.
+
+The portable PyInstaller build completed. Output is under
+`dist/windows/1.0.0`, including `AgenticStudio-1.0.0-win-x64.zip` and the separate
+Companion ZIP/folder. The Inno installer recipe is included, but a setup EXE was
+not compiled because ISCC is not installed. This is an unsigned pilot candidate;
+signing, store publication and clean-machine/manual workflow acceptance remain.
+No tests, application startup or live workflows were run. Authored desktop
+configuration/dashboard regressions are available for the user to execute.
+
+See [Windows packaging and rollout](WINDOWS_DISTRIBUTION.md) for the backend
+architecture, publisher build commands and first-user/manual verification steps.
+
 ## Individual listing links - 2026-11-11, manual verification pending
 
 Booking plan `00c94096-b842-43b9-885e-e879c7914b12` saved 50 hotels. All 50

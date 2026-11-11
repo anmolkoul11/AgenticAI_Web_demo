@@ -1,26 +1,38 @@
-Agentic Studio
+AGENTIC STUDIO - WINDOWS QUICK START
 
-1. Open Agentic Studio from its desktop or Start menu shortcut. Keep its small
-   status window open while collecting information. It opens your dashboard in
-   your normal browser. The backend runs only on this computer.
-2. Create a local account and add your own API connection in the dashboard.
-   AI requests require internet access and may incur charges to that connection.
-3. For your existing Chrome or Edge tab, install Browser Companion from the
-   publisher's approved store link. During a supervised pilot, the included
-   BrowserCompanion folder can instead be loaded through the browser's developer
-   extension tools. A ZIP file alone does not install an extension.
-4. Keep the signed-in dashboard open in the same browser as your website tab.
-   Open Browser Companion on the website and describe the information you need.
-5. Start the task. Complete website sign-in, CAPTCHA and missing personal details
-   yourself when requested. Review the returned information before saving it.
-6. Save approved results and download Excel, CSV or JSON from the dashboard.
+WHAT YOU RECEIVE
+AgenticStudio-1.0.0-win-x64.zip is a portable app, not a Setup.exe installer.
+Python, the backend and Chromium are included. No Docker or commands are needed.
+Keep AgenticStudio.exe, _internal and BrowserCompanion together.
 
-The installer does not publish or automatically install a browser extension.
-You can also use Open a new browser in the dashboard; Chromium is included.
+OPEN THE APP
+1. Right-click the ZIP and choose Extract All. Choose a permanent folder.
+2. Open the extracted folder and double-click AgenticStudio.exe.
+3. Keep the small status window open. Your dashboard opens in your browser.
+4. Create a local account. Open API connection and add your own OpenAI API key.
+5. Choose Open a new browser, describe your task and start. No extension is needed
+   for this option. Review the results, then Save and download Excel, CSV or JSON.
+Complete website sign-in, CAPTCHA or missing details when prompted.
+If your development dashboard is already running, close it first.
 
-Results and local accounts stay under %LOCALAPPDATA%\AgenticStudio\data.
-Uninstalling the application preserves that folder. Back it up separately;
-an application update is not a backup of your results or Windows-stored API keys.
+USE YOUR EXISTING CHROME OR EDGE TAB - OPTIONAL
+1. In the app's status window, click Extension setup to open the included folder.
+2. Open chrome://extensions or edge://extensions in your browser.
+3. Turn on Developer mode, choose Load unpacked, and select BrowserCompanion.
+   Disable any older developer copy first. You do not need the separate ZIP.
+4. Keep the dashboard signed in in that browser. Open your website tab, open
+   Browser Companion, describe your task and click Start.
+The extension is included in the download but is added to the browser separately.
 
-Closing the dashboard browser tab does not close the local backend. To stop the
-application, use its status window. Stop an active task before closing it.
+WHERE IT RUNS
+The backend starts automatically on your own computer, not the developer's PC.
+Your prompt and captured page content go to OpenAI over the internet.
+API usage is billed to your configured account.
+Accounts/results: %LOCALAPPDATA%\AgenticStudio\data.
+Use Open saved-data folder in the status window to find them.
+
+Keep the app and dashboard tab open during tasks. Stop the task, then choose
+Stop and close in the status window when finished. Closing a browser tab alone
+will not stop the app. Back up your saved-data folder separately.
+
+This is an unsigned pilot package awaiting manual verification.

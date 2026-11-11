@@ -73,7 +73,7 @@ function applyDashboardMode(settings) {
   $("portal-badge").hidden = desktopMode; $("nats-badge").hidden = desktopMode;
   document.querySelector('[data-view="studio"]').hidden = !dashboardCapabilities.hotel_demo;
   if (desktopMode) $("web-companion-install-help").textContent =
-    "In the desktop launcher, choose Open extension folder. On Chrome or Edge's Extensions page, turn on Developer mode, choose Load unpacked and select that folder. Keep this dashboard signed in in the same browser.";
+    "In the desktop launcher, choose Extension setup. On Chrome or Edge's Extensions page, turn on Developer mode, choose Load unpacked and select that folder. Keep this dashboard signed in in the same browser.";
   $("api-setup-description").textContent = desktopMode ?
     "Add your API key to start collecting information from websites." :
     "Add your API key to run website tasks. Guided hotel demo forms work without one.";
