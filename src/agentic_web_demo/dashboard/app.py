@@ -33,7 +33,7 @@ from agentic_web_demo.extension_channel import ExtensionRuns
 from agentic_web_demo.portal.app import PortalSettings
 
 ASSETS = Path(__file__).parent / "static"
-UI_VERSION = "2026-11-11.1"
+UI_VERSION = "2026-11-11.2"
 
 
 class CustomApproval(BaseModel):
@@ -73,10 +73,21 @@ class AdminAction(BaseModel):
 
 def create_app(settings=None, service=None):
     instance_id = secrets.token_hex(16)
-    settings = settings or PortalSettings.from_env()
+    desktop = os.environ.get("AGENTIC_DASHBOARD_DESKTOP") == "1"
+    # The installable product runs Website Studio without the synthetic hotel
+    # portal. Keep the existing developer launcher and its setup unchanged.
+    if settings is None and not desktop:
+        settings = PortalSettings.from_env()
+    capabilities = {
+        "hotel_demo": not desktop,
+        "event_publishing": not desktop
+        or os.environ.get("AGENTIC_DESKTOP_ENABLE_EVENTS") == "1",
+    }
     accounts = Accounts(
         service.data_dir if service else Settings.from_env().data_dir,
-        service.policy_path if service else Path("config/rules.yaml"),
+        service.policy_path if service else Path(
+            os.environ.get("AGENTIC_DASHBOARD_POLICY_PATH", "config/rules.yaml")
+        ),
         service.target
         if service
         else os.environ.get("AGENTIC_DASHBOARD_PORTAL_URL", "http://127.0.0.1:8000"),
@@ -105,7 +116,7 @@ def create_app(settings=None, service=None):
             accounts.close()
 
     app = FastAPI(
-        title="Agentic Demo Studio",
+        title="Agentic Studio" if desktop else "Agentic Demo Studio",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -259,6 +270,14 @@ def create_app(settings=None, service=None):
     def index():
         return FileResponse(ASSETS / "index.html")
 
+    @app.get("/api/desktop/health")
+    def desktop_health():
+        if not desktop:
+            raise HTTPException(404, "Not found")
+        # Used only by the local desktop controller; no account or job details.
+        return {"service": "agentic-studio-desktop", "status": "ready",
+                "ui_version": UI_VERSION}
+
     @app.get("/api/session")
     def session(request: Request):
         if "csrf" not in request.session:
@@ -271,6 +290,8 @@ def create_app(settings=None, service=None):
             "username": current.username if current else None,
             "ui_version": UI_VERSION,
             "instance_id": instance_id,
+            "desktop": desktop,
+            "capabilities": capabilities,
         }
 
     def rate_limit():
@@ -369,6 +390,8 @@ def create_app(settings=None, service=None):
             "adapter": "demo-hotels",
             "model": current.model_settings.model if current.model_settings else "Not configured",
             "model_configured": current.model_settings is not None,
+            "desktop": desktop,
+            "capabilities": capabilities,
             "policy": load_rules(service.policy_path).model_dump(mode="json"),
         }
 

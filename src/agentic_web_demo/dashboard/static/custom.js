@@ -1644,7 +1644,7 @@ $("web-form").onsubmit = async event => {
     output_fields: $("web-output-fields").value.split(",").map(value => value.trim()).filter(Boolean),
     record_limit: Number($("web-limit").value), business_rules: field ? [{field, operator: $("web-rule-op").value, value: $("web-rule-value").value}] : [],
     collection_extent: $("web-extent").value,
-    publish_event: $("web-publish").value === "yes", authorized: startConfirmed, allow_model_api: startConfirmed,
+    publish_event: eventPublishingEnabled() && $("web-publish").value === "yes", authorized: startConfirmed, allow_model_api: startConfirmed,
   };
   if (values.output_fields.length > 16 || new Set(values.output_fields).size !== values.output_fields.length ||
       values.output_fields.some(name => !/^[a-z][a-z0-9_]{0,39}$/.test(name))) {

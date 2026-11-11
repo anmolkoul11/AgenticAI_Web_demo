@@ -10,7 +10,7 @@
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="topbar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"><img class="brand-logo" src="/static/logo.svg" width="39" height="39" alt=""></span><div><strong>Agentic Studio</strong><span class="brand-subtitle">DEMO WORKSPACE</span></div></div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><img class="brand-logo" src="/static/logo.svg" width="39" height="39" alt=""></span><div><strong>Agentic Studio</strong><span id="workspace-subtitle" class="brand-subtitle">DEMO WORKSPACE</span></div></div>
   <div class="topbar-right"><span class="local-pill">Local environment</span><span id="account-label" hidden></span><button id="logout" class="secondary small" hidden>Sign out</button></div>
 </header>
 <main id="main">
@@ -24,9 +24,15 @@
   <div id="workspace" hidden>
     <nav class="workspace-nav" aria-label="Workspace sections"><button data-view="custom" aria-current="page">Website Studio</button><button data-view="studio">Hotel demo</button><button data-view="history">Run history <span id="history-count" class="nav-count">0</span></button><button data-view="connection">API connection <span id="api-connection-state" class="nav-count" hidden>Setup required</span></button><button id="admin-nav" data-view="admin" hidden>Administration</button></nav>
     <section id="api-setup-notice" class="notice api-setup-notice" role="status" aria-live="polite" aria-labelledby="api-setup-title" hidden>
-      <div><h2 id="api-setup-title">API connection required</h2><p>Add your API key to run website tasks. Guided hotel demo forms work without one.</p></div>
+      <div><h2 id="api-setup-title">API connection required</h2><p id="api-setup-description">Add your API key to run website tasks. Guided hotel demo forms work without one.</p></div>
       <button id="api-setup-open" type="button">Set up API connection</button>
     </section>
+    <details id="desktop-getting-started" class="card" hidden>
+      <summary>Getting started with Agentic Studio</summary>
+      <p>Add your API key under <button id="desktop-api-setup" type="button" class="text-button">API connection</button>. Then choose <strong>Open a new browser</strong>, or use Browser Companion in your current Chrome or Edge tab.</p>
+      <details><summary>Set up Browser Companion</summary><ol><li>In the desktop launcher, choose <strong>Open extension folder</strong>.</li><li>Open Chrome or Edge's Extensions page, turn on Developer mode and choose <strong>Load unpacked</strong>. Select that folder.</li><li>Keep this dashboard signed in. Open your website tab, open Browser Companion and describe your task.</li></ol></details>
+      <p class="micro">Saved results stay on this computer. Your prompt and collected page content go to your configured AI service. Review results before saving.</p>
+    </details>
     <section data-page="custom">
       <div class="page-heading"><div><span class="eyebrow">WEBSITE STUDIO</span><h1>Find information from websites</h1><p class="muted">Describe what you need, preview the results and save them.</p></div><span class="catalog-pill">Preview before saving</span></div>
       <div class="layout">
@@ -36,7 +42,7 @@
           <section id="web-extension-agent-help" class="notice" hidden>
             <h3>Run the workflow in your current tab</h3>
             <p>Open Browser Companion on your website tab to start a task.</p>
-            <ol><li>Open the website in Chrome or Edge and open <strong>Browser Companion</strong>.</li><li>Describe your request and choose <strong>Start task</strong>.</li><li>Choose <strong>Review results</strong> to return here and save.</li></ol><details><summary>Install Browser Companion</summary><p>Load <strong>extensions/page-capture</strong> as an unpacked extension in Chrome or Edge. Keep this dashboard signed in in the same browser.</p></details>
+            <ol><li>Open the website in Chrome or Edge and open <strong>Browser Companion</strong>.</li><li>Describe your request and choose <strong>Start task</strong>.</li><li>Choose <strong>Review results</strong> to return here and save.</li></ol><details><summary>Install Browser Companion</summary><p id="web-companion-install-help">Load <strong>extensions/page-capture</strong> as an unpacked extension in Chrome or Edge. Keep this dashboard signed in in the same browser.</p></details>
             <p class="micro">Keep this dashboard open while the Companion works.</p>
           </section>
           <label id="web-url-label"><span id="web-url-label-text">Website address</span><textarea id="web-urls" rows="3" required maxlength="6000" aria-describedby="web-url-help" placeholder="https://example.org/page - one URL per line"></textarea></label><p id="web-url-help" class="field-help">Enter the starting website for this run.</p>
@@ -67,7 +73,7 @@
           <label>Results to collect<select id="web-extent"><option value="all_results" selected>All available listings in this search</option><option value="preview">Limited preview</option></select></label>
           <label>Maximum listings<input id="web-limit" type="number" min="1" max="5000" value="5000" required></label>
           <p class="field-help">Collect more results by scrolling and following result pages. Additional records use more API calls.</p>
-          <details><summary>Rules and event delivery</summary><p class="micro">Optional conditions for publishing matching records.</p><div class="form-grid"><label>Field name<input id="web-rule-field" maxlength="40" placeholder="price (leave blank for none)"></label><label>Comparison<select id="web-rule-op"><option value="lte">At most (≤)</option><option value="gte">At least (≥)</option><option value="eq">Equals</option><option value="contains">Contains</option><option value="lt">Less than</option><option value="gt">Greater than</option></select></label></div><label>Rule value<input id="web-rule-value" maxlength="200"></label><label>Publish matching results<select id="web-publish"><option value="no" selected>No</option><option value="yes">Yes</option></select></label><p class="micro">Sends one summary event after saving when records match the rules.</p></details>
+          <details><summary id="web-rules-summary">Rules and event delivery</summary><p id="web-rules-help" class="micro">Optional conditions for publishing matching records.</p><div class="form-grid"><label>Field name<input id="web-rule-field" maxlength="40" placeholder="price (leave blank for none)"></label><label>Comparison<select id="web-rule-op"><option value="lte">At most (≤)</option><option value="gte">At least (≥)</option><option value="eq">Equals</option><option value="contains">Contains</option><option value="lt">Less than</option><option value="gt">Greater than</option></select></label></div><label>Rule value<input id="web-rule-value" maxlength="200"></label><div id="web-event-delivery"><label>Publish matching results<select id="web-publish"><option value="no" selected>No</option><option value="yes">Yes</option></select></label><p class="micro">Sends one summary event after saving when records match the rules.</p></div></details>
           <fieldset id="web-workflow-options" class="workflow-start-options"><legend>Task options</legend><p id="web-workflow-help" class="field-help">Search the website and prepare results to preview.</p><label>Allow screenshots<select id="web-workflow-visual"><option value="no" selected>No</option><option value="yes">Yes</option></select></label><p class="field-help">Optional page images help with unfamiliar layouts and add API cost. Page or account details may be included; known credentials are masked. Images are not saved.</p></fieldset>
           <label id="web-manual-mode-label" class="inline"><input id="web-manual-mode" type="checkbox">Choose collection actions manually instead of running the workflow automatically</label>
           <p id="web-consent-text" class="field-help">Start sends this website's content to your paid AI service. Save keeps the results you choose.</p>

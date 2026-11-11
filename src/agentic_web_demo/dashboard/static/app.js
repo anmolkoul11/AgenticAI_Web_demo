@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const UI_VERSION = "2026-11-11.1";
+const UI_VERSION = "2026-11-11.2";
 document.documentElement.dataset.agenticUiVersion = UI_VERSION;
 document.documentElement.dataset.agenticConnection = "loading";
 let instanceId = null, connectionBlocked = false;
@@ -28,6 +28,7 @@ async function checkConnection() {
     const response = await fetch("/api/session", {cache: "no-store", signal: AbortSignal.timeout(5000)});
     if (!response.ok) throw new Error("unavailable");
     const session = await response.json();
+    applyDashboardMode(session);
     if (session.ui_version !== UI_VERSION) {
       connectionWarning("The application has been updated. Refresh to load the matching version. Unsaved form entries will be lost.");
     } else if (instanceId && instanceId !== session.instance_id) {
@@ -55,6 +56,35 @@ let activeView = "custom", isAdmin = false, modelConfigured = false, recordsLoad
 let modelConnectionKnown = false;
 let modelConnectionRevision = 0;
 let planSubmitting = false, executionSubmitting = false, keySubmitting = false;
+let desktopMode = false;
+let dashboardCapabilities = {hotel_demo: true, event_publishing: true};
+function eventPublishingEnabled() { return dashboardCapabilities.event_publishing; }
+function applyDashboardMode(settings) {
+  const changed = typeof settings.desktop === "boolean" && desktopMode !== settings.desktop;
+  if (typeof settings.desktop === "boolean") desktopMode = settings.desktop;
+  const capabilities = settings.capabilities || {};
+  for (const name of ["hotel_demo", "event_publishing"]) {
+    if (typeof capabilities[name] === "boolean") dashboardCapabilities[name] = capabilities[name];
+    else if (changed) dashboardCapabilities[name] = !desktopMode;
+  }
+  document.documentElement.dataset.agenticDesktop = String(desktopMode);
+  $("workspace-subtitle").textContent = desktopMode ? "YOUR WORKSPACE" : "DEMO WORKSPACE";
+  $("desktop-getting-started").hidden = !desktopMode;
+  $("portal-badge").hidden = desktopMode; $("nats-badge").hidden = desktopMode;
+  document.querySelector('[data-view="studio"]').hidden = !dashboardCapabilities.hotel_demo;
+  if (desktopMode) $("web-companion-install-help").textContent =
+    "In the desktop launcher, choose Open extension folder. On Chrome or Edge's Extensions page, turn on Developer mode, choose Load unpacked and select that folder. Keep this dashboard signed in in the same browser.";
+  $("api-setup-description").textContent = desktopMode ?
+    "Add your API key to start collecting information from websites." :
+    "Add your API key to run website tasks. Guided hotel demo forms work without one.";
+  $("web-event-delivery").hidden = !eventPublishingEnabled();
+  $("web-publish").disabled = !eventPublishingEnabled();
+  if (!eventPublishingEnabled()) $("web-publish").value = "no";
+  $("web-rules-summary").textContent = eventPublishingEnabled() ? "Rules and event delivery" : "Optional rules";
+  $("web-rules-help").textContent = eventPublishingEnabled() ?
+    "Optional conditions for publishing matching records." : "Optional conditions to evaluate after saving.";
+  if (!dashboardCapabilities.hotel_demo && activeView === "studio") showView("custom");
+}
 const API_SETUP_MESSAGE = "Add your key and model under API connection, then choose Save API connection.";
 const statusLabels = {queued: "Queued", running: "Running", awaiting_review: "Review needed", completed: "Completed", needs_input: "Needs information", unsupported: "Unsupported request", policy_rejected: "Outside search policy", failed: "Failed", interrupted: "Interrupted"};
 const stageLabels = {plan_request: "Interpret request", validate_plan: "Validate search", extract: "Sign in & extract", save: "Save records", export: "Export results", evaluate: "Evaluate rules", publish: "Publish events", receive: "Receive events", verify: "Verify receipts"};
@@ -96,6 +126,7 @@ function statusTone(status) {
 }
 function showView(view, moveFocus = false) {
   if (!["custom", "studio", "history", "connection", "admin"].includes(view) || (view === "admin" && !isAdmin)) view = "custom";
+  if (view === "studio" && !dashboardCapabilities.hotel_demo) view = "custom";
   activeView = view;
   for (const page of document.querySelectorAll("[data-page]")) page.hidden = page.dataset.page !== view;
   for (const button of document.querySelectorAll("[data-view]")) {
@@ -189,6 +220,11 @@ function modeChanged() {
   $("model-help").hidden = !model || modelConfigured;
 }
 async function readiness() {
+  if (desktopMode) {
+    $("portal-badge").hidden = true; $("nats-badge").hidden = true;
+    $("readiness").textContent = "Agentic Studio is running locally. Website tasks use your configured AI connection.";
+    return;
+  }
   const status = await api("/api/readiness");
   setBadge($("portal-badge"), `Portal · ${status.portal_port_open ? "reachable" : "offline"}`, status.portal_port_open ? "success" : "error");
   setBadge($("nats-badge"), `NATS · ${status.nats_port_open ? "reachable" : "offline"}`, status.nats_port_open ? "success" : "error");
@@ -198,6 +234,7 @@ async function workspace() {
   signedIn = true; authPage();
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   const cfg = await api("/api/config");
+  applyDashboardMode(cfg);
   currentUsername = cfg.username;
   isAdmin = cfg.role === "admin"; setModelConnectionState(cfg.model_configured);
   $("admin-nav").hidden = !isAdmin;
@@ -206,7 +243,9 @@ async function workspace() {
   $("model-help").hidden = $("mode").value !== "model-assisted" || modelConfigured;
   if (modelConfigured) $("model-id").value = cfg.model;
   showView(activeView);
-  $("configuration").textContent = `Signed in: ${cfg.username} · Target: ${cfg.target} · Model: ${cfg.model} · Hotel price and rating rules come from each approved request.`;
+  $("configuration").textContent = desktopMode ?
+    `Signed in: ${cfg.username} · Model: ${cfg.model}. Saved results stay on this computer.` :
+    `Signed in: ${cfg.username} · Target: ${cfg.target} · Model: ${cfg.model} · Hotel price and rating rules come from each approved request.`;
   $("key-status").textContent = modelConfigured ? `${cfg.model}: key added for this session.` : API_SETUP_MESSAGE;
   $("storage-status").textContent = `${cfg.secure_storage_label}. Saved key: ${cfg.credential_saved ? "yes" : "no"}. ${cfg.credential_notice || ""}`;
   $("remember-key").disabled = !cfg.secure_storage_available;
@@ -215,7 +254,7 @@ async function workspace() {
   $("admin-panel").hidden = cfg.role !== "admin";
   if (cfg.role === "admin") await loadAdmin();
   $("cities").replaceChildren();
-  for (const city of cfg.cities) { const option = document.createElement("option"); option.value = city; $("cities").append(option); }
+  for (const city of cfg.cities || []) { const option = document.createElement("option"); option.value = city; $("cities").append(option); }
   await Promise.all([readiness(), loadHistory()]);
 }
 async function loadHistory() {
@@ -517,6 +556,7 @@ $("download-export").onclick = async () => {
   } finally { $("download-export").disabled = false; }
 };
 $("check").onclick = () => readiness().catch(e => message(e.message));
+$("desktop-api-setup").onclick = openApiConnection;
 $("refresh-history").onclick = () => loadHistory().catch(e => message(e.message));
 $("logout").onclick = async () => { try { await api("/api/logout", {}); location.reload(); } catch (e) { message(e.message); } };
 for (const [id, days] of [["check-in", 7], ["check-out", 9]]) {
@@ -527,6 +567,7 @@ table();
 authPage();
 api("/api/session").then(async session => {
   csrf = session.csrf; instanceId = session.instance_id;
+  applyDashboardMode(session);
   if (session.ui_version !== UI_VERSION) { connectionWarning("Application versions differ. Refresh the application before continuing."); return; }
   if (session.authenticated) await workspace();
 }).catch(e => message(e.message));

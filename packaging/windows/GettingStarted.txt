@@ -1,0 +1,26 @@
+Agentic Studio
+
+1. Open Agentic Studio from its desktop or Start menu shortcut. Keep its small
+   status window open while collecting information. It opens your dashboard in
+   your normal browser. The backend runs only on this computer.
+2. Create a local account and add your own API connection in the dashboard.
+   AI requests require internet access and may incur charges to that connection.
+3. For your existing Chrome or Edge tab, install Browser Companion from the
+   publisher's approved store link. During a supervised pilot, the included
+   BrowserCompanion folder can instead be loaded through the browser's developer
+   extension tools. A ZIP file alone does not install an extension.
+4. Keep the signed-in dashboard open in the same browser as your website tab.
+   Open Browser Companion on the website and describe the information you need.
+5. Start the task. Complete website sign-in, CAPTCHA and missing personal details
+   yourself when requested. Review the returned information before saving it.
+6. Save approved results and download Excel, CSV or JSON from the dashboard.
+
+The installer does not publish or automatically install a browser extension.
+You can also use Open a new browser in the dashboard; Chromium is included.
+
+Results and local accounts stay under %LOCALAPPDATA%\AgenticStudio\data.
+Uninstalling the application preserves that folder. Back it up separately;
+an application update is not a backup of your results or Windows-stored API keys.
+
+Closing the dashboard browser tab does not close the local backend. To stop the
+application, use its status window. Stop an active task before closing it.

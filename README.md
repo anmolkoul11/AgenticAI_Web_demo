@@ -1,5 +1,17 @@
 # AgenticAI_Web_demo
 
+## Windows desktop distribution
+
+The desktop release starts the local dashboard automatically, stores accounts
+and results in the current user's Windows profile, and keeps the existing
+Chrome/Edge Companion connection. Its bundled runtime needs no Python, uv or
+Docker on the user's computer. AI requests still require an internet connection
+and the user's configured provider account.
+
+See [Windows packaging and rollout](docs/WINDOWS_DISTRIBUTION.md) for the build,
+first-user setup, local/cloud architecture and manual release checklist. The
+existing developer/demo launcher remains available below.
+
 ## Custom Website workspace
 
 Collect content through an interactive browser, the Chrome/Edge capture extension,
