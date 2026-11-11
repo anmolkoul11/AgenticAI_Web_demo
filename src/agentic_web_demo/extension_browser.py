@@ -22,12 +22,14 @@ from agentic_web_demo.browser_agent import (
     display_url,
     rendered_results_ready,
 )
+from agentic_web_demo.browser_context import observed_matching_results_ready
 from agentic_web_demo.browser_runtime import bound_controls
 from agentic_web_demo.capture import Capture, clean_url
 from agentic_web_demo.custom_browser import access_challenge
 from agentic_web_demo.custom_fetch import WebsiteError, origin, public_url
 from agentic_web_demo.extension_channel import ExtensionCommandError
 from agentic_web_demo.stay_scope import URL_FIELDS, url_stay_values
+from agentic_web_demo.result_collection import ResultCollector
 
 
 def requires_manual_verification(text):
@@ -161,7 +163,9 @@ class ExtensionBrowserTools(DOMBrowserTools):
             user_pause=channel.pause_requested.is_set,
         )
         self.channel, self.control = channel, control
-        self.scroll_steps = values.browser_scroll_steps
+        # The separate all-results collector owns scrolling after readiness.
+        # Do not scroll three times here and then rewind the same list there.
+        self.scroll_steps = 0 if values.collection_extent == "all_results" else values.browser_scroll_steps
         self._url = safe_tab_url(channel.initial_url)
         self.document_token = None
         self.observation_diagnostics = {}
@@ -191,13 +195,18 @@ class ExtensionBrowserTools(DOMBrowserTools):
         if not isinstance(reply, dict):
             raise WebsiteError("The extension returned an invalid page observation.")
         self.observation_diagnostics = observation_diagnostics(reply)
-        if reply.get("input_driver") != "native_cdp":
+        helper_current = all(
+            re.fullmatch(r"\d+\.\d+\.\d+", str(self.observation_diagnostics[key]))
+            and tuple(int(part) for part in str(self.observation_diagnostics[key]).split(".")) >= (0, 5, 15)
+            for key in ("worker_version", "executor_version")
+        )
+        if reply.get("input_driver") != "native_cdp" or not helper_current:
             diagnostics = self.observation_diagnostics
             raise WebsiteError(
                 "Browser-level input readiness was not confirmed "
                 f"(worker {diagnostics['worker_version']}, "
                 f"executor {diagnostics['executor_version']}, driver {diagnostics['input']}). "
-                "Reload Browser Companion 0.5.2, refresh the website and reconnect. "
+                "Reload Browser Companion 0.5.20, refresh the website and reconnect. "
                 "No model decision ran from this observation."
             )
         url = safe_tab_url(reply.get("url", ""))
@@ -271,6 +280,7 @@ class ExtensionBrowserTools(DOMBrowserTools):
         return {
             "url": display_url(url),
             "document_id": self.current_document_id,
+            "page_id": hashlib.sha256(token.encode("utf-8")).hexdigest(),
             "frames": [snapshot],
             "results": snapshot.get("results", {}),
             "stay_url_values": url_stay_values(url),
@@ -283,14 +293,29 @@ class ExtensionBrowserTools(DOMBrowserTools):
 
     def wait_for_results(self, observation, *, max_seconds=5):
         deadline, previous, stable = time.monotonic() + max_seconds, None, 0
+        starting_document = observation.get("document_id", observation.get("url"))
+        busy_seen = False
+
+        def completed():
+            results = dict(observation.get("results") or {})
+            results.pop("busy_seen_during_wait", None)
+            if (busy_seen and starting_document
+                    and observation.get("document_id", observation.get("url")) == starting_document):
+                results["busy_seen_during_wait"] = True
+            return {**observation, "results": results}
+
         while True:
             self.guard()
+            if (starting_document
+                    and observation.get("document_id", observation.get("url")) == starting_document
+                    and observation.get("results", {}).get("busy") is True):
+                busy_seen = True
             if any(frame.get("password_or_code_visible") for frame in observation["frames"]):
-                return observation
+                return completed()
             signature = (observation["document_id"], observation.get("results", {}).get("record_count"))
             stable = stable + 1 if signature == previous else 0
             if rendered_results_ready(observation) and stable >= 1 or time.monotonic() >= deadline:
-                return observation
+                return completed()
             previous = signature
             self._passive_wait(0.15)
             observation = self.observe()
@@ -356,6 +381,21 @@ class ExtensionBrowserTools(DOMBrowserTools):
                 "Selected-tab mode supports browser-level Enter and Escape only. "
                 "Use a visible option/button instead of a simulated keyboard sequence."
             )
+        if decision.action == "set_counter" and re.fullmatch(r"\d{1,2}", decision.value):
+            before = (facts.get("counter") or {}).get("value")
+            version = str(self.observation_diagnostics.get("executor_version", ""))
+            if (isinstance(before, int) and not isinstance(before, bool)
+                    and 0 <= int(decision.value) <= 30 and abs(int(decision.value) - before) > 10
+                    and re.fullmatch(r"\d+\.\d+\.\d+", version)
+                    and tuple(map(int, version.split("."))) < (0, 5, 20)):
+                guidance = "This loaded Companion supports only ten counter steps per action. Reload Browser Companion 0.5.20, refresh the website and reconnect for this larger request. No input was sent."
+                return {"status": "counter_unconfirmed", "before": before,
+                        "expected": int(decision.value), "observed": before,
+                        "steps": 0, "attempts": 0, "dispatched": False, "retryable": False,
+                        "counter_outcome": "blocked_before_input",
+                        "counter_rejection": {"reason": "helper_update_required", "max_steps": 10,
+                                              "delta": int(decision.value) - before},
+                        "guidance": guidance, "note": guidance}
         try:
             reply = self.channel.call("execute", {
                 "decision": decision.model_dump(), "facts": facts,
@@ -409,6 +449,7 @@ class ExtensionBrowserTools(DOMBrowserTools):
         token, url = self.document_token, self._url
         reply = self.channel.call("capture", {
             "document_token": token, "scroll_steps": self.scroll_steps,
+            **self.capture_options,
         }, timeout=45)
         self.guard()
         if (
@@ -435,29 +476,73 @@ def read_extension(values, control, model_settings, channel):
     decider = ExtensionBrowserDecider(model_settings)
 
     def progress(report):
+        diagnostics = copy.deepcopy(tools.observation_diagnostics)
+        diagnostics["agent_version"] = report.get("prompt_version")
+        checklist = report.get("task_checklist") or {}
+        diagnostics["request_fields"] = [item["field"] for item in checklist.get("requirements", [])]
+        if isinstance(checklist.get("site_behavior"), dict):
+            diagnostics["site_behavior"] = copy.deepcopy(checklist["site_behavior"])
+        if checklist.get("result_handoff"):
+            diagnostics["collection"] = copy.deepcopy(checklist["result_handoff"])
+        collected = report.get("listing_collection")
+        if collected:
+            diagnostics["collection"] = {key: copy.deepcopy(collected[key]) for key in (
+                "records_collected", "result_pages", "reason", "source_preview_only",
+                "scope_status", "scope_fields", "unverified_fields", "mismatched_fields", "contradiction_codes",
+            ) if key in collected}
+        if checklist.get("calendar_progress"):
+            diagnostics["calendar"] = {"phase": checklist["calendar_progress"]["status"],
+                                       "next_field": checklist["calendar_progress"]["next_field"]}
         control.set_agent_report({
-            **report, "observation_diagnostics": copy.deepcopy(tools.observation_diagnostics),
+            **report, "observation_diagnostics": diagnostics,
         })
 
     agent = BrowserAgent(
         tools, decider, values.instructions, output_fields=values.output_fields,
         collection_goal_required=True, progress=progress,
     )
+    collector = None
     try:
         while True:
             control.update("agent_running", "Observing and operating your selected browser tab.")
-            report = agent.run()
+            report = collector.navigation_report if collector else agent.run()
             channel.guard()
             if report["status"] == "ready":
                 pages = agent.captured_sources()
                 checklist = report.get("task_checklist") or {}
                 if pages or (
                     report.get("collection_outcome") == "empty_results"
-                    and checklist.get("search_submitted")
+                    and (
+                        checklist.get("search_submitted")
+                        or observed_matching_results_ready(checklist, empty=True)
+                    )
                     and not checklist.get("search_response_pending")
                 ):
-                    break
-                control.update("agent_paused", "No source content was captured. Review the selected tab.")
+                    if values.collection_extent == "all_results" and pages:
+                        if collector is None:
+                            def collection_progress(summary):
+                                progress({**report, "status": "paused" if summary['reason'] == 'paused' else "collecting" if summary['reason'] == 'collecting' else "ready",
+                                    "guidance": summary.get("guidance") or f"Collected {summary['records_collected']} unique source cards across {summary['result_pages']} result pages. " +
+                                        ("Continuing collection." if summary['reason'] == 'collecting' else
+                                         "Reached the available list end." if summary['complete'] else
+                                         "Partial collection: " + summary['reason'].replace('_', ' ') + ".") +
+                                        (" Stay details are unverified; collecting a read-only source preview for review." if summary.get("source_preview_only") else ""),
+                                    "listing_collection": summary})
+                            collector = ResultCollector(tools, values, pages, collection_progress)
+                            collector.navigation_report = copy.deepcopy(report)
+                        try:
+                            pages = collector.run()
+                        except (WebsiteError, PlaywrightError) as exc:
+                            channel.guard()
+                            collector.reason = "paused"
+                            collector.guidance = str(exc) if isinstance(exc, WebsiteError) else "Result collection was interrupted. Inspect the tab before resuming; no click was replayed."
+                            collection_progress(collector.summary())
+                        else:
+                            break
+                    else:
+                        break
+                if not pages:
+                    control.update("agent_paused", "No source content was captured. Review the selected tab.")
             else:
                 control.update("agent_paused", report["guidance"])
             while True:
@@ -465,11 +550,14 @@ def read_extension(values, control, model_settings, channel):
                 if action != "collect":
                     break
                 tools.guard()
-                pages = agent.captured_sources()
+                pages = collector.output() if collector else agent.captured_sources()
                 if pages:
                     break
                 control.update("agent_paused", "There are no retained sources to extract. Resume collection first.")
             if action == "collect" and pages:
+                if collector:
+                    collector.reason = "user_requested_partial"
+                    pages = collector.output()
                 break
             if action != "resume":
                 raise WebsiteError("Selected-tab workflow ended before source collection completed.")

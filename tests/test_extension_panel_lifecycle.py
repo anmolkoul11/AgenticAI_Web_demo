@@ -47,13 +47,14 @@ def test_panel_status_resync_after_port_failure_does_not_repeat_start(companion_
     page = companion_panel
     page.evaluate("panelFixture.failStart=true")
     page.locator("#instructions").fill("Find hotel names and displayed prices")
-    page.locator("#consent").check()
-    page.locator("#native-input-consent").check()
     page.locator("#start").click()
     assert page.locator("#connect").inner_text() == "Check status"
     assert page.locator("#start").is_disabled()
+    assert page.locator("#connection-status").get_attribute("data-tone") == "attention"
+    assert "needs attention" in page.locator("#connection-status-label").inner_text()
     page.locator("#connect").click()
-    assert page.locator("#state").inner_text() == "agent running"
+    assert page.locator("#state").inner_text() == "Working on your request"
+    assert page.locator("#connection-status").get_attribute("data-tone") == "connected"
     assert page.evaluate("panelFixture.messages.filter(m=>m.operation==='start').length") == 1
     assert page.evaluate("panelFixture.messages.at(-1).operation") == "status"
 
@@ -79,7 +80,7 @@ def test_panel_ignores_older_worker_snapshot_after_start(companion_panel):
       const newer={...panelFixture.state,revision:8,run:{state:'agent_running'}};
       render(newer,true);render({...panelFixture.state,revision:7,run:null},true);
     }""")
-    assert page.locator("#state").inner_text() == "agent running"
+    assert page.locator("#state").inner_text() == "Working on your request"
     assert page.locator("#start").is_disabled()
 
 
@@ -88,6 +89,31 @@ def test_panel_checks_original_connection_even_when_dashboard_tab_is_active(comp
     page.locator("#connect").click()
     message = page.evaluate("panelFixture.messages.find(m=>m.operation==='connect')")
     assert message["tab_id"] == 1
+
+
+def test_panel_connect_uses_selected_website_without_disconnect(companion_panel):
+    page = companion_panel
+    page.evaluate("chrome.tabs.query=async()=>[{id:3,url:'https://another.example.org/'}]")
+    page.locator("#connect").click()
+    message = page.evaluate("panelFixture.messages.find(m=>m.operation==='connect')")
+    assert message["tab_id"] == 3
+    assert not page.evaluate("panelFixture.messages.some(m=>m.operation==='disconnect')")
+
+
+def test_panel_idle_poll_follows_selection_without_starting(companion_panel):
+    messages = companion_panel.evaluate("panelFixture.messages")
+    assert any(message.get("follow_selected_tab") is True for message in messages)
+    assert all(message["operation"] == "status" for message in messages)
+
+
+def test_panel_keeps_previous_review_label_after_idle_tab_switch(companion_panel):
+    page = companion_panel
+    page.evaluate("""()=>render({...panelFixture.state,revision:2,run_tab_id:1,
+      connection:{...panelFixture.state.connection,tab_id:3},
+      run:{state:'awaiting_review',job_id:'b'.repeat(32)}},true)""")
+    assert page.locator("#activity-title").inner_text() == "Previous results"
+    assert page.locator("#state").inner_text() == "Results ready to review"
+    assert page.locator("#review").is_enabled()
 
 
 def test_panel_pageshow_recovers_polling_without_an_automatic_paid_resume(companion_panel):
@@ -108,18 +134,74 @@ def test_panel_shows_actual_document_focus_separately_from_browser_activation(co
     assert "document focus no" in page.locator("#account").inner_text()
 
 
-def test_panel_requires_separate_native_input_consent_without_sending_start(companion_panel):
+@pytest.mark.parametrize("case,tone,label", [
+    ("disconnected", "disconnected", "Browser agent is not connected"),
+    ("ready", "connected", "Browser agent is connected"),
+    ("paused", "attention", "Browser agent is paused"),
+])
+def test_panel_connection_status_uses_words_as_well_as_color(companion_panel, case, tone, label):
+    page = companion_panel
+    page.evaluate("""caseName => render({...panelFixture.state,revision:2,
+      connection:caseName==='disconnected'?null:panelFixture.state.connection,
+      run:caseName==='paused'?{state:'agent_paused'}:null},true)""", case)
+    assert page.locator("#connection-status").get_attribute("data-tone") == tone
+    assert page.locator("#connection-status-label").inner_text() == label
+    assert page.locator("#connection-hint").inner_text()
+
+
+def test_panel_account_change_is_attention_and_cannot_resume_old_work(companion_panel):
+    page = companion_panel
+    page.evaluate("""() => render({...panelFixture.state,revision:2,
+      error:'dashboard_account_changed',reconnect_required:true,
+      run:{state:'agent_paused'}},true)""")
+    assert page.locator("#connection-status").get_attribute("data-tone") == "attention"
+    assert "needs attention" in page.locator("#connection-status-label").inner_text()
+    assert page.locator("#resume").is_disabled()
+    assert "signed-in dashboard account changed" in page.locator("#error").inner_text()
+
+
+def test_panel_used_budget_does_not_claim_task_completion(companion_panel):
+    page = companion_panel
+    page.evaluate("""() => render({...panelFixture.state,revision:2,
+      run:{state:'agent_paused',agent_report:{calls:30,max_calls:30,
+        awaiting_user_input:{reason:'missing_form_value'}}}},true)""")
+    assert page.locator("#state").inner_text() == "Waiting for you"
+    assert page.locator("#connection-status").get_attribute("data-tone") == "attention"
+    assert page.locator("#step-count").inner_text() == "30 / 30 AI steps"
+    assert "not percentage complete" in page.locator("#usage").inner_text()
+
+
+def test_panel_start_button_authorizes_selected_tab_without_repeated_checkboxes(companion_panel):
     page = companion_panel
     result = page.evaluate("""async()=>{
       panelFixture.messages=[];
       document.getElementById('instructions').value='Find hotel names';
-      document.getElementById('consent').checked=true;
       await document.getElementById('task-form').onsubmit({preventDefault(){}});
-      return {error:document.getElementById('error').textContent,
-        starts:panelFixture.messages.filter(m=>m.operation==='start').length};
+      return {start:panelFixture.messages.find(m=>m.operation==='start'),
+        starts:panelFixture.messages.filter(m=>m.operation==='start').length,
+        consent:document.getElementById('consent'),native:document.getElementById('native-input-consent')};
     }""")
-    assert "browser-level mouse and keyboard control" in result["error"]
-    assert result["starts"] == 0
+    assert result["starts"] == 1
+    assert result["start"]["agent_confirmed"] is True
+    assert result["start"]["allow_model_api"] is True
+    assert result["start"]["native_input_confirmed"] is True
+    assert result["start"]["publish_event"] is False
+    assert result["consent"] is None and result["native"] is None
+
+
+def test_panel_resume_is_one_explicit_action_and_polling_never_resumes(companion_panel):
+    page = companion_panel
+    page.evaluate("""()=>{
+      panelFixture.messages=[];
+      panelFixture.state={...panelFixture.state,revision:2,run:{state:'agent_paused'}};
+      render(panelFixture.state,true);
+    }""")
+    assert page.evaluate("panelFixture.messages.every(m=>m.operation==='status')")
+    page.locator("#resume").click()
+    controls = page.evaluate("panelFixture.messages.filter(m=>m.operation==='control')")
+    assert len(controls) == 1
+    assert controls[0]["action"] == "resume"
+    assert controls[0]["native_input_confirmed"] is True
 
 
 def test_panel_counter_evidence_shows_real_counts_and_dispatch(companion_panel):
@@ -131,3 +213,95 @@ def test_panel_counter_evidence_shows_real_counts_and_dispatch(companion_panel):
     text = page.locator("#actions").text_content()
     assert "before 2; requested 3; observed 2" in text
     assert "Input attempts: 1; dispatched: yes" in text
+
+
+def test_panel_record_slider_defaults_to_fifty_and_submits_that_limit(companion_panel):
+    page = companion_panel
+    slider = page.locator("#limit-slider")
+    assert slider.is_visible()
+    assert slider.get_attribute("min") == "0"
+    assert slider.get_attribute("max") == "500"
+    assert slider.input_value() == "50"
+    assert page.locator("#limit").input_value() == "50"
+    page.locator("#instructions").fill("Find hotel names and their listing URLs")
+    page.locator("#start").click()
+    page.wait_for_function("panelFixture.messages.some(message=>message.operation==='start')")
+    starts = page.evaluate("panelFixture.messages.filter(message=>message.operation==='start')")
+    assert len(starts) == 1
+    assert starts[0]["record_limit"] == 50
+
+
+def test_panel_typing_a_larger_limit_uses_batches_without_resetting_the_count(companion_panel):
+    page = companion_panel
+    page.locator(".customize").evaluate("element=>element.open=true")
+    page.locator("#extent").select_option("preview")
+    page.locator("#limit").fill("52")
+    assert page.locator("#limit-slider").input_value() == "52"
+    assert page.locator("#extent").input_value() == "all_results"
+    # Requesting the small-preview mode must not silently replace 52 with 25/50.
+    page.locator("#extent").select_option("preview")
+    assert page.locator("#limit").input_value() == "52"
+    assert page.locator("#extent").input_value() == "all_results"
+    page.locator("#instructions").fill("Find the hotel listings with names and prices")
+    page.locator("#start").click()
+    page.wait_for_function("panelFixture.messages.some(message=>message.operation==='start')")
+    sent = page.evaluate("panelFixture.messages.find(message=>message.operation==='start')")
+    assert sent["record_limit"] == 52 and sent["collection_extent"] == "all_results"
+
+
+def test_panel_slider_updates_typed_count_and_zero_cannot_dispatch_a_task(companion_panel):
+    page = companion_panel
+    page.locator("#limit-slider").evaluate("""element=>{
+      element.value='500';element.dispatchEvent(new Event('input',{bubbles:true}));
+    }""")
+    assert page.locator("#limit").input_value() == "500"
+    assert page.locator("#start").is_enabled()
+    page.locator("#limit").fill("0")
+    assert page.locator("#limit-slider").input_value() == "0"
+    assert page.locator("#start").is_disabled()
+    assert "at least 1" in page.locator("#limit-help").inner_text()
+    # The submit guard also blocks a direct handler invocation, independently
+    # of the browser's disabled-button and native form validation behavior.
+    page.evaluate("""async()=>{
+      document.getElementById('instructions').value='Find hotel listings';
+      await document.getElementById('task-form').onsubmit({preventDefault(){}});
+    }""")
+    assert not page.evaluate("panelFixture.messages.some(message=>message.operation==='start')")
+    page.locator("#limit").fill("1")
+    assert page.locator("#start").is_enabled()
+
+
+@pytest.mark.parametrize("state", ["queued", "running"])
+def test_panel_canonical_save_state_hides_navigation_and_stop_actions(companion_panel, state):
+    page = companion_panel
+    page.evaluate("""state=>{
+      panelFixture.state={...panelFixture.state,revision:4,run:{state,
+        run_id:'a'.repeat(32),job_id:'b'.repeat(32),execution_job_id:'c'.repeat(32),
+        agent_report:{status:'paused',captured_pages:['https://hotels.example.org/results']}}};
+      render(panelFixture.state,true);
+    }""", state)
+    assert page.locator("#state").inner_text() == "Saving your results"
+    assert page.locator("#start").is_disabled()
+    for control in ("pause", "resume", "collect", "cancel"):
+        assert page.locator(f"#{control}").is_hidden()
+    assert not page.evaluate("panelFixture.messages.some(message=>message.operation==='control')")
+
+
+def test_panel_saved_results_do_not_revert_to_stale_paused_browser_state(companion_panel):
+    page = companion_panel
+    page.evaluate("""()=>{
+      panelFixture.state={...panelFixture.state,revision:8,run:{state:'completed',
+        run_id:'a'.repeat(32),job_id:'b'.repeat(32),execution_job_id:'c'.repeat(32),
+        saved_run_id:'saved-result',guidance:'Your approved results were saved.',
+        agent_report:{status:'paused',captured_pages:['https://hotels.example.org/results']}}};
+      render(panelFixture.state,true);
+      render({...panelFixture.state,revision:7,run:{state:'agent_paused',job_id:'b'.repeat(32)}},true);
+    }""")
+    assert page.locator("#state").inner_text() == "Results saved"
+    assert page.locator("#review").inner_text() == "View saved results →"
+    assert page.locator("#review").is_enabled()
+    for control in ("pause", "resume", "collect", "cancel"):
+        assert page.locator(f"#{control}").is_hidden()
+    page.locator("#review").click()
+    assert page.evaluate("panelFixture.messages.filter(message=>message.operation==='open_review').length") == 1
+    assert not page.evaluate("panelFixture.messages.some(message=>['start','control'].includes(message.operation))")

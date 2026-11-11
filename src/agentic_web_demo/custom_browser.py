@@ -24,6 +24,7 @@ from agentic_web_demo.browser_agent import (
     OpenAIBrowserDecider,
     safe_browser_diagnostics,
 )
+from agentic_web_demo.browser_context import observed_matching_results_ready
 from agentic_web_demo.browser_links import approved_links, inspect_links, propose_links
 from agentic_web_demo.browser_navigation import (
     execute_navigation,
@@ -363,6 +364,7 @@ class BrowserControl:
                     "calls",
                     "decision_diagnostics",
                     "failure",
+                    "listing_collection",
                 )
             }
             if report.get("counter_diagnostics"):
@@ -370,6 +372,8 @@ class BrowserControl:
             if isinstance(report.get("observation_diagnostics"), dict):
                 diagnostics["observation_diagnostics"] = copy.deepcopy(report["observation_diagnostics"])
             checklist = report.get("task_checklist") or {}
+            if isinstance(checklist.get("site_behavior"), dict):
+                diagnostics["site_behavior"] = copy.deepcopy(checklist["site_behavior"])
             transition = checklist.get("search_transition") or {}
             if isinstance(transition, dict) and "attempted" in transition:
                 diagnostics["search_transition"] = {
@@ -1094,7 +1098,7 @@ def prepare_browser_content(page, control, scroll_steps=3):
     return result
 
 
-def capture_rendered_page(page, approved, redactions, main_status, *, preparation=None):
+def capture_rendered_page(page, approved, redactions, main_status, *, preparation=None, options=None):
     """Capture one current page after access checks; preserve per-page provenance."""
     current = capture_url(page.url, approved)
     if main_status[0] in {401, 403, 429}:
@@ -1114,7 +1118,7 @@ def capture_rendered_page(page, approved, redactions, main_status, *, preparatio
         encoding="utf-8"
     )
     try:
-        capture = page.evaluate("(" + script + ")", {})
+        capture = page.evaluate("(" + script + ")", options or {})
     except PlaywrightError as exc:
         raise capture_failure(exc) from None
     if preparation and capture.get("coverage"):
@@ -1437,6 +1441,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
     auth_success_selector = login.success_selector if login else ""
     auth_method = login.method if login else "manual"
     agent = None  # Lives only in this browser worker; never serialized or shared between users.
+    result_collector = None
     if auth_requested:
         with control.lock:
             control.authentication.update(status="signing_in", method=auth_method)
@@ -1447,7 +1452,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
     startup_started = time.monotonic()
 
     def handoff_pages(pages, page, browser, proxy):
-        nonlocal agent, login, model_settings
+        nonlocal agent, result_collector, login, model_settings
         # Collection is finished. Release credential/model references before
         # retaining the window, and never resume automation on this context.
         if agent is not None:
@@ -1456,6 +1461,9 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
             except Exception:
                 pass
             agent = None
+        if result_collector is not None:
+            result_collector.tools.secrets = ()
+            result_collector = None
         values.login = None
         login = None
         redactions.clear()
@@ -1739,7 +1747,9 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                     "your account API key first."
                                 )
                             if control.snapshot()["state"] == "agent_collecting":
-                                pages = agent_sources()
+                                if result_collector:
+                                    result_collector.reason = "user_requested_partial"
+                                pages = result_collector.output() if result_collector else agent_sources()
                                 if not pages:
                                     raise WebsiteError(
                                         "No source pages captured. "
@@ -1757,7 +1767,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                     try:
                                         try:
                                             preparation = prepare_browser_content(
-                                                page, control, values.browser_scroll_steps
+                                                page, control, 0 if tools.capture_options.get("record_window") or values.collection_extent == "all_results" else values.browser_scroll_steps
                                             )
                                         except PlaywrightError as exc:
                                             raise capture_failure(exc, phase="prepare") from None
@@ -1767,6 +1777,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                             redactions,
                                             main_status,
                                             preparation=preparation,
+                                            options=tools.capture_options,
                                         )
                                     except BrowserCaptureError as exc:
                                         remember_capture_failure(control, exc)
@@ -1798,7 +1809,7 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                     collection_goal_required=values.workflow_mode == "automatic",
                                 )
                             agent.tools.visual_enabled = control.agent_visual_enabled
-                            report = agent.run()
+                            report = result_collector.navigation_report if result_collector else agent.run()
                             if control.cancel.is_set() or not control.alive():
                                 raise WebsiteError(
                                     "Browser agent cancelled. No extraction request sent."
@@ -1808,12 +1819,15 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                 checklist = report.get("task_checklist") or {}
                                 if (
                                     report.get("collection_outcome") == "empty_results"
-                                    and checklist.get("search_submitted")
+                                    and (
+                                        checklist.get("search_submitted")
+                                        or observed_matching_results_ready(checklist, empty=True)
+                                    )
                                     and not checklist.get("search_response_pending")
                                 ):
                                     control.update(
                                         "captured",
-                                        "The confirmed search displayed no results. "
+                                        "The website displayed no results for the observed criteria. "
                                         "The browser stays open; no extraction call is needed.",
                                     )
                                     return handoff_pages(pages, page, browser, proxy)
@@ -1822,6 +1836,21 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                         "Agent finished without source captures. "
                                         "Review the browser."
                                     )
+                                if values.collection_extent == "all_results":
+                                    if result_collector is None:
+                                        from agentic_web_demo.result_collection import ResultCollector
+                                        def collection_progress(summary):
+                                            control.set_agent_report({**report,
+                                                "status": "paused" if summary['reason'] == 'paused' else "collecting" if summary['reason'] == 'collecting' else "ready",
+                                                "guidance": summary.get("guidance") or f"Collected {summary['records_collected']} unique source cards across {summary['result_pages']} result pages. " +
+                                                    ("Continuing collection." if summary['reason'] == 'collecting' else
+                                                     "Reached the available list end." if summary['complete'] else
+                                                     "Partial collection: " + summary['reason'].replace('_', ' ') + ".") +
+                                                    (" Stay details are unverified; collecting a read-only source preview for review." if summary.get("source_preview_only") else ""),
+                                                "listing_collection": summary})
+                                        result_collector = ResultCollector(agent.tools, values, pages, collection_progress)
+                                        result_collector.navigation_report = copy.deepcopy(report)
+                                    pages = result_collector.run()
                                 control.update(
                                     "captured",
                                     "Agent collected source content. The browser stays open; "
@@ -1830,6 +1859,10 @@ def _read_browser_owned(values, control, model_settings=None, *, handoff):
                                 return handoff_pages(pages, page, browser, proxy)
                             control.update("agent_paused", report["guidance"])
                         except (WebsiteError, PlaywrightError) as exc:
+                            if result_collector is not None:
+                                result_collector.reason = "paused"
+                                result_collector.guidance = str(exc) if isinstance(exc, WebsiteError) else "Result collection was interrupted. Inspect the tab before resuming; no click was replayed."
+                                collection_progress(result_collector.summary())
                             control.update(
                                 "agent_paused",
                                 str(exc)

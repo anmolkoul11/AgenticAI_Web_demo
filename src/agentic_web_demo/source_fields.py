@@ -30,6 +30,25 @@ def article_content(content_type):
     ))
 
 
+def article_priority_terms(instructions):
+    """Literal topic cues order article sources; they never decide relevance."""
+    if not re.search(r"\b(?:articles?|headlines?|news|stories)\b", instructions, re.I):
+        return []
+    topic = re.search(
+        r"\b(?:related\s+to|about|concerning|regarding)\s+([^.!?\n]+)", instructions, re.I
+    )
+    text = topic.group(1) if topic else instructions
+    ignored = {
+        "find", "get", "give", "show", "fetch", "collect", "extract", "please", "articles",
+        "article", "headlines", "headline", "news", "stories", "story", "related", "about",
+        "from", "with", "this", "that", "these", "those", "the", "and", "for", "all",
+        "current", "page", "website", "site", "only", "results", "links", "include",
+    }
+    return list(dict.fromkeys(
+        word for word in re.findall(r"[a-z]{3,32}", text.casefold()) if word not in ignored
+    ))[:12]
+
+
 def is_body_field(field):
     """Unambiguous body names, not generic descriptions or index context."""
     return field in {
@@ -174,21 +193,88 @@ def primary_headline(page):
     return next(iter(distinct.values())) if len(distinct) == 1 else None
 
 
-def linked_headline(page, url):
-    """One literal heading bound to the declared link, not its teaser/kicker."""
+def _linked_headings(page, url):
     blocks = page.get("blocks", [])
     groups = {
         block["group_id"] for block in blocks if block.get("href") == url and block.get("group_id")
     }
-    headings = [
+    return [
         block
         for block in blocks
         if block.get("kind") == "heading"
         and block.get("association") != "ambiguous"
         and (block.get("href") == url or block.get("group_id") in groups)
     ]
-    distinct = {normalized(block["text"]): block for block in headings}
+
+
+def linked_headline(page, url):
+    """One literal heading bound to the declared link, not its teaser/kicker."""
+    distinct = {normalized(block["text"]): block for block in _linked_headings(page, url)}
     return next(iter(distinct.values())) if len(distinct) == 1 else None
+
+
+def ambiguous_linked_headline(page, url):
+    """Multiple distinct linked headings require a source-role choice, not a rank guess."""
+    return len({normalized(block["text"]) for block in _linked_headings(page, url)}) > 1
+
+
+def selected_record_headline(row, page, urls):
+    """Validate a model's source-role choice; never infer a role from heading size/order.
+
+    This proves which literal source block the model selected and its record
+    association. It does not prove the model interpreted that block's role correctly.
+    Returned reason codes can be attached to the caller's actual identity field.
+    """
+    selected_id = getattr(row, "headline_block_id", None)
+    label_ids = getattr(row, "label_block_ids", []) or []
+    if not selected_id:
+        return None, ["headline_selection_missing"] if label_ids else []
+    blocks = page.get("blocks", [])
+    matching = [block for block in blocks if block.get("id") == selected_id]
+    if len(matching) != 1:
+        return None, ["headline_selection_not_captured"]
+    selected = matching[0]
+    if selected.get("kind") not in {"heading", "link"} or not normalized(selected.get("text", "")):
+        return None, ["headline_selection_not_heading_or_link"]
+    declared_urls = {url for url in urls if url}
+    primary = primary_headline(page)
+    native_primary = bool(
+        primary is selected and declared_urls
+        and declared_urls <= {page.get("url"), page.get("requested_url")}
+        and (page.get("source_kind") == "detail" or page.get("source_kind") != "index"
+             and selected.get("content_role") == "headline")
+    )
+    if selected.get("association") in {"ambiguous", "page"} and not native_primary:
+        return None, ["headline_selection_not_record_bound"]
+    group = selected.get("group_id")
+    href = selected.get("href")
+    if not group and not href and not native_primary:
+        return None, ["headline_selection_not_record_bound"]
+    if len(declared_urls) > 1 and not native_primary:
+        return None, ["headline_selection_url_ambiguous"]
+    if declared_urls and not native_primary:
+        declared = next(iter(declared_urls))
+        group_bound = group and any(
+            block.get("group_id") == group and block.get("href") == declared
+            and block.get("association") not in {"ambiguous", "page"} for block in blocks
+        )
+        if href and href != declared or not href and not group_bound:
+            return None, ["headline_selection_url_mismatch"]
+    binding_href = href or (page.get("url") if native_primary else None)
+    issues = []
+    for label_id in dict.fromkeys(label_ids):
+        matches = [block for block in blocks if block.get("id") == label_id]
+        if len(matches) != 1:
+            issues.append("headline_label_not_captured")
+            continue
+        label = matches[0]
+        if label_id == selected_id or normalized(label.get("text", "")) == normalized(selected["text"]):
+            issues.append("headline_selection_is_label")
+        if (label.get("association") in {"ambiguous", "page"}
+                or (label.get("group_id") != group if group else
+                    bool(label.get("group_id")) or label.get("href") != binding_href)):
+            issues.append("headline_label_cross_record")
+    return (None if issues else selected), list(dict.fromkeys(issues))
 
 
 def headline_issue(value, page):
@@ -197,7 +283,10 @@ def headline_issue(value, page):
     if not blocks:
         return None
     primary = primary_headline(page)
-    if primary and page.get("source_kind") == "detail":
+    if primary and (
+        page.get("source_kind") == "detail"
+        or page.get("source_kind") != "index" and primary.get("content_role") == "headline"
+    ):
         return None if normalized(value) == normalized(primary["text"]) else "not_primary_headline"
     if page.get("source_kind") == "detail":
         # Old captures lack levels. Accept an exact legacy heading, never a paragraph.
@@ -231,6 +320,53 @@ def headline_issue(value, page):
         )
         else "title_not_supported_by_heading_or_link"
     )
+
+
+def article_record_issue(value, page):
+    """Reject captured non-article affordances without guessing titles from URLs.
+
+    Literal headline links remain valid evidence. Topic relevance alone cannot
+    turn a game launcher, navigation link or coverage landing page into a story.
+    """
+    title = normalized(value) if value is not None else ""
+    if not title:
+        return "article_headline_missing"
+    blocks = page.get("blocks", [])
+    matches = [block for block in blocks
+               if block.get("kind") in {"heading", "link"}
+               and block.get("association") != "ambiguous"
+               and normalized(block.get("text", "")) == title]
+    if blocks and not matches:
+        return "article_headline_not_captured"
+    # These are game-launch instructions, not every headline containing 'game'.
+    if re.fullmatch(
+        r"^(?:play|solve|try)\s+(?:(?:our|the|today['’]s|daily)\s+)?"
+        r"(?:connections(?:\s*:\s*[\w -]{1,40}\s+edition)?|wordle|sudoku|crosswords?|"
+        r"(?:sports\s+)?(?:puzzles?|quizzes?|quiz|games?))"
+        r"(?:\s+(?:now|today|for free))?[.!]?",
+        title, re.I,
+    ):
+        return "non_article_game"
+    if page.get("source_kind") != "index" and any(
+        block.get("kind") == "heading" and block.get("content_role") == "headline"
+        for block in matches
+    ):
+        return None
+    if matches and all(block.get("association") == "page" for block in matches):
+        return "non_article_navigation"
+    section = (
+        r"(?:sports|news|world|politics|business|technology|science|health|culture|opinion)"
+    )
+    browse_label = bool(re.fullmatch(
+        section + r"\s+(?:coverage|section)", title, re.I,
+    )) or bool(re.fullmatch(
+        r"(?:see|view|browse|explore|more|all|latest)\s+(?:all\s+)?"
+        + section + r"(?:\s+(?:coverage|news|headlines|section|stories))?",
+        title, re.I,
+    ))
+    if browse_label:
+        return "non_article_section"
+    return None
 
 
 def excerpt_issue(quote, page):

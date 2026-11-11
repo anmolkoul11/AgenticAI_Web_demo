@@ -1,5 +1,703 @@
 # Use an agent in your normal Chrome or Edge tab
 
+## Record limits and review handoff - 2026-11-09
+
+Restart the backend, refresh the dashboard (UI **2026-11-09.1**), reload
+Companion **0.5.21**, and refresh the website. Navigation remains browser-agent
+v20.30; these changes concern collection settings and workflow/review state.
+
+The Companion's Maximum records slider and number input both cover 0–500 and
+start at 50. Zero does not start a task. Above 50, batched collection is selected
+automatically. This is a maximum: available source records and validation may
+produce fewer saved results.
+
+Review results opens the existing workflow. After approval, both views follow
+the same save job and saved run. Opening an old review or repeating an approval
+returns that existing attempt, rather than saving or publishing again. A failed
+attempt remains available for inspection; it is not automatically replayed.
+Collection is shown as preparing results until extraction finishes.
+
+For manual verification (not performed during implementation):
+
+- Check default 50, type 52, drag to 500, and confirm zero disables Start.
+- Collect and approve once; reopen Review results and confirm it shows the same
+  saved run and downloads without another execution in history.
+- Keep both views open while saving and confirm preparing/review/saving/saved
+  transitions agree. Reopening review should preserve any pending approval.
+- Reopen completed results after the browser-control session expires; viewing
+  should work without reattaching browser input or rerunning navigation.
+
+## Larger adult/room adjustments - 2026-11-09
+
+Restart backend **v20.30**, reload Companion **0.5.20** and refresh the website
+before a fresh task. The earlier executor allowed targets up to 30 but rejected
+changes of more than ten increments; this could block 18 adults from the shown
+six-guest starting state.
+
+It now supports up to 30 individually verified steps, within the website's
+observed bounds and the existing 0–30 application target range. Controls are
+not clicked blindly: each effect is read back before the next step. A genuine
+limit or unsupported control gets a specific reason and pauses once. An older
+loaded helper gives an update message before attempting a larger change.
+
+Manual check: New York, December 24–30, 2026, 18 adults and ten rooms. Confirm
+the separate counts and applied summary after Update. No tests, validators or
+live/provider workflows were run; manual acceptance remains pending.
+
+## User3 room-conflict follow-up - 2026-11-09
+
+Restart backend **v20.29** and start a fresh task. Companion **0.5.19** remains
+compatible. The inspected user3 run had confirmed Search; collection stopped
+because destination proof was incomplete and returned room evidence conflicted.
+Its saved log did not include the actual conflicting values.
+
+The current searched page can now be captured as a read-only source preview when
+its heading is absent from the control inventory or new conflicting counts
+appear. The document, URL and original request remain bound; uncertain scope
+still blocks approval as a confirmed stay match. Availability stock such as
+“Only 1 room left” no longer becomes the party's selected room count.
+
+Help details now include expected/observed stay values and bounded supporting
+quotes, alongside mismatch field names. Repeat New Jersey, November 28–30,
+2026, five adults/three rooms under user3, and inspect both the returned form and
+preview evidence. No tests, validators or live/provider workflows were run;
+manual acceptance remains pending.
+
+## Website behaviour and form performance - 2026-11-09
+
+Restart backend **v20.28** and start a fresh task. Companion **0.5.19** remains
+compatible; this update does not change the extension protocol.
+
+- **Booking.com hotel tasks:** after changing the stay form, verify its values,
+  click Search and wait for the returned list. Matching editable values alone
+  are not a completed search. An already confirmed current-run Search is not
+  submitted again.
+- **Tripadvisor hotel tasks:** applied control changes can refresh the same
+  page. Fresh matching returned results can be collected without a fictitious
+  extra Search.
+- **Current-page article tasks:** NYTimes/BBC and other news extraction retain
+  the existing current-page path. Unknown websites use observed controls and
+  result transitions rather than a guessed site recipe.
+
+Known, uniquely observed guest controls can now use their requested numeric
+targets without a new model decision for each opener/counter. Ambiguous controls
+retain model fallback, every native counter step is read back, and missing child
+ages are still left to the user. The technical details show the selected website
+and interaction mode.
+
+If a Booking heading proved the destination but disappeared from the next
+control inventory, collection re-reads a fresh source heading on that same
+document before rejecting it. Previous quotes are not treated as fresh proof.
+No tests, validators, live workflows or provider calls were run; behaviour and
+speed still require manual acceptance.
+
+## Capturing returned sources with uncertain stay details - 2026-11-09
+
+Restart backend **v20.27**, reload Companion **0.5.19** and refresh the website.
+A confirmed Search can now hand off its current result list as a **source
+preview** when returned stay details are still uncertain. Previously the agent
+allowed this handoff but the full-list collector blocked it before the first
+card, misleadingly referring to a “next result page.”
+
+Preview permission is tied to the actual searched document, its result URL and
+unchanged returned facts. Capture/scroll does not verify availability or promote
+the original form values into result evidence. An unverified preview stops
+before additional result pagination and exposes the retained cards for normal
+read-only review; existing stay/price/save checks remain in force.
+
+Literal list cautions such as “Some options have fewer than 4 rooms” are retained
+as page context. They do not assert that every hotel has insufficient rooms.
+Progress and Help details retain connection diagnostics plus scope status,
+unverified/mismatched fields and contradiction codes.
+
+Manual acceptance is pending. No tests, validators, live workflows or provider
+calls were run. On the Edison six-adult/four-room search, verify that visible
+listings reach preview after Search, inspect room/stay warnings, and compare
+source-card count with eligible records before approving a save.
+
+## Full collection and calendar follow-up - 2026-11-08, manual verification pending
+
+Restart backend **v20.26**, reload Companion **0.5.18** and refresh the website.
+**All available listings in this search** is the default again; the temporary
+Limited-preview default produced the latest ten-record Tripadvisor result. The
+normal search inventory remains separate from collection-only pagination.
+More results require additional paid extraction batches, within the displayed
+record/page/time limits. Those limits and incomplete extraction remain explicit.
+
+The latest Booking loop lost checkout's observed full-year evidence when its
+calendar closed; it had not yet attempted adults or rooms. Date proof now
+survives only the matching same-document form summary and is invalidated by
+edits. A uniquely associated expanded opener can close a multi-month picker
+without merging unrelated calendar scopes. Repeated Hotels clicks also no
+longer reload the current category, and all-results capture avoids redundant
+initial loading scrolls.
+
+Manual check: Edison, November 28–30, 2026, six adults, four rooms, zero children.
+Confirm both dates remain verified after closing the calendar, then that guest
+counts and Search complete. On Tripadvisor, compare source-card coverage with
+the destination-matching records; nearby/sidebar links are not automatically
+confirmed matches. No tests, validators or live/provider runs were performed.
+
+## Search regression repair - 2026-11-08, manual verification pending
+
+Restart backend **v20.25**, reload Companion **0.5.17** and refresh the website.
+The default is again **Limited preview** (25 records); select **All available
+listings in this search** explicitly for expanded scrolling and pagination.
+The sections below describe earlier changes chronologically; this default
+supersedes the initial All-results default.
+
+Search observes its normal form controls. Pagination priority and result-list
+identity hashing are now confined to the later collection phase. Fresh verified
+stay dates take precedence over stale draft-calendar markers, and an unchanged
+calendar-close action is sent only once before a bounded fallback or pause.
+The agent cannot put a guest count or stay date into a hotel destination Search
+field merely because the value occurs in the prompt.
+
+Check the normal Booking and Tripadvisor search-to-preview path first. Then
+select All results and compare collected source cards with approved records.
+No tests, validators, live workflow runs or API calls were performed for this
+repair; manual acceptance is pending.
+
+## Collecting the full result list - 2026-11-08, manual verification pending
+
+Reload Companion **0.5.16**, restart the backend (**agent v20.24**, extractor
+**v18**) and refresh the website before starting a new task. Under Customize
+results, **All available listings in this search** is the default. Choose
+**Limited preview** for the earlier small-capture behaviour.
+
+Once the requested search is ready, All results captures cards in windows of
+ten, scrolls through the list and follows observed same-origin result pagination.
+It retains virtualized cards before scrolling them away, deduplicates repeated
+listing identities and preserves separate evidence for each capture. New result
+pages must still confirm the requested stay. It does not crawl unrelated pages
+or make reservations/payments. The website tab remains open for inspection.
+
+Maximum listings defaults to 5,000. The collector also stops after 100 result
+pages or four active collection minutes. Limits and uncertain pagination produce
+an explicit partial result; a scope mismatch pauses for review. Progress shows
+source cards and result pages, while the dashboard distinguishes captured cards,
+extracted candidates and approved records. Reaching the available list end does
+not prove that every listing on the website was accessible.
+
+Each source batch uses an additional paid extraction call. Navigation history is
+not repeated in these extraction prompts, and scrolling/pagination collection
+does not consume extra model decisions. Review completeness and usage before
+saving. An interrupted extraction retains earlier successful batches with a
+warning; the provider call is not retried automatically.
+
+Manual check: repeat the Raleigh November 28–30, 2026, four adults/two rooms
+search. Compare All results against the cards available after scrolling and
+pagination (the previous run captured only 16). Check the source count and final
+record count separately, then set Maximum listings to 25 and confirm the partial
+label. No tests, validators, browser runs or provider calls were executed for
+this change.
+
+## Optional prices and visible pricing captions - 2026-11-08, verification pending
+
+Agent **v20.23**, Companion **0.5.15**, pricing contract **v3** address review
+job `7dac240c-1f71-45bc-9bb3-8492ca9056af`. Its Virginia stay and USD currency
+were verified, but all 25 amounts lacked price-basis evidence. The user confirmed
+the visible mode was “Nightly price with fees”; no `price_setting` block survived.
+The previous collector only examined a narrow set of controls, preferred ARIA
+over visible captions and rejected fallback page-heading wrappers as records.
+
+Capture now reads exact short rendered captions, including plain spans and
+accessibility-hidden but physically visible labels, while excluding hidden
+menus, unselected radio choices and hotel-card captions. A wrapper with a page
+H1 may contain the list's global setting. Coverage records `price_setting_status`
+and `price_settings_detected`, so missing or competing captions are explicit.
+
+The request contained no price bounds, nightly requirement or price filters.
+An inferred output price nevertheless triggered an unconditional price-review
+gate. Plan and save now enforce the same request-aware gate: optional price
+uncertainty stays in the record/exports without becoming a confirmed price match
+or invented nightly amount. Actual price comparisons, explicitly pinned nightly
+fields, and stay-scope mismatches still block. Save re-assesses the retained
+sources and equality-checks the approved pricing data. The UI omits nonexistent
+price-target counts and retains source-price warnings.
+
+Restart the backend, reload Companion **0.5.15**, refresh the website and start
+a fresh workflow. Authored regression cases cover optional-price plan/save,
+explicit nightly requests, soft targets, changed scope, page wrappers, visible
+versus ARIA captions, hidden/menu/card exclusions and diagnostic metadata.
+No tests, validators, browser/application startup or API calls were run.
+
+## Calendar windows and capture handoff - 2026-11-08, verification pending
+
+Agent **v20.22** and Companion **0.5.14** address the next failure observed in
+job `525acaae-5641-4a26-bba5-1556da2ebf7c`. Navigation completed in four paid
+decisions, but capture preparation closed the read-only guest panel. Its final
+passive observation lost adults/children even though post-Update inspection had
+verified them. Captured-heading reconciliation also omitted the newer full-date
+evidence methods from its allowlist.
+
+Capture now retains the independent guest-row proof only when the document,
+applied summary and fresh destination/dates agree. Changed counts, dates,
+documents, invalid widgets or missing inspection proof remain unverified. The
+date-evidence allowlist now agrees with the navigation observer.
+
+Calendar observation reserves scoped next/previous arrows and date choices in
+the bounded inventory. Explicit icon names or a single rendered chevron can
+identify direction; arbitrary button order cannot. The runtime reads the two
+visible month panels, advances one observed arrow at a time across years, and
+pauses if that window does not change. Spillover dates do not count as a third
+month panel. This uses no extra model decision for a known month direction.
+
+The source collector retains a selected page-wide price mode such as “Nightly
+price with fees,” including its separate evidence IDs. Pricing may use it for a
+single otherwise unlabelled current amount. Competing amounts, local labels,
+original prices, currency and stay checks retain their independent rules.
+
+Restart the backend, reload Companion **0.5.14**, refresh the website and start a
+fresh task. Manually verify a stay beyond the two displayed months, then inspect
+the preview's returned guest scope and price-mode evidence. Regression source
+covers month windows, crowded calendars, source handoff, changed scope, selected
+price settings and ambiguous amounts. No tests, validators, application/browser
+startup or live/model/API calls were run; manual acceptance is pending.
+
+## Guest label parity after Update - 2026-11-08, verification pending
+
+Agent **v20.21** corrects a form/result vocabulary mismatch. The real named
+steppers expose `adult`, `child` and `room`; the controller recognized those,
+but the returned-scope checker used plural stemming that failed for `child`.
+A correct zero-child readback therefore remained unverified, leading to another
+Update and the loss of visible rows when the panel closed.
+
+Navigation, counter readback and returned-scope checks now share the same field
+normalizer. The existing age recognizer is shared too: child ages and ordinal
+labels do not supply a child quantity. Real mismatches still block matching.
+An unsuccessful readback reports a workflow verification pause, rather than
+claiming the request omitted guest values or instructing another Update cycle.
+
+Restart the backend and use a fresh task; Companion remains **0.5.13**. Regression
+source uses the actual singular labels and actuator captions, with both 4- and
+5-adult requests, zero children, age controls and genuine mismatches. The expected
+read-only path is one popup inspection then capture, without another Update.
+No tests, validators, browser/app startup or model/API calls were run.
+
+## Calendar draft versus committed dates - 2026-11-08, verification pending
+
+Use agent **v20.20** with Companion **0.5.13**. Restart the backend, reload the
+extension in `edge://extensions` or `chrome://extensions`, refresh the website,
+then start a fresh task. Older native-ready helpers stop before a paid decision.
+
+The saved v20.19 report selected December 28 successfully at step 5, then repeated
+that day twelve times. Only three model decisions ran; the repeats were runtime
+actions. The runtime required a complete committed range before advancing from
+check-in, although the widget was still waiting for checkout. Its blanket
+`calendar_selection_required` override then defeated the executor's selected-day
+protection. The 140-control cap could also hide the November form summaries
+behind calendar cells, making those missing values look like no progress.
+
+Draft calendar progress now advances a confirmed, freshly selected start to
+checkout without marking the committed stay verified. After both picks, an
+observed Apply/Done/Close action commits the widget; full dates are read again
+before collection. Date dispatch receipts are keyed by physical page/date rather
+than viewport/control fingerprints, so an uncertain click is not repeated after
+a scroll/rerender. Explicit pre-input rejection can release the intent; Resume
+reconciles fresh user changes. Same-page URL updates preserve draft progress,
+while actual document navigation clears it.
+
+Both DOM observers reserve inventory space for stay summaries and selected days.
+Physically visible date/guest summaries remain readable when a modal applies
+`aria-hidden` to background content; unrelated hidden content stays excluded.
+An old selected range interior can be reselected only with full summary proof,
+or for the next checkout pick after a confirmed draft start. Unrelated date,
+price and availability evidence is still checked independently. Help reports the
+draft phase/next field without adding field values to its control diagnostics.
+
+Regression sources cover the exact failure (November summaries stay unchanged
+until Apply), same-page URL changes, uncertain delivery, a crowded calendar and
+old-helper rejection. No tests, validators, browser/app startup or live/model/API
+calls were run. Manual verification remains pending.
+
+## Replace a previous stay before guest readback - 2026-11-08, verification pending
+
+Agent **v20.19** addresses the New Jersey/November to New York/December case.
+Saved v20.18 evidence showed a guest-summary parsing error: `Rooms/Guests 3 Rooms,
+4 Guests` supplied both 3 and 4 as guest totals. Mixed headers are now excluded
+from count pairs, while actual labelled row counts and contradictory values
+remain visible. A narrow New York/New York City alias fixes the observed heading
+mismatch; explicit states and unrelated city names are not collapsed.
+
+Guest readback no longer preempts unresolved or mismatched place/date criteria.
+The model focuses on correcting the stay first, and an observed requested city
+link can leave the previous city's hotel page without claiming a stay submission.
+A unique observed endpoint opener/requested day can run without another model
+decision; unfamiliar calendar navigation still uses the model. A day outside the
+requested stay dates is rejected before input. Selecting checkout triggers a
+bounded passive results wait. Explicit `5 adults only` also requests zero children;
+unspecified child counts remain unspecified.
+
+Restart the backend and start a fresh task with the original prompt. Companion
+remains **0.5.12**. Source fixtures cover the exact December request, the saved
+mixed-header wording, city aliases, old-city navigation, wrong-month choices and
+one guest read followed by capture after correcting dates. No tests, validators,
+application/browser startup or live/model/API calls were run. Reading saved run
+JSON was investigation only; live acceptance remains pending.
+
+## Complete guest widgets before capture - verification pending
+
+Agent **v20.18** addresses the reported `stay_widget_open` pause with rendered
+hotel cards. Runtime execution and the model's focused view share one guest
+completion rule. An unrelated required global Search field does not block this
+step. `widget_scope` describes a control type, so differing counter/choice types
+no longer exclude an otherwise uniquely associated Update/Done button.
+
+Matching live guest values lead to the observed confirmation control. When no
+confirmation button exists, a unique expanded guest opener can receive Escape
+without editing values. The agent waits briefly for automatic result updates,
+then re-reads the committed stay and rendered records before collection. Missing
+dependent values, unknown ages, mismatched counts and ambiguous buttons remain
+unconfirmed. Existing read-only guest inspections can still establish the split
+behind a total-guest summary without another Update.
+
+Help's collection diagnostic includes open control IDs, guest field statuses and
+the available completion action. Restart the backend and start a fresh task;
+Companion stays **0.5.12**. Regression sources cover differing widget types,
+required global Search, direct same-page capture after Update/Escape, varying
+guest counts, missing ages, wrong counts and ambiguous controls. They were
+authored only; no tests, validators, app/browser startup or live/model calls ran.
+
+## Search aliases and request grounding - 2026-11-07, verification pending
+
+Agent **v20.17** treats a hotel's generic Search/query binding as navigation,
+not an additional stay requirement. Redundant query metadata cannot block a
+guest-widget action or survive as a prerequisite after the destination is known.
+Actual action values still require grounding; missing ages still require the user.
+Declaration errors retain the actual field label, including errors raised before
+an action target is attached to the activity entry.
+
+Dates and destination have separate parsers: a correct calendar does not prove
+the internal destination was populated. The reported temporal `form 28-30` wording
+is accepted without changing the request, and a model can ground a missing
+canonical destination in the user's literal place wording. This parsing edge
+case alone does not establish the cause of the reported live loop.
+
+Help diagnostics now include `agent_version`, `request_fields` and `collection`
+so the running backend and actual handoff blocker can be identified. Restart the
+backend and start a fresh task; Companion remains **0.5.12**. Regression cases were
+authored only. No tests, validators, application/browser startup or model calls ran.
+
+## Automatic results updates - 2026-11-07, verification pending
+
+Agent **v20.16** tracks verified counter changes as criteria edits, and retains
+their pre-change record baseline when Done/Update merely closes a widget. A
+changed set of rendered records after an actual edit can establish an automatic
+update without requiring an observed spinner, URL change or Search button.
+Requested returned criteria still need verification before a matching handoff.
+Opening a date field only to inspect it is not treated as a date change.
+
+Search preflight checks again whether the results finished updating while the
+model was deciding. If ready, it collects them without sending Search. An empty
+generic Search field is not new missing user data when the destination is already
+in the request. Technical evidence includes `result_handoff` with the specific
+collection blocker and any unverified/mismatched stay fields.
+
+Restart the dashboard backend and use a fresh task. Companion **0.5.12** remains
+the current extension; this update changes backend behavior only. Source fixtures
+cover automatic counter updates, unchanged cards, closing Update and a result
+update during Search planning. No tests, validators or live workflows were run.
+
+## Collect existing same-page hotel results - 2026-11-07, verification pending
+
+Companion **0.5.12** / agent **v20.15** recognizes heading forms such as
+"New Jersey Hotels and Places to Stay" and reads fresh result criteria before
+trying a destination query. Committed full-date openers and named guest/room
+summaries can establish the applied page state without a new URL or a refresh
+the agent witnessed. An explicitly read guest split is still required when the
+closed summary only shows total guests. Individual listing availability/prices
+remain separate source checks.
+
+Resume clears old transient autocomplete, readback and loop state, preserving
+the original request, paid budget and real submission guards. A matching hotel
+results page with stay widgets blocks redundant site-wide destination Search.
+Record markers and URL metadata aliases are consistent across both adapters.
+
+Restart the backend, reload Companion **0.5.12**, refresh the website and start a
+fresh task. Manually check both starting from visible hotel results and changing
+guest values while paused, choosing Update then Resume. The expected next stage
+is collection/review once the requested criteria are read, rather than retyping
+the destination. Unknown years/count splits remain unknown. Regression sources
+were authored and reviewed only; no tests, validators, browser/app startup or
+model/API calls were executed.
+
+## Adults-only requests and Tripadvisor Update - 2026-11-07, verification pending
+
+Companion **0.5.11** / agent **v20.14** fixes the reported Charlotte path:
+`find me hotels in charlotte from 28-30 Nov 2026 ,for 3 adults`.
+Only the requested adult count is a target. Existing room/child settings are
+preserved and read in context; they are not invented missing requirements.
+The model focus and runtime recognize the guest panel's **Update** control.
+Matching live counts are applied once, then a bounded passive wait observes the
+results. Already verified applied listings are collected before another guest
+panel reopen. An unsupported Enter on Search is reported as an action problem,
+not a request for the user to supply a value called "Search".
+
+Generic click preflight failures now report a phase, reason and changed field
+names without exposing values. The old `control_changed` log cannot establish
+whether the guest opener changed, was covered or was outside the viewport.
+Exact identity and hit-test checks remain active. A blocked read-only reopen
+stops without repeating an undispatched click.
+
+Restart the backend, reload Companion **0.5.11**, refresh the website and use a
+fresh task for manual verification. The authored fixtures include the exact
+adults-only prompt, Update focus, separate site Search validation and applied
+result handoff. No tests, validators, live browser workflow or API calls were run.
+
+## Child age after Update and exact guest counts - 2026-11-07, verification pending
+
+Companion **0.5.10** / agent **v20.13** addresses the reported sequence: select
+child age **7**, choose **Update**, then **Resume** with the guest panel closed.
+The agent preserves the manual confirmation while fields are hidden and can
+reopen one uniquely observed rooms/guests summary to read the selected age.
+The observed wording "The selected number of rooms is 3 and the selected number
+of guests is 5" is supported even without popup attributes. An empty or invalid
+age still requires input; site defaults are not silently accepted.
+
+Custom age dropdowns can read their selected ARIA value, an explicitly owned
+selected option or compact rendered age text. After Update, a read-only guest
+inspection compares the closed summary with fresh separate count rows. Hidden
+rows are not carried forward as current proof. The same summary is reopened at
+most twice per Resume, without extra model calls. Listing handoff still needs
+evidence that the requested stay was applied to the results.
+
+Stop the old task, restart the backend, reload Companion **0.5.10**, refresh the
+website and start a fresh run. Retry `find hotels in Virginia from 28-30 November
+2026 with 4 adults 3 rooms 1 child`. At the age pause, select **7**, choose
+**Update**, then **Resume** once. Verify **4 adults, 1 child and 3 rooms** in the
+actual rows and applied stay. **5 guests** is the combined adult/child total,
+not independent proof of 4 adults; a summary showing 2 rooms is still wrong.
+Check the final dates and listings before collection/review. Regression fixtures
+were authored and source reviewed only; no tests, validators, live browser
+workflow or model/API calls were run. Manual acceptance remains pending.
+
+## Correct dates with an open calendar - 2026-11-07, verification pending
+
+Companion **0.5.9** / agent **v20.12** addresses the confirmed case where the
+requested November 28–30 dates were already correct but the calendar stayed open.
+The observer distinguishes date openers from day choices, including an opener
+whose accessible label contains a full selected date. It reads actual Selected
+labels with explicit false/native state taking precedence and keeps calendar
+ownership bounded to the observed widget, including supported roleless layouts.
+
+Form verification and returned-stay checks share full-year selected endpoint
+parsing. Matching current ranges are preserved; a selected interior day can still
+become a new endpoint when the requested range differs. Model focus closes the
+verified calendar using its observed confirmation control or Escape before
+unrelated global Search. Automatic form submission waits while it is open.
+Generic Search openers are distinct from query submits; a genuinely targeted
+ambiguous query still retains its validation. Pre-input date reference failures
+now include reason/field names, without bypassing native identity or hit checks.
+
+Stop the old task, restart the dashboard backend, reload Companion 0.5.9 and
+refresh the website. Start a fresh run. Check the exact reported scenario with
+dates already correct and the calendar open: it should preserve the selected
+range, dismiss the calendar, verify guests/rooms, then collect applied results.
+Also check changing an old selected range, missing ages, independent calendars
+and an actual required query. Regression fixtures were authored, but no tests,
+validators, live browser workflow or configured API calls were run.
+
+## Exact counters and already-applied stay results - 2026-11-07, verification pending
+
+Companion **0.5.8** / agent **v20.11** interprets an explicit actuator label such
+as Increase adult count by 1 as a quantity control, not a current value of 1.
+It reads the rendered count in the same row. Raw increase/decrease clicks are
+converted to the request's absolute target, so a requested total of 3 already
+showing 3 causes no input. Unreadable or contradictory counts remain unconfirmed;
+repeated failures on unchanged evidence pause instead of allowing blind clicks.
+
+Same-page results no longer require an invented new Search. The ledger can adopt
+already-applied matching results when returned stay evidence verifies the request
+and either the returned URL contains the criteria, or an observed results refresh
+follows a criteria application. Update/Done alone is insufficient: changed result
+cards or a witnessed loading-to-settled cycle is needed. Draft fields next to old
+cards, wrong guest counts, open widgets, missing ages and uncertain submissions
+do not qualify. Small record signatures track refreshes; they are not source or
+availability evidence and are omitted from the navigation model context.
+
+Observed-results provenance is separate from a witnessed agent Search. Matching
+results proceed to source collection and review, including explicit empty results.
+The unused generic Search box does not block an already-applied matching result
+page; explicitly submitting that box still checks its own required fields. Listing
+prices and availability continue to require their own evidence and human review.
+
+Restart the dashboard backend, reload Companion 0.5.8 and refresh the website.
+Retry `find me hotels in New Jersey from 28-30 November for 3 adults and 2 rooms`.
+With the current reference date this means November 28–30, 2026. Verify that a
+correct adult count stays at 3, a value of 2 changes once to 3, and a value of 5
+decreases to 3. Then check that Update applies the requested dates/occupancy and
+matching listings go to collection without reopening global Search. Also check
+unchanged stale cards, a wrong count, a missing age and a genuinely unconfirmed
+Search outcome. Regression cases were authored, but no tests, validators, live
+browser workflow or configured API calls were run.
+
+## Location discovery before hotel search - 2026-11-07, verification pending
+
+Companion **0.5.7** / agent **v20.10** separates location/category discovery from
+the final stay search. The shared ledger derives a current navigation stage from
+visible controls: discover the location, open Hotels (or the observed equivalent),
+prepare the dates/guest form, await its response, then collect sources. Intermediate
+city-result/category navigation does not confirm stay details or hotel availability.
+
+Two control budgets previously obscured category links: the browser's bounded
+inventory and the smaller model context. Both now retain a small set of actual
+category controls. The context also retains grounded city-result actions such as
+See all results, using fresh IDs only. General Search is not automatically a final
+stay submission; positive source evidence determines whether it opens discovery,
+searches for a location or submits a dates-and-guests form. Runtime filling waits
+for an actual stay form rather than repeatedly refilling the global query.
+
+Real required fields, uncertain submit outcomes and manual child-age handoff
+remain enforced. This is shared control interpretation and agent guidance, not
+site-specific URLs or model-weight training. The existing control and token budgets
+remain; no extra model or screenshots were added.
+
+Restart the dashboard backend, reload Companion 0.5.7, refresh the target website
+and begin a fresh workflow. The supplied failed log used Companion 0.5.5.
+Manually retry `find hotels in New Jersey from 28-30 November with 4 adults and
+3 rooms.` With the current reference date, the existing future-date default should
+resolve the stay to November 28–30, 2026. Verify city discovery, Hotels-category
+selection, final stay summary, actual Search transition, source preview and reviewed
+save. Repeat from a city overview with Hotels visible, a query-results page and
+an already-open hotel form; a missing child age must still pause for user input.
+No tests, validators, app/browser startup or paid calls were run.
+
+## A simpler browser panel - 2026-11-07, visual verification pending
+
+Browser Companion **0.5.6** adds a labelled connection indicator: green for a
+healthy connection, red when no website is connected, and yellow for a pause,
+interruption or required input. A stored tab binding alone is not shown as healthy
+when a session or transport error prevents control. The workflow separately says
+**Working on your request**, **Waiting for you**, **Preparing your results** or
+**Results ready to review**. Ready does not mean saved.
+
+The refreshed panel shows the website name/domain, clearer Start task / Resume
+task / Review results actions, softer cards and an animated working indicator.
+Custom fields, usage/access explanations and diagnostics are expandable. The
+request collapses once when a run appears; users can reopen it without polling
+closing it again. Identical text updates preserve live-region nodes. AI steps
+are labelled as budget usage, not a percentage of results completed.
+
+Reload the unpacked extension at `edge://extensions` or `chrome://extensions`,
+refresh the website tab and reopen the panel. Manually check connected, disconnected,
+running, paused/missing input, interrupted connection and ready-for-review states,
+including a narrow panel. No tests, validators, browser startup or visual preview
+were run; styling and live behavior remain for manual verification.
+
+## Automatic tab connection and hotel discovery - 2026-11-07, verification pending
+
+Extension **0.5.5**, dashboard **2026-11-07.1**, agent **v20.9** follows the selected
+eligible website tab while idle, including before Start. Switching to the dashboard
+or browser settings does not replace the website connection. A running or paused
+workflow keeps its original target until completion/cancellation. Completed review
+access remains available after an idle tab change. Disconnect disables automatic
+pairing until Connect is chosen again. A changed dashboard account/session still
+requires explicit reconnection. If the browser withholds access to a new tab, open
+the companion from that tab's toolbar icon to grant access.
+
+The repeated paid-workflow and native-input checkboxes have been removed. Start
+and Resume are the authorization gestures; neither pairing nor polling starts a
+paid workflow. Existing limits and review before saving remain. Optional event
+publishing is a Yes/No setting, default No. The browser's debugger permission and
+warning remain browser-controlled. This supersedes the older approval-checkbox
+instructions below.
+
+Hotel discovery now distinguishes actual category links/tabs inside a search popup
+from choices that enter a value. A Hotels link is not a missing Search value and
+does not become the chosen destination. A positively identified query-only native
+form can perform discovery before a stay form exists; that does not confirm stay
+dates, occupancy or hotel availability. Forms containing date/guest controls still
+need the requested values before submission. Agent guidance prioritizes the
+requested listing category before individual hotels. Required values omitted from
+the request, including child ages, still pause for manual input.
+
+This improves shared observation, action classification and prompt guidance; API
+model weights are not trained by a run. Reusable examples should come from reviewed
+successful/failed transitions, with regression cases across websites, rather than
+memorizing a site's selectors or a specific city.
+
+Manual checks (not executed):
+
+1. Keep the dashboard signed in, select two eligible website tabs while idle and
+   confirm the displayed connection follows without Disconnect. Start only when
+   requested. While paused, switching tabs must not move the existing workflow.
+2. Finish a run, select another website tab and confirm the previous dashboard
+   review remains accessible. Disconnect must remain disconnected until Connect.
+3. On Tripadvisor use `Find me hotels in Edison with 3 adults and 2 rooms and
+   1 child with check in and check out on 28-30 November 2026.` Check entry into
+   Hotels/search rather than repeated individual-hotel navigation. Discovery
+   must not be reported as a completed stay search.
+4. If child age is required, enter it yourself, close with Done and Resume once.
+   Confirm destination, dates, guests and returned prices before saving. Repeat
+   with another city and guest counts, and with a news request for current-page
+   articles. Clearly labelled links/tabs are supported; ambiguous unlabeled
+   controls still need live review.
+
+## Resume with the guest panel closed - 2026-11-06, verification pending
+
+Extension **0.5.4**, dashboard **2026-11-06.4**, agent **v20.8** retains manual age
+confirmation when Done closes the guest panel. On explicit Resume, a uniquely
+observed occupancy summary can be opened once to read the ages already entered;
+one passive wait accommodates delayed rendering. The agent never uses Search
+as an opener or chooses a substitute age. If the fields remain hidden, ambiguous
+or invalid, it asks for manual attention instead of looping. Confirmation remains
+bound to the paused document and the values actually read.
+
+The existing approvals sit beside Resume while paused; both still need renewal.
+No automatic resume or extra model budget was added. Verify the original hotel
+prompt with no age: fill the actual age on the website, click Done, renew the
+visible approvals and Resume. The panel should reopen once for read-back and
+continue. Also verify leaving the panel open, age zero, and resuming with an age
+still missing. These checks were authored but not executed.
+
+## Missing values require user input - 2026-11-06, verification pending
+
+Extension **0.5.3**, dashboard **2026-11-06.3**, agent **v20.7**, extractor **v17**
+complete the missing-value handoff and reject non-article results. A model cannot
+choose a new form value solely because a website requires it. Request quotes
+must ground the field and value; a child count or date is not an age. Direct
+edits and owned option choices are checked before execution. Required child ages
+not supplied in the request cause a pause before another model decision, even
+when the site preselects an age. The UI says **Waiting for your input**. Enter or
+confirm the ages on the website, then explicitly Resume. A still-empty field
+pauses again; confirmed manual values are preserved. No automatic resume occurs.
+
+Manual acceptance:
+
+1. Use `Find hotels in Baltimore for November 28–30, 2026, with 3 adults, 1 child
+   and 2 rooms.` Check that no age is chosen. Fill the actual age on the website,
+   Resume, and verify the final search summary and listings.
+2. Repeat with an explicit actual age in the prompt, and with two children whose
+   age selectors are distinguishable. Verify that ages are not swapped or reused.
+   Ambiguous field-to-child associations should ask for manual input.
+3. Repeat a news article request. `Play Connections: Sports Edition` and `Sports
+   coverage` are game/section links, not article records. A URL-only candidate
+   without a captured headline must not become an approved article. Real short
+   headlines and article headlines containing "game" must remain valid.
+
+Restart/refresh the dashboard, reload the extension, refresh the website and
+reconnect a fresh workflow after upgrading. Tests and live workflows remain for
+manual verification; none were executed while implementing these changes.
+
+## News homepage validation - 2026-11-06, verification pending
+
+Agent **v20.6** and extractor **v16** correct page-role handling in the shared
+backend. A current-page homepage or search result must not become a single
+article detail merely because the model uses `capture=detail` or `finish=detail`.
+Verified card headings and bound links can be returned from neutral pages;
+direct article pages with explicit main-headline evidence retain strict checks.
+Unsupported optional labels such as an invented `source_type=article link` are
+cleared using the existing field-issue path, not accepted as captured facts.
+
+After restarting the dashboard, reconnect the extension and use a fresh workflow.
+Check a news homepage with `Find me articles related to sports`: captured article
+cards should be source-verified and games/navigation excluded or uncertain. Then
+check one actual article URL: its title must be the primary headline, not a body
+quotation or related-story title. For linked collection, verify the starting
+index remains an index after finishing on it. Text/link limits still mean partial
+coverage. No tests, validators, browser sessions or model calls were run.
+
 ## Newly required form fields - 2026-11-06, verification pending
 
 Extension **0.5.2**, dashboard **2026-11-06.2**, agent prompt **v20.5** observes
@@ -190,29 +888,28 @@ event publishing. This is a browser adapter, not another model or planner.
 2. Open `chrome://extensions` (Chrome) or `edge://extensions` (Edge). Enable
    Developer mode, choose **Load unpacked**, and select the repository folder
    `extensions/page-capture`. If it was already installed, click **Reload**.
-   The extension is named **Agentic Studio Browser Companion**, version 0.5.0.
+   The extension is named **Agentic Studio Browser Companion**, version 0.5.12.
    Review/accept the new debugger permission after this upgrade; the runtime
-   attaches only after your separate Start/Resume control approval.
+   attaches only when you choose Start or Resume.
 3. Open the target public HTTPS website in an ordinary tab. Complete login,
    MFA and any site verification yourself before starting. Do not enter passwords,
    API keys or codes in the task prompt.
 4. On that website tab, click the extension's toolbar icon and choose **Use this
    tab with agent**. The side panel opens and connects that tab to the signed-in
    dashboard. Confirm the displayed website and dashboard account.
-5. Enter your task, optionally set fields/record limit/rules, check the paid
-   workflow and browser-level input approvals, then choose **Start workflow**.
+5. Enter your task, optionally set fields/record limit/rules, then choose
+   **Start task**. Start authorizes model use and control of the connected tab.
    Pairing itself makes no model
    call. Existing budgets apply: 30 decisions, five active minutes, up to six
    captured pages, and 1–50 preview records (default 25). These are upper bounds,
    not a promise of full-site coverage.
 6. Follow progress and recent actions in the panel. **Pause** stops between
    actions; an in-flight operation can finish. Complete any required manual
-   interaction in the connected tab. Renew both paid-workflow and browser-level
-   input approvals before **Resume agent**. Collecting retained pages requires
-   only the paid-workflow approval, not renewed input control.
-   **Review collected pages** ends navigation and extracts already-retained
+   interaction in the connected tab, then choose **Resume task** to continue
+   within the same budget. There are no repeated approval checkboxes.
+   **Get collected results** ends navigation and extracts already-retained
    sources; it does not capture new pages or save automatically.
-7. Choose **Open review / results in dashboard**. Review fields, missing values,
+7. Choose **Review results**. Review fields, missing values,
    prices, criteria and evidence. Use **Save reviewed results** there, then
    download. Event publishing remains optional and happens only on reviewed save.
    The website tab remains open for comparison.

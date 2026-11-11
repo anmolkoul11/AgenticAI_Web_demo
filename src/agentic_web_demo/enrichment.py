@@ -236,7 +236,8 @@ def evidence_block_ids(records, pages):
             result[row["listing_id"]][field] = [
                 block["id"]
                 for page in pages
-                if page["url"] == source
+                if page["url"] == source and (not row.get("source_capture_id")
+                                             or page.get("capture_id") == row["source_capture_id"])
                 for block in page.get("blocks", [])
                 if quote
                 and quote_in_block(quote, block)

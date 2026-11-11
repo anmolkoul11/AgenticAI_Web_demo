@@ -1,5 +1,9 @@
 # Dashboard usability verification
 
+For the latest direct-button actions and shared logo, use
+[the regression test cases](DASHBOARD_REGRESSION_TEST_CASES.md). That guide
+contains the targeted pytest commands and current manual acceptance scenarios.
+
 No tests or live API calls were run for this UI change.
 
 Restart the dashboard, then hard-refresh the browser (Ctrl+F5).
@@ -7,8 +11,8 @@ Restart the dashboard, then hard-refresh the browser (Ctrl+F5).
 1. Open `http://127.0.0.1:8120/#login`. Only sign-in should appear.
 2. Select **Create an account**. The separate `#register` screen asks only for a username and password. Browser Back returns to sign-in. Registration success returns to sign-in without automatically logging in.
 3. Sign in. Create a guided proposal. Review the human-readable fields; technical JSON remains available in an expandable section. Approval is still required before execution.
-4. With your session API key configured and explicit paid-call consent, submit an incomplete natural-language request. A prominent information panel should show the returned guidance and missing field labels without opening JSON.
-5. Select **Edit search**, complete the request, renew consent and create a new proposal. No button automatically retries a paid call or executes tools.
+4. With your session API key configured, choose **Create AI preview** for an incomplete natural-language request. A prominent information panel should show the returned guidance and missing field labels without opening JSON.
+5. Select **Edit search**, complete the request and choose **Create AI preview** again. Editing alone must not retry a paid call or execute tools.
 6. Try **Use guided form**. Review every field: this switches modes without copying uncertain model interpretations into the form.
 7. Inspect an unsupported or failed job. Its guidance should be visible; execution failures should warn that earlier stages may already have produced side effects.
 8. While a job is running, creating another proposal is disabled. Verify keyboard focus, narrow-window layout, logout and your existing account/key isolation checks.

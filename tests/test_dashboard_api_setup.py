@@ -15,7 +15,7 @@ def test_api_setup_notice_is_outside_hidden_workflow_steps():
     assert html.index('id="api-setup-notice"') < html.index('data-page="custom"')
     assert 'aria-labelledby="api-setup-title"' in html
     assert 'id="api-setup-open" type="button"' in html
-    assert "Guided hotel demo forms still work without a key" in html
+    assert "Guided hotel demo forms work without one" in html
 
 
 @pytest.fixture
@@ -102,12 +102,11 @@ def test_saved_connection_hides_notice_and_removal_restores_it(setup_ui, remove_
     page.evaluate("""async () => {
       $('api-key').value = 'fixture-only-not-a-real-key';
       $('model-id').value = 'fixture-model';
-      $('key-authorized').checked = true;
-      await $('key-form').onsubmit({preventDefault(){}});
+      await $('key-form').onsubmit({preventDefault(){},submitter:$('save-key')});
     }""")
     assert not page.locator("#api-setup-notice").is_visible()
-    assert page.locator("#web-create").text_content() == "Run workflow"
-    assert "unverified" in page.locator("#model-badge").text_content()
+    assert page.locator("#web-create").text_content() == "Start AI workflow"
+    assert "added" in page.locator("#model-badge").text_content()
     assert page.locator("#api-key").input_value() == ""
     page.evaluate("fixtureRequests.length = 0; window.confirm = () => true;")
     # OS storage availability is not part of this UI-only fixture.
@@ -182,3 +181,43 @@ def test_guided_mode_and_snapshot_wait_remain_available_without_key(setup_ui):
         "setupAvailable": True,
         "requests": [],
     }
+
+
+def test_explicit_start_without_a_key_opens_setup_without_a_paid_request(setup_ui):
+    result = setup_ui.evaluate("""async()=>{
+      $('web-urls').value='https://example.org/items';
+      $('web-request').value='Collect visible item names';
+      await webForm.onsubmit({preventDefault(){},submitter:$('web-create')});
+      return {requests:fixtureRequests,view:activeView,
+        keyFocused:document.activeElement===$('api-key'),submitting:webSubmitting};
+    }""")
+    assert result == {"requests": [], "view": "connection",
+                      "keyFocused": True, "submitting": False}
+
+
+def test_key_save_requires_its_button_and_repeated_submit_sends_one_payload(setup_ui):
+    result = setup_ui.evaluate("""async()=>{
+      $('api-key').value='fixture-only-not-a-real-key';$('model-id').value='fixture-model';
+      await $('key-form').onsubmit({preventDefault(){},submitter:$('clear-key')});
+      const withoutSave=fixtureRequests.length;
+      const originalFetch=window.fetch;let finish;const payloads=[];
+      window.fetch=async(path,options={})=>{
+        if(path==='/api/model-key' && options.method==='POST'){
+          payloads.push(JSON.parse(options.body));
+          await new Promise(resolve=>{finish=resolve;});
+        }
+        return originalFetch(path,options);
+      };
+      const first=$('key-form').onsubmit({preventDefault(){},submitter:$('save-key')});
+      const inFlight=keySubmitting;
+      await $('key-form').onsubmit({preventDefault(){},submitter:$('save-key')});
+      finish();await first;window.fetch=originalFetch;
+      return {withoutSave,inFlight,payloads,
+        keyAfter:$('api-key').value,submitting:keySubmitting,
+        saveEnabled:!$('save-key').disabled};
+    }""")
+    assert result == {"withoutSave": 0, "inFlight": True,
+                      "payloads": [{"api_key": "fixture-only-not-a-real-key",
+                                    "model": "fixture-model", "remember": False,
+                                    "authorized": True}],
+                      "keyAfter": "", "submitting": False, "saveEnabled": True}

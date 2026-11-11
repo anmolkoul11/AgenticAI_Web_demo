@@ -2,6 +2,8 @@
 let webSelected = null, webTimer = null, webProposal = null, webRevision = null;
 let webCapture = null, receivingCapture = false;
 let webSubmitting = false;
+let webSaving = false;
+let browserActionPending = false;
 let webPollEpoch = 0;
 const webForm = $("web-form");
 webForm.dataset.busy = "false";
@@ -51,7 +53,8 @@ advancedBody.append(
   $("web-rule-field").closest("details")
 );
 advanced.append(advancedSummary, advancedBody);
-$("web-authorized").closest("label").before(advanced);
+$("web-workflow-options").before(advanced);
+advancedBody.append($("web-workflow-options"));
 const loginChoice = document.createElement("fieldset");
 loginChoice.id = "web-login-choice";
 loginChoice.className = "web-login-choice";
@@ -74,7 +77,7 @@ $("web-urls").closest("label").nextElementSibling.after(loginChoice);
 loginChoice.before($("web-browser-mode-options"));
 $("web-browser-options").querySelector("legend").textContent = "Advanced browser access";
 $("web-browser-controls").querySelector("p.micro").textContent =
-  "The workflow continues after requested sign-in. MFA stays with you; review the preview before saving.";
+  "Finish signing in on the website, then continue here.";
 // One visible task surface instead of a long stack of setup, review and results.
 const sourcePanel = webForm.closest(".card"), workPanel = $("web-status").closest(".card");
 const resultsPanel = $("web-record-cards").closest(".card");
@@ -181,10 +184,12 @@ primaryInputs.append($("web-urls").closest("label"), requestLabel);
 // the actual selected/captured tab; typing an address never starts automation.
 primaryInputs.after($("web-existing-tab-setup"), $("web-extension-preview"));
 primaryInputs.after($("web-url-help"));
-// Keep required permissions visible; optional configuration is folded away.
-const normalPermission = $("web-normal-confirm-label");
-normalPermission.lastChild.textContent = "I allow unrestricted browser networking and will supervise this session. Third-party scripts, redirects, frames, WebSockets, popups, service workers and downloads may send data to third parties or local network services.";
-advanced.before(normalPermission);
+// The explicit Start action is accompanied by a short scope and cost notice.
+// Keep normal-network access visible rather than hiding it with the settings.
+const networkNotice = document.createElement("p");
+networkNotice.id = "web-network-notice"; networkNotice.className = "field-help";
+networkNotice.textContent = "Normal browser access can load third-party content and contact local network services.";
+$("web-consent-text").before(networkNotice);
 advancedBody.prepend($("web-browser-mode-options"), $("web-output-fields").closest("label"));
 advancedSummary.textContent = "Settings & optional rules";
 const sourceHelp = document.createElement("details"), sourceHelpTitle = document.createElement("summary");
@@ -228,7 +233,7 @@ function updateSourceChoice() {
     button.setAttribute("aria-pressed", String(button.dataset.source === selected));
   }
   $("web-create").textContent = selected === "browser" ?
-    automatic ? "Run workflow" : "Open website for manual collection" : "Create a preview";
+    automatic ? "Start AI workflow" : "Open website" : "Create AI preview";
   updateSourceInputs();
   $("web-workflow-options").hidden = !automatic;
   $("web-workflow-options").disabled = !automatic;
@@ -237,14 +242,17 @@ function updateSourceChoice() {
   $("web-request").required = automatic;
   $("web-request-optional").textContent = automatic ? "Required for automation" : "Optional";
   $("web-consent-text").textContent = selected === "capture" ?
-    "I approve paid extraction of this received snapshot. No browser navigation or agent actions will run. I will review results before saving." : automatic ?
-    "I approve up to 30 paid agent decisions (5 active minutes), followed by paid extraction of up to 6 captured pages. No reservation or payment. I will review results before saving." :
-    "I approve reading the supplied content and a paid extraction call. Manual search navigation, link discovery or browser-agent actions require separate approval.";
+    "Extract sends this snapshot to your paid AI service. Save results when ready." : automatic ?
+    "Start lets the agent use this website and sends page content to your paid AI service. Up to 30 AI steps; no bookings or payments. Save results when ready." :
+    selected === "browser" ? "Open the website, then choose a collection action. AI extraction uses your paid connection." :
+    "Create preview sends this content to your paid AI service. Save results when ready.";
+  $("web-consent-text").hidden = selected === "extension";
+  networkNotice.hidden = selected !== "browser" || $("web-browser-mode").value !== "normal";
   const guidance = {
-    browser: automatic ? "Your request guides search, navigation and collection in one run. Preview first; save after review." :
-      "Open the website, then choose an action under Advanced tools. CrewAI supports this manual collection path.",
-    capture: "Extract this page only: send a reviewed snapshot from Browser Companion, then extract it here. No form filling, search or navigation.",
-    extension: "Use the same automated workflow in your existing tab. Start in the Browser Companion side panel; review and save here.",
+    browser: automatic ? "Search and collect information from your website." :
+      "Open the website, then choose a collection tool.",
+    capture: "Send a page snapshot from Browser Companion, then extract it here.",
+    extension: "Start in Browser Companion. Your results will appear here.",
     public: "Read up to three public HTML pages from one website.",
     paste: "Paste authorized content and its original page address.",
   };
@@ -270,31 +278,31 @@ function updateSourceInputs() {
     extension ? "Website to open (optional)" : source === "public" ? "Website addresses" :
     source === "paste" ? "Original source address" : "Website address";
   $("web-url-help").textContent = captured ?
-    "This address belongs to the received snapshot. Discard the capture to choose another website; editing a URL would not capture new content." :
-    extension ? "Already on the website? Switch to that tab and open Browser Companion to start the workflow. Otherwise enter one HTTPS address and open it below." :
-    snapshot ? "Enter one HTTPS address to open, or use an existing website tab. This option does not fill forms or navigate automatically." :
-    source === "public" ? "Up to three explicit HTTPS pages on the same website. No automatic pagination." :
-    source === "paste" ? "Use the page address that belongs to the text you paste below." :
-    "One HTTPS starting website. The dashboard opens a separate automated browser for this option.";
+    "Address from your snapshot. Discard it to use a different page." :
+    extension ? "Open Browser Companion on your website tab, or open a website below." :
+    snapshot ? "Open a website below or use an existing tab." :
+    source === "public" ? "Up to three HTTPS pages from the same website." :
+    source === "paste" ? "Enter the address of the page you copied." :
+    "Enter the HTTPS address to open.";
   requestLabel.hidden = extension;
   $("web-existing-tab-setup").hidden = !(extension || snapshot);
   $("web-open-normal-browser").hidden = captured;
   $("web-tab-next-step").textContent = extension ?
-    "Next: on the website tab, open Browser Companion → Use this tab with agent. Enter the task and start the workflow there; opening a tab alone does not run the agent." :
-    captured ? "Capture received. Review its text, enter any instructions and approve extraction below." :
-    "Next: on the website tab, open Browser Companion, capture the current page and send it to this signed-in dashboard. No paid call runs until you approve extraction here.";
+    "Open Browser Companion on the website tab and choose Start task." :
+    captured ? "Snapshot received. Add instructions and choose Extract." :
+    "Capture the page in Browser Companion and send it here.";
   $("web-extension-preview").hidden = !snapshot;
   $("web-capture-state").textContent = captured ?
-    "Capture received. Review the source text and links, then approve extraction. Only this snapshot will be processed; no paid call has run yet." :
-    "Waiting for a page capture. Opening a website is not a capture. Use Browser Companion on its tab, review the page text and send it here.";
+    "Snapshot received. Ready to extract." :
+    "Waiting for a snapshot from Browser Companion.";
   $("web-discard-capture").disabled = !webCapture;
   $("web-create").disabled = webSubmitting || extension || snapshot && !webCapture;
   if (snapshot) $("web-create").textContent = captured ? "Extract received snapshot · paid API" : "Waiting for page capture";
   $("web-create-help").hidden = !snapshot;
   $("web-create-help").textContent = webSubmitting ?
-    "Another workflow is active. Finish or cancel it before extracting a new snapshot." : captured ?
-    "Ready to extract this snapshot. Review the two permission checkboxes above, then choose Extract received snapshot. No live browser actions will run." :
-    "Extraction unlocks after Browser Companion confirms Send to displayed dashboard account. Keeping a capture or opening a website alone does not send it.";
+    "Finish or stop the current task first." : captured ?
+    "Choose Extract to send this snapshot to your paid AI service. No website actions will run." :
+    "Use Send to dashboard in Browser Companion to continue.";
   $("web-show-capture-steps").hidden = !snapshot || captured;
   if (!modelConfigured && !extension && !webSubmitting && (!snapshot || captured)) {
     $("web-create").textContent = "Set up API connection";
@@ -606,14 +614,17 @@ const navPanel = document.createElement("section"), navTitle = document.createEl
 const agentPanel = document.createElement("section"); agentPanel.className = "journey-action";
 const agentTitle = document.createElement("h4"); agentTitle.textContent = "Let the browser agent do the task";
 const agentHelp = document.createElement("p"); agentHelp.className = "micro";
-agentHelp.textContent = "LangGraph agent: interprets your request, observes the live page, takes one action and checks what changed. It can search, adjust fields and collect relevant same-site pages. Navigation uses a smaller, task-focused view; extraction captures the full source separately. MFA stays with you.";
-const agentConsent = document.createElement("label"); agentConsent.className = "inline consent";
-const agentCheckbox = document.createElement("input"); agentCheckbox.type = "checkbox";
-agentConsent.append(agentCheckbox, document.createTextNode("I authorize autonomous information-retrieval actions and up to 30 paid model decisions (5 active minutes), followed by paid extraction of up to 6 captured pages. No reservation/payment. I will review results before saving."));
-const agentVisualConsent = document.createElement("label"); agentVisualConsent.className = "check-row";
-const agentVisualCheckbox = document.createElement("input"); agentVisualCheckbox.type = "checkbox";
-agentVisualCheckbox.id = "web-agent-visual";
-agentVisualConsent.append(agentVisualCheckbox, document.createTextNode("Also allow viewport screenshots when the agent needs layout help during this start/resume (extra image-token cost). Images are not sent on every step. Screenshots may include page/account information; known credential fields are masked. Images stay out of saved history and exports."));
+agentHelp.textContent = "Search, fill fields and collect results from this website.";
+const agentUsage = document.createElement("p"); agentUsage.className = "field-help";
+agentUsage.textContent = "Run or Resume controls this website and sends page content to your paid AI service, within the task budget. No bookings or payments.";
+const agentVisualConsent = document.createElement("label");
+const agentVisualSelect = document.createElement("select");
+agentVisualSelect.id = "web-agent-visual";
+agentVisualSelect.append(new Option("Off", "no"), new Option("Allow screenshots · extra AI cost", "yes"));
+agentVisualConsent.append(document.createTextNode("Page screenshots"), agentVisualSelect);
+const agentVisualHelp = document.createElement("p"); agentVisualHelp.className = "micro";
+agentVisualHelp.textContent = "If enabled, screenshots may include page or account details and are sent to your AI service.";
+agentVisualConsent.append(agentVisualHelp);
 const agentButtons = document.createElement("div"); agentButtons.className = "button-group";
 const agentStart = document.createElement("button"); agentStart.type = "button";
 agentStart.id = "web-agent-start"; agentStart.textContent = "Run browser agent · paid API";
@@ -643,7 +654,7 @@ const agentInformationNote = document.createElement("p"); agentInformationNote.c
 agentInformation.append(agentInformationTitle, agentInformationList, agentInformationNote);
 agentInformation.hidden = true;
 agentButtons.append(agentResume, agentCollect, agentManual, agentPause);
-agentPanel.append(agentTitle, agentBrief, agentConsent, agentVisualConsent, agentButtons, agentChecklist, agentInformation, agentDetails);
+agentPanel.append(agentTitle, agentBrief, agentUsage, agentVisualConsent, agentButtons, agentChecklist, agentInformation, agentDetails);
 let latestAgentBrowser = {};
 function agentApprovalState() {
   const browser = latestAgentBrowser, report = browser.agent_report;
@@ -658,15 +669,13 @@ function agentApprovalState() {
   agentPause.disabled = browser.state !== "agent_running";
   const available = ["waiting", "agent_paused"].includes(browser.state);
   agentStart.disabled = agentResume.disabled = agentCollect.disabled =
-    !agentCheckbox.checked || !available || $("web-framework").value !== "langgraph";
+    browserActionPending || !available || $("web-framework").value !== "langgraph";
   agentManual.disabled = browser.state !== "agent_paused" && !pendingAutomatic;
-  agentCheckbox.disabled = !available;
-  agentVisualCheckbox.disabled = !available;
+  agentVisualSelect.disabled = !available || browserActionPending;
 }
-agentCheckbox.onchange = agentApprovalState;
 navPanel.id = "web-nav-panel"; navTitle.textContent = "Search this website";
 const navHelp = document.createElement("p"); navHelp.className = "micro";
-navHelp.textContent = "One paid call proposes up to five actions. Open a search form or calendar, choose a suggestion, then request another reviewed step when new controls appear. Entered values are checked; a successful click alone does not prove your filters were applied.";
+navHelp.textContent = "Suggest uses your paid AI service to prepare up to five actions. Choose Run to apply them.";
 const navActions = document.createElement("div"); navActions.className = "button-group";
 const navPlanButton = document.createElement("button"); navPlanButton.id = "web-plan-navigation";
 navPlanButton.type = "button"; navPlanButton.textContent = "Suggest search actions · paid API";
@@ -684,28 +693,24 @@ const hotelPanel = document.createElement("section"), hotelTitle = document.crea
 let hotelReviewedRevision = null;
 hotelTitle.textContent = "Complete hotel search";
 const hotelHelp = document.createElement("p"); hotelHelp.className = "micro";
-hotelHelp.textContent = "Review destination, full dates, adults and rooms once. The browser then prepares the standard form, verifies each value and submits Search. No reservation/payment and no extra model-planning calls. Unsupported or ambiguous controls stop for your attention.";
+hotelHelp.textContent = "Search applies the dates and guests shown below. Search & extract also sends results to your paid AI service.";
 const hotelPrepare = document.createElement("button"); hotelPrepare.type = "button";
 hotelPrepare.id = "web-hotel-plan"; hotelPrepare.textContent = "Prepare complete hotel search · no API call";
 const hotelRun = document.createElement("button"); hotelRun.type = "button";
-hotelRun.id = "web-hotel-approve"; hotelRun.textContent = "Approve & run search only";
+hotelRun.id = "web-hotel-approve"; hotelRun.textContent = "Run search";
 const hotelExtract = document.createElement("button"); hotelExtract.type = "button";
-hotelExtract.id = "web-hotel-extract"; hotelExtract.textContent = "Approve, search & extract · paid API";
+hotelExtract.id = "web-hotel-extract"; hotelExtract.textContent = "Search & extract · paid AI";
 const hotelDismiss = document.createElement("button"); hotelDismiss.type = "button";
 hotelDismiss.id = "web-hotel-dismiss"; hotelDismiss.className = "secondary";
 hotelDismiss.textContent = "Dismiss hotel search";
 const hotelReview = document.createElement("section"), hotelTargets = document.createElement("ul");
-const hotelConsent = document.createElement("label"), hotelCheckbox = document.createElement("input");
-hotelCheckbox.type = "checkbox"; hotelConsent.className = "inline consent";
-hotelConsent.append(hotelCheckbox, document.createTextNode("I reviewed these targets and authorize the bounded calendar/occupancy actions and one Search submission. Extraction happens only if I choose the paid option."));
 const hotelActions = document.createElement("div"); hotelActions.className = "button-group";
 hotelActions.append(hotelRun, hotelExtract, hotelDismiss);
-hotelReview.append(hotelTargets, hotelConsent, hotelActions);
+hotelReview.append(hotelTargets, hotelActions);
 hotelPanel.append(hotelTitle, hotelHelp, hotelPrepare, hotelReview);
 function hotelApprovalState() {
-  hotelRun.disabled = hotelExtract.disabled = !hotelCheckbox.checked || hotelReview.hidden;
+  hotelRun.disabled = hotelExtract.disabled = browserActionPending || hotelReview.hidden || !hotelReviewedRevision;
 }
-hotelCheckbox.onchange = hotelApprovalState;
 const navigationEvidence = document.createElement("section");
 navigationEvidence.className = "notice"; navigationEvidence.hidden = true;
 navigationEvidence.setAttribute("aria-live", "polite");
@@ -896,7 +901,7 @@ function renderBrowserOptions(browser) {
   advancedTools.hidden = authenticationPending;
   const running = ["agent_running", "agent_pausing"].includes(browser.state);
   const renewing = browser.state === "agent_paused" || (browser.state === "waiting" && !!browser.agent_report);
-  agentConsent.hidden = agentVisualConsent.hidden = automatic && !renewing;
+  agentUsage.hidden = agentVisualConsent.hidden = automatic && !renewing;
   manualAgentTools.hidden = $("web-framework").value !== "langgraph";
   stableText(agentBrief, browser.state === "agent_pausing" ?
     "Pause requested. An in-flight model call or browser action may finish first." :
@@ -912,9 +917,12 @@ function renderBrowserOptions(browser) {
   agentPanel.hidden = authenticationPending || $("web-framework").value !== "langgraph";
   agentApprovalState();
   const agentReport = browser.agent_report;
+  const retainedSources = agentReport?.listing_collection ?
+    `${agentReport.listing_collection.records_collected} unique source cards across ${agentReport.listing_collection.result_pages} result pages` :
+    `${agentReport?.captured_pages?.length || 0} retained page(s)`;
   const agentMessage = agentReport ?
-    `${agentReport.status.replaceAll("_", " ")} · ${agentReport.calls}/${agentReport.max_calls} model calls attempted · ${agentReport.captured_pages.length} retained page(s). ${agentReport.guidance}` :
-    "Ready when you authorize it. Your original task remains unchanged throughout this session.";
+    `${agentReport.status === "paused" && agentReport.awaiting_user_input ? "Waiting for your input" : agentReport.status.replaceAll("_", " ")} · ${agentReport.calls}/${agentReport.max_calls} model calls attempted · ${retainedSources}. ${agentReport.guidance}` :
+    "Ready to start.";
   const lastDecision = agentReport?.decision_diagnostics?.at(-1);
   const decisionMessage = lastDecision ?
     ` Decision ${lastDecision.call}: ${lastDecision.error_code || lastDecision.response_status || "no completed response"}; ` +
@@ -1114,7 +1122,7 @@ function renderBrowserOptions(browser) {
   hotelPrepare.disabled = !manualCollectionAvailable(browser);
   hotelReview.hidden = browser.state !== "hotel_review" || !browser.hotel_plan;
   updateRegion(hotelTargets, [browser.hotel_plan || null, browser.hotel_revision || null], () => {
-    hotelTargets.replaceChildren(); hotelCheckbox.checked = false;
+    hotelTargets.replaceChildren();
     if (browser.hotel_plan?.date_resolution?.guidance) {
       const dateNote = document.createElement("li");
       dateNote.textContent = browser.hotel_plan.date_resolution.guidance;
@@ -1219,7 +1227,6 @@ function renderBrowserOptions(browser) {
 function clearWebCapture() {
   webCapture = null;
   $("web-capture-preview").textContent = "No extension capture received.";
-  $("web-consent").checked = false;
   updateSourceInputs();
 }
 window.addEventListener("message", async event => {
@@ -1257,7 +1264,7 @@ window.addEventListener("message", async event => {
     // Recompute the snapshot-only CTA after rendering. Receipt never starts a
     // paid call, and must not inherit the automated-browser workflow controls.
     updateSourceInputs();
-    webText("web-status", "Browser capture received. Review its text below, enter optional instructions, and explicitly consent to extraction. No model call has run.");
+    webText("web-status", "Snapshot received. Add instructions, then choose Extract.");
     acknowledge(true);
   } catch (error) { webText("web-status", error.message); acknowledge(false, "capture_claim_failed"); }
   finally { receivingCapture = false; }
@@ -1272,6 +1279,7 @@ window.addEventListener("message", async event => {
     // The endpoint verifies this account owns the job. Opening never saves it.
     await api(`/api/jobs/${event.data.job_id}`);
     document.querySelector('[data-view="custom"]').click();
+    if (webSaving) { setStudioStep("work"); return; }
     await customSelect(event.data.job_id);
   } catch (error) { webText("web-status", error.message); }
 });
@@ -1293,12 +1301,11 @@ $("web-open-normal-browser").onclick = () => {
   }
   window.open(website.href, "_blank", "noopener,noreferrer");
   $("web-tab-next-step").textContent = $("web-source").value === "extension" ?
-    "Website opened in this browser. On that tab, open Browser Companion → Use this tab with agent, enter your task and choose Start workflow. If no tab appeared, check the browser's pop-up setting." :
-    "Website opened in this browser. On that tab, open Browser Companion, capture the page and send the reviewed snapshot here. Then this dashboard's extraction button becomes available. If no tab appeared, check the browser's pop-up setting.";
+    "On the website tab, open Browser Companion, enter your request and choose Start task." :
+    "Capture the page in Browser Companion and send it here, then choose Extract.";
 };
 function canApproveWeb() {
-  return webProposal && $("web-approved").checked &&
-    (!webProposal.partial || $("web-partial-approved").checked);
+  return !webSaving && !!webProposal && !!webRevision;
 }
 function showRejected(items, fieldIssues = [], fieldRepairs = [], constraintIssues = []) {
   const target = $("web-rejected");
@@ -1392,10 +1399,13 @@ function showPricingSummary(data) {
   if (!summary?.applicable) return;
   const within = summary.within_target_ready ?? summary.within_target ?? 0;
   const outside = summary.outside_target_ready ?? summary.outside_target ?? 0;
+  const hasTarget = summary.target_requested ?? summary.comparison_requested ?? true;
   stableText(pricingNote, `${summary.verified || 0} captured prices verified; ${summary.unverified || 0} unverified. ` +
-    `${within} ready records within the price target; ${outside} outside it. ` +
-    "Outside-target preferences are labelled alternatives, not budget matches. " +
-    "Nightly defaults to all requested rooms combined. Taxes and fees are shown separately.");
+    (hasTarget ? `${within} ready records within the price target; ${outside} outside it. ` +
+      "Outside-target preferences are labelled alternatives, not budget matches. " :
+      "No price target was requested. Optional price warnings remain visible in the results. ") +
+    (summary.comparison_requested !== false ? "Nightly defaults to all requested rooms combined. " : "") +
+    "Taxes and fees are shown separately.");
   updateRegion(pricingTargets, data.request_preferences || [], () => {
     pricingTargets.replaceChildren();
     for (const preference of data.request_preferences || []) {
@@ -1425,6 +1435,12 @@ function showOutputContract(data) {
       `${coverage.truncated_pages || 0} truncated. This is not verified whole-website coverage. ` : "") +
     (contract.omitted_inferred_fields?.length ?
       `Empty optional fields omitted: ${contract.omitted_inferred_fields.map(name => name.replaceAll("_", " ")).join(", ")}. ` : "") +
+    (coverage?.listing_collection ? `${coverage.listing_collection.records_collected} unique source cards across ${coverage.listing_collection.result_pages} result pages. ` +
+      (coverage.listing_collection.source_preview_only ? "Read-only source preview: requested stay details remain unverified. " : "") +
+      (coverage.listing_collection.complete ? "Reached the end of the available result list. " :
+        `Partial collection: ${coverage.listing_collection.reason.replaceAll("_", " ")}. `) : "") +
+    (coverage?.extraction_batches ? `${coverage.extraction_batches.completed}/${coverage.extraction_batches.total} extraction batches processed. ` +
+      (coverage.extraction_batches.unreturned_groups ? `${coverage.extraction_batches.unreturned_groups} source cards were not returned as model candidates. ` : "") : "") +
     (coverage?.information_coverage?.partial_reason ? coverage.information_coverage.partial_reason + " " : "") +
     "Missing means not verified in this capture, not absent from the website.");
   updateRegion(outputContractList, contract.field_coverage || [], () => {
@@ -1449,13 +1465,37 @@ retryLinkDiscovery.textContent = "Set up a new session to find relevant links";
 const reviewCountsHelp = document.createElement("details"), reviewCountsHelpTitle = document.createElement("summary");
 reviewCountsHelpTitle.textContent = "What these counts mean";
 reviewCountsHelp.append(reviewCountsHelpTitle, reviewCountsNote);
-reviewCountsPanel.append(reviewCountsText, reviewCountsHelp, retryLinkDiscovery);
+const topicReview = document.createElement("details"), topicReviewTitle = document.createElement("summary");
+const topicReviewNote = document.createElement("p"), topicReviewList = document.createElement("ol");
+topicReview.hidden = true;
+topicReviewNote.className = "micro";
+topicReviewNote.textContent = "AI topic decisions, separate from business rules. Source quotes show what was captured; the classification can still be wrong.";
+topicReview.append(topicReviewTitle, topicReviewNote, topicReviewList);
+reviewCountsPanel.append(reviewCountsText, reviewCountsHelp, topicReview, retryLinkDiscovery);
 $("web-status").after(reviewCountsPanel);
 let linkRetryContext = null;
 function showReviewCounts(data) {
   const counts = data?.review_counts;
   reviewCountsPanel.hidden = !counts;
   retryLinkDiscovery.hidden = true; linkRetryContext = null;
+  const assessments = data?.topic_assessments || [];
+  topicReview.hidden = !assessments.length;
+  topicReviewTitle.textContent = `Why articles were excluded (${assessments.length})`;
+  updateRegion(topicReviewList, assessments, () => {
+    topicReviewList.replaceChildren();
+    for (const assessment of assessments) {
+      const row = document.createElement("li"), title = document.createElement("strong");
+      title.textContent = assessment.title || "Source headline unverified";
+      const reason = document.createElement("p");
+      reason.textContent = `${assessment.classification === "uncertain" ? "Uncertain" : "AI-assessed unrelated"}: ${assessment.reason || "No reason returned"}`;
+      const quote = document.createElement("blockquote");
+      quote.textContent = assessment.evidence || "No matching source quote was returned.";
+      const source = document.createElement("p");
+      sourceValue(source, assessment.record_url || assessment.source_url);
+      row.append(title, reason, quote, source);
+      topicReviewList.append(row);
+    }
+  });
   if (!counts) return;
   reviewCountsText.textContent = `Ready: ${counts.matched} · Unrelated: ${counts.unrelated} · ` +
     `Uncertain: ${counts.uncertain} · Invalid: ${counts.invalid} · ` +
@@ -1477,21 +1517,43 @@ retryLinkDiscovery.onclick = () => {
   $("web-source").value = "browser"; $("web-source").onchange();
   $("web-urls").value = linkRetryContext.url;
   $("web-request").value = linkRetryContext.request;
-  $("web-consent").checked = false; $("web-normal-confirm").checked = false;
-  webText("web-status", "Source and request copied. Review sign-in and browser settings, " +
-    "renew API consent, then submit a new session. Once the page is ready, choose " +
-    "Find relevant links and review the proposed pages. Nothing started automatically.");
+  webText("web-status", "Request copied. Check the website and settings, then choose Start.");
   setStudioStep("source"); $("web-request").focus({preventScroll: true});
 };
 function webText(id, value) { stableText(document.getElementById(id), value); }
+function workflowStatusText(job) {
+  const result = job.result || {};
+  if (job.status === "awaiting_review" && result.proposal) {
+    return `${result.proposal.records.length} results ready. Review them, then choose Save.`;
+  }
+  if (job.kind === "custom-execute" && job.status === "completed" && result.run_id) {
+    return "Results saved. View or download them below.";
+  }
+  if (result.review_outcome === "no_matches") return "No matching results found. Try adjusting your request.";
+  return `${statusLabels[job.status] || job.status}: ${result.guidance || job.guidance || "Working…"}`;
+}
 function webBusy(busy) {
   webSubmitting = busy;
   webForm.dataset.busy = String(busy);
   updateSourceInputs();
   $("web-execute").disabled = busy || !canApproveWeb();
 }
+function updateCollectionExtent() {
+  const supported = ["browser", "extension"].includes($("web-source").value) &&
+    $("web-framework").value === "langgraph" && !$("web-manual-mode").checked;
+  $("web-extent").disabled = !supported;
+  if (!supported) $("web-extent").value = "preview";
+  const all = $("web-extent").value === "all_results";
+  $("web-limit").max = all ? "5000" : "50";
+  if (!all && Number($("web-limit").value) > 50) $("web-limit").value = "25";
+}
+$("web-extent").onchange = () => {
+  $("web-limit").value = $("web-extent").value === "all_results" ? "5000" : "25";
+  updateCollectionExtent(); updateSourceChoice();
+};
 $("web-source").onchange = () => {
-  $("web-workflow-visual").checked = false;
+  updateCollectionExtent();
+  $("web-workflow-visual").value = "no";
   updateSourceChoice();
   const paste = $("web-source").value === "paste";
   const browser = $("web-source").value === "browser";
@@ -1499,7 +1561,6 @@ $("web-source").onchange = () => {
   loginChoice.disabled = !browser;
   $("web-browser-mode-options").hidden = !browser;
   $("web-browser-mode-options").disabled = !browser;
-  $("web-normal-confirm").checked = false;
   $("web-browser-options").hidden = !browser;
   $("web-browser-options").disabled = !browser;
   $("web-text-label").hidden = !paste;
@@ -1508,7 +1569,6 @@ $("web-source").onchange = () => {
   $("web-login-password").value = "";
   updateBrowserMode();
   $("web-login-mode").onchange();
-  $("web-consent").checked = false;
 };
 $("web-login-mode").onchange = () => {
   const mode = $("web-login-mode").value;
@@ -1524,9 +1584,9 @@ $("web-login-mode").onchange = () => {
   if (!automatic) $("web-login-user").value = "";
   $("web-login-password").value = "";
   loginHelp.textContent = mode === "automatic" ?
-    "Enter this website's credentials under Advanced settings. They are used for one sign-in attempt and are not saved." :
-    mode === "manual" ? "Chromium will open so you can complete sign-in yourself before capture." :
-      "The website opens without a sign-in attempt or website credentials.";
+    "Add the website's credentials in Settings for one sign-in attempt. They are not saved." :
+    mode === "manual" ? "Sign in on the website when it opens." :
+      "The website opens without signing in.";
   updateAuthenticationMethod();
 };
 function updateAuthenticationMethod() {
@@ -1538,40 +1598,38 @@ function updateAuthenticationMethod() {
   if (emailOnly) password.value = "";
 }
 $("web-auth-method").onchange = () => {
-  updateAuthenticationMethod(); $("web-consent").checked = false;
+  updateAuthenticationMethod();
 };
 function updateBrowserMode() {
   const normal = $("web-browser-mode").value === "normal";
   const browser = $("web-source").value === "browser";
-  $("web-normal-confirm-label").hidden = !browser || !normal;
-  $("web-normal-confirm").disabled = !browser || !normal;
-  $("web-normal-confirm").required = browser && normal;
   $("web-browser-mode-help").textContent = normal ?
-    "Normal networking uses the browser's own network stack, without the app proxy or origin filters. A fresh isolated profile still opens. Browser sandbox/TLS checks and data-review checks remain; this does not bypass a website's bot or login restrictions. Cancel and start a new session to change modes." :
-    "Restricted networking uses the current origin allowlist and network proxy. Third-party resources and identity origins need explicit approval. Cancel and start a new session to change modes.";
+    "Normal mode allows third-party content, redirects and local network access. Choose Restricted to limit access to configured sites." :
+    "Restricted mode allows configured sites only. Add trusted sign-in or resource origins below if needed.";
   $("web-resource-origins").closest("details").hidden = normal;
   $("web-auth-origins").closest("details").hidden = normal;
   updateSourceChoice();
 }
 $("web-browser-mode").onchange = () => {
-  $("web-normal-confirm").checked = false;
-  $("web-consent").checked = false;
   updateBrowserMode();
   $("web-login-mode").onchange();
 };
 $("web-manual-mode").onchange = $("web-framework").onchange = () => {
-  $("web-consent").checked = false;
-  $("web-workflow-visual").checked = false;
+  updateCollectionExtent();
+  $("web-workflow-visual").value = "no";
   updateSourceChoice();
 };
 $("web-source").onchange();
-$("web-approved").onchange = () => { $("web-execute").disabled = !canApproveWeb(); };
-$("web-partial-approved").onchange = $("web-approved").onchange;
 $("web-create").addEventListener("click", event => {
   if (!modelConfigured) { event.preventDefault(); requireModelConnection(); }
 });
 $("web-form").onsubmit = async event => {
   event.preventDefault();
+  // Only the labelled Start/Extract submit action confirms this request's
+  // displayed AI cost, data scope and selected browser mode. Status polling,
+  // settings changes and a bare programmatic submit cannot authorize a run.
+  const startConfirmed = event.submitter === $("web-create");
+  if (!startConfirmed || webSubmitting || webSaving) return;
   if ($("web-source").value === "extension") {
     webText("web-status", "Open the Browser Companion extension on your website tab and start from its side panel. This form does not start a current-tab workflow.");
     return;
@@ -1585,7 +1643,8 @@ $("web-form").onsubmit = async event => {
     instructions: $("web-request").value, page_text: $("web-source").value === "paste" ? $("web-text").value : "",
     output_fields: $("web-output-fields").value.split(",").map(value => value.trim()).filter(Boolean),
     record_limit: Number($("web-limit").value), business_rules: field ? [{field, operator: $("web-rule-op").value, value: $("web-rule-value").value}] : [],
-    publish_event: $("web-publish").checked, authorized: $("web-authorized").checked, allow_model_api: $("web-consent").checked,
+    collection_extent: $("web-extent").value,
+    publish_event: $("web-publish").value === "yes", authorized: startConfirmed, allow_model_api: startConfirmed,
   };
   if (values.output_fields.length > 16 || new Set(values.output_fields).size !== values.output_fields.length ||
       values.output_fields.some(name => !/^[a-z][a-z0-9_]{0,39}$/.test(name))) {
@@ -1595,20 +1654,16 @@ $("web-form").onsubmit = async event => {
   if (values.source === "browser") {
     const automatic = automaticWorkflowSelected();
     values.workflow_mode = automatic ? "automatic" : "manual";
-    values.agent_confirmed = automatic && $("web-consent").checked;
-    values.agent_visual_confirmed = automatic && $("web-workflow-visual").checked;
+    values.agent_confirmed = automatic && startConfirmed;
+    values.agent_visual_confirmed = automatic && $("web-workflow-visual").value === "yes";
     if (automatic && (!values.instructions.trim() || !values.agent_confirmed)) {
-      webText("web-status", "Describe the task and approve agent navigation plus extraction before running the workflow.");
+      webText("web-status", "Describe what you want to find before starting.");
       return;
     }
     values.browser_mode = $("web-browser-mode").value;
     values.browser_channel = $("web-browser-channel").value;
     values.browser_scroll_steps = Number($("web-scroll-steps").value);
-    values.normal_browser_confirmed = values.browser_mode === "normal" && $("web-normal-confirm").checked;
-    if (values.browser_mode === "normal" && !values.normal_browser_confirmed) {
-      webText("web-status", "Confirm normal networking for this supervised session before opening the browser.");
-      return;
-    }
+    values.normal_browser_confirmed = values.browser_mode === "normal" && startConfirmed;
     values.login_mode = $("web-login-mode").value;
     values.resource_origins = values.browser_mode === "normal" ? [] : $("web-resource-origins").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     values.verification_origins = values.browser_mode === "normal" ? [] : $("web-verification-origins").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
@@ -1633,7 +1688,7 @@ $("web-form").onsubmit = async event => {
     if (!webCapture) { webText("web-status", "Send a new capture from the browser extension first."); return; }
     values.capture = webCapture; values.urls = [webCapture.url];
   }
-  agentCheckbox.checked = false; agentVisualCheckbox.checked = false;
+  agentVisualSelect.value = "no";
   webBusy(true); webText("web-status", "Starting your workflow…");
   setFlowActivity(true, "Starting your workflow — waiting for the server to accept the run.");
   try {
@@ -1643,7 +1698,7 @@ $("web-form").onsubmit = async event => {
     webText("web-status", error.message); webBusy(false);
     setFlowActivity(false, "Submission did not complete. Check the message before retrying.");
   }
-  finally { $("web-consent").checked = false; $("web-workflow-visual").checked = false; $("web-normal-confirm").checked = false; $("web-login-password").value = ""; $("web-login-user").value = ""; delete values.login; }
+  finally { $("web-workflow-visual").value = "no"; $("web-login-password").value = ""; $("web-login-user").value = ""; delete values.login; }
 };
 function webTable(rows, fields) {
   previewRows = rows; previewFields = fields;
@@ -1823,7 +1878,8 @@ function pricingPreview(pricing, row = null) {
   status.dataset.verified = String(pricing.status === "verified");
   status.textContent = pricing.budget_status === "within_target" ? "Within your price target" :
     pricing.budget_status === "outside_target" ? "Outside your target · alternative" :
-    pricing.status === "unverified" ? "Price or stay details need verification" : pricing.basis_label || "Review price details";
+    pricing.status === "unverified" ? (pricing.scope_status === "verified" ?
+      "Price details need verification" : "Price or stay details need verification") : pricing.basis_label || "Review price details";
   section.append(status);
   const details = document.createElement("details"), summary = document.createElement("summary");
   summary.textContent = "Price details & source quotes"; details.append(summary);
@@ -2093,15 +2149,24 @@ $("web-back-source").onclick = () => {
 };
 async function customSelect(id) {
   setStudioStep("work");
+  // Reopening the same review must preserve the user's approval controls and
+  // current selection. Its read-only poll resolves any save from another view.
+  if (webSelected === id) {
+    if (!webSubmitting) {
+      clearTimeout(webTimer);
+      await customPoll(id, ++webPollEpoch);
+    }
+    return;
+  }
   if (previewDialog.open) previewDialog.close();
   clearTimeout(webTimer); webSelected = id; webProposal = null; webRevision = null;
   const epoch = ++webPollEpoch;
   lastLinkSignature = ""; lastResourceSignature = "";
   linkList.replaceChildren(); resourceList.replaceChildren();
   for (const {details} of flowNodes.values()) details.open = false;
-  $("web-approved").checked = false; $("web-review").hidden = true; $("web-downloads").hidden = true;
+  $("web-review").hidden = true; $("web-downloads").hidden = true;
   $("web-browser-controls").hidden = true;
-  $("web-partial-approved").checked = false; $("web-partial-label").hidden = true;
+  $("web-partial-label").hidden = true;
   showRejected([]);
   showReviewCounts(null);
   showRequestConstraints(null);
@@ -2122,12 +2187,18 @@ async function customPoll(id, epoch = webPollEpoch) {
       clearTimeout(webTimer); webBusy(false);
       setFlowActivity(false, "Status updates paused — sign in or restore the connection before continuing."); return;
     }
-    const job = await api(`/api/jobs/${id}`);
+    const workflow = await api(`/api/custom/jobs/${id}/workflow`);
+    const job = workflow.job;
     if (webSelected !== id || epoch !== webPollEpoch) return;
+    if (job.job_id !== id) {
+      await customSelect(job.job_id);
+      return;
+    }
     // Commit one coherent frame, never a browser-less intermediate render.
     const extension = job.source === "extension";
-    const browser = terminal(job.status) ? null : extension ? {
-      state: job.browser_agent_diagnostics?.status === "paused" ? "agent_paused" : "agent_running",
+    const browser = terminal(job.status) || job.kind === "custom-execute" ? null : extension ? workflow.browser || {
+      state: job.browser_agent_diagnostics?.status === "paused" ? "agent_paused" :
+        (job.stages || []).some(item => item.stage === "extract_content") ? "reviewing" : "agent_running",
       guidance: "Use the extension side panel to inspect the current action, pause, resume or cancel.",
     } : await api(`/api/custom/jobs/${id}/browser`);
     if (webSelected !== id || epoch !== webPollEpoch) return;
@@ -2141,7 +2212,7 @@ async function customPoll(id, epoch = webPollEpoch) {
     renderWorkflow(job, browser);
     showCapturedPages(result.proposal?.captured_pages || result.captured_pages || []);
     showEnrichment(browser?.link_coverage || result.proposal?.enrichment || result.enrichment || result.browser_diagnostics?.link_coverage);
-    webText("web-status", `${result.review_outcome === "no_matches" ? "No matching records" : statusLabels[job.status] || job.status}: ${result.guidance || job.guidance || "Processing the current stage…"}`);
+    webText("web-status", workflowStatusText(job));
     webText("web-evidence", JSON.stringify(job, null, 2));
     $("web-status").dataset.tone = result.review_outcome === "no_matches" ? "review" : ["needs_input", "unsupported", "failed", "interrupted"]
       .includes(job.status) ? "attention" : job.status === "completed" ? "done" : "active";
@@ -2156,6 +2227,10 @@ async function customPoll(id, epoch = webPollEpoch) {
     });
     webBusy(!terminal(job.status));
     if (!terminal(job.status)) {
+      if (job.kind === "custom-execute") {
+        $("web-browser-controls").hidden = true;
+        webTimer = setTimeout(() => customPoll(id, epoch), 1000); return;
+      }
       if (extension) {
         $("web-browser-controls").hidden = true;
         if (!(job.stages || []).some(item => item.stage === "extract_content")) {
@@ -2180,6 +2255,9 @@ async function customPoll(id, epoch = webPollEpoch) {
     if (result.proposal) {
       webProposal = result.proposal; webRevision = result.revision;
       $("web-partial-label").hidden = !webProposal.partial;
+      $("web-partial-label").textContent = "Some results are missing. Save available results or collect more before saving.";
+      $("web-execute").textContent = webProposal.partial ? "Save available results" : "Save results";
+      $("web-execute").disabled = webSubmitting || !canApproveWeb();
       $("web-review").hidden = false;
       $("web-summary").replaceChildren();
 for (const [label, value] of Object.entries({"Original instructions": webProposal.request || "No filters; infer main page content", "Source method": webProposal.source, "Pages": webProposal.urls.join("\n"), "Interpretation": webProposal.interpretation, "Topic selection": webProposal.semantic_selection?.topic || "None", "Captured": webProposal.captured_at, "Expires": webProposal.expires_at, "Excluded by topic or filters": webProposal.excluded_by_filters, "Query rules": (webProposal.query_rules || []).map(r => `${r.name}: ${r.description} (${r.combination === "all" ? "ALL" : "ANY"}: ${r.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join("; ")})`).join("\n") || "None", "Additional manual conditions": webProposal.business_rules.length ? JSON.stringify(webProposal.business_rules) : "None", "Publish summary event": webProposal.publish_event ? "Yes, after approval" : "No"})) {
@@ -2191,12 +2269,14 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
         $(id).replaceChildren(); for (const text of items) { const li = document.createElement("li"); li.textContent = text; $(id).append(li); }
       }
       webTable(webProposal.records, ["listing_id", ...webProposal.columns.map(c => c.name),
-        ...(webProposal.enrichment ? ["record_url", "detail_status"] : []), "source_url"]);
+        ...(webProposal.enrichment || webProposal.records.some(row => row.record_url) ? ["record_url"] : []),
+        ...(webProposal.enrichment ? ["detail_status"] : []), "source_url"]);
       webText("web-count", `${webProposal.records.length} preview records. Not yet saved as an approved run. Coverage is limited to submitted page text.`);
     }
     if (!result.proposal && result.unverified_preview?.length) {
       previewQuality = {...result, criteria_unverified_preview: true};
-      webTable(result.unverified_preview, ["listing_id", ...(result.columns || []).map(field => field.name), "source_url"]);
+      webTable(result.unverified_preview, ["listing_id", ...(result.columns || []).map(field => field.name),
+        ...(result.unverified_preview.some(row => row.record_url) ? ["record_url"] : []), "source_url"]);
       webText("web-count", `${result.unverified_preview.length} source-preview records — requested criteria are unverified. ` +
         "Not approved, saved, downloadable or eligible for events." +
         (result.unverified_preview_more_available ? " More source candidates exist beyond this preview limit." : ""));
@@ -2219,6 +2299,9 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
       } catch (_) { webText("web-count", "Saved export not available. Inspect technical evidence before retrying."); }
     }
     await loadHistory();
+    if (webSelected === id && epoch === webPollEpoch && job.status === "awaiting_review") {
+      webTimer = setTimeout(() => customPoll(id, epoch), 2000);
+    }
   } catch (error) {
     if (webSelected !== id || epoch !== webPollEpoch) return;
     webText("web-status", error.message);
@@ -2229,18 +2312,27 @@ for (const [label, value] of Object.entries({"Original instructions": webProposa
     webBusy(false);
   }
 }
-$("web-execute").onclick = async () => {
-  if (!canApproveWeb()) return;
+$("web-execute").onclick = async event => {
+  const saveConfirmed = event?.currentTarget === $("web-execute");
+  if (!saveConfirmed || webSaving || webSubmitting || !canApproveWeb()) return;
+  const planId = webProposal.plan_id, revision = webRevision;
+  // The explicit Save available results action confirms the visible partial
+  // warning for this exact reviewed revision; no save runs automatically.
+  const acceptPartial = webProposal.partial === true && saveConfirmed;
+  webSaving = true;
   webBusy(true);
   setFlowActivity(true, "Submitting your approval — results are not saved until the server confirms.");
   try {
-    const job = await api(`/api/custom/plans/${webProposal.plan_id}/execute`, {
-      revision: webRevision, accept_partial: $("web-partial-approved").checked,
+    const job = await api(`/api/custom/plans/${planId}/execute`, {
+      revision, accept_partial: acceptPartial,
     });
     await customSelect(job.job_id);
   } catch (error) {
     webText("web-status", error.message); webBusy(false);
     setFlowActivity(false, "Save submission did not complete. Check the message before retrying.");
+  } finally {
+    webSaving = false;
+    $("web-execute").disabled = webSubmitting || !canApproveWeb();
   }
 };
 for (const [id, action] of [["web-capture", "capture"], ["web-cancel-browser", "cancel"],
@@ -2253,27 +2345,32 @@ for (const [id, action] of [["web-capture", "capture"], ["web-cancel-browser", "
   ["web-agent-pause", "agent_pause"],
   ["web-agent-collect", "agent_collect"], ["web-agent-manual", "agent_manual"],
   ["web-approve-links", "approve_links"], ["web-dismiss-links", "dismiss_links"]]) {
-  $(id).onclick = async () => {
-    if (!webSelected) return;
-    if (["hotel_approve", "hotel_extract"].includes(action) && (!hotelCheckbox.checked || hotelReview.hidden)) return;
-    if (["agent_start", "agent_resume", "agent_collect"].includes(action) && !agentCheckbox.checked) return;
+  $(id).onclick = async event => {
+    const actionConfirmed = event?.currentTarget === $(id);
+    if (!actionConfirmed || !webSelected || browserActionPending || $(id).disabled) return;
+    if (["hotel_approve", "hotel_extract"].includes(action) && (hotelReview.hidden || !hotelReviewedRevision)) return;
+    const jobId = webSelected;
+    browserActionPending = true;
     $(id).disabled = true;
     try {
       const selected_ids = action === "approve_links" ?
         [...linkList.querySelectorAll('input[type="checkbox"]:checked')]
           .map(item => Number(item.value)) : [];
       const approval = ["hotel_approve", "hotel_extract"].includes(action) ?
-        {hotel_revision: hotelReviewedRevision, hotel_confirmed: hotelCheckbox.checked} :
+        {hotel_revision: hotelReviewedRevision, hotel_confirmed: actionConfirmed} :
         ["agent_start", "agent_resume", "agent_collect"].includes(action) ?
-        {agent_confirmed: agentCheckbox.checked,
-          agent_visual_confirmed: ["agent_start", "agent_resume"].includes(action) && agentVisualCheckbox.checked} : {};
-      await api(`/api/custom/jobs/${webSelected}/browser/${action}`, {selected_ids, ...approval});
+        {agent_confirmed: actionConfirmed,
+          agent_visual_confirmed: ["agent_start", "agent_resume"].includes(action) && agentVisualSelect.value === "yes"} : {};
+      await api(`/api/custom/jobs/${jobId}/browser/${action}`, {selected_ids, ...approval});
       if (action.startsWith("agent_")) {
-        agentCheckbox.checked = false;
-        agentVisualCheckbox.checked = false;
+        agentVisualSelect.value = "no";
       }
     }
-    catch (error) { webText("web-browser-status", error.message); }
+    catch (error) { if (webSelected === jobId) webText("web-browser-status", error.message); }
+    finally {
+      browserActionPending = false;
+      if (webSelected === jobId) { agentApprovalState(); hotelApprovalState(); }
+    }
   };
 }
 resourceAdd.onclick = () => {

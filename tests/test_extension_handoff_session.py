@@ -63,7 +63,7 @@ def worker_page(shared_local_page):
             storage:{session:{get:async key => ({[key]:config.state}),
               set:async value => {config.state = Object.values(value)[0];}}},
             runtime:{sendMessage:async () => {},onMessage:noListener,getURL:()=>'extension://fixture/',
-              getManifest:()=>({version:'0.5.2'})},
+              getManifest:()=>({version:'0.5.20'})},
             windows:{update:async(id,options)=>{config.events.push({kind:'window',id,...options});return {id,focused:config.focusAllowed !== false};},
               get:async id=>({id,focused:config.focusAllowed !== false})},
             tabs:{get:async id => {if(!tabs[id])throw Error('Missing tab');return tabs[id];},
@@ -77,8 +77,9 @@ def worker_page(shared_local_page):
               if(options.files)return [{result:undefined}];
               if(options.target.tabId===1){
                 if(!options.args?.length)return [{result:{before:false,has_focus:config.documentFocus !== false,visibility:'visible'}}];
+                if(config.executorEnvelopeHook)return [{result:await config.executorEnvelopeHook(...options.args)}];
                 if(config.executorHook)return [{result:{ok:true,result:await config.executorHook(...options.args)}}];
-                if(options.args[0]==='capabilities')return [{result:{ok:true,result:{executor_version:'0.5.2',input_protocol:1}}}];
+                if(options.args[0]==='capabilities')return [{result:{ok:true,result:{executor_version:'0.5.20',input_protocol:1}}}];
                 throw Error('Unexpected website executor request');
               }
               return [{result:await options.func(...(options.args||[]))}];
@@ -116,13 +117,70 @@ def worker_page(shared_local_page):
             }
           };
           const construct = new Function('chrome','location','document','fetch','importScripts','AgenticNativeInput',script +
-            ';return {connect,relay,handle,readState,writeState,stopFor,publicState,dashboardRequest,activateWebsite,pump,executeNative,injectCommand,removedTab,updatedTab};');
+            ';return {connect,relay,handle,readState,writeState,stopFor,publicState,dashboardRequest,activateWebsite,pump,executeNative,injectCommand,removedTab,updatedTab,followSelectedTab};');
           window.workerFixture = {config,api:construct(fakeChrome,
             {origin:'http://localhost:8120'},fakeDocument,fakeFetch,()=>{},native)};
         }""",
         script,
     )
     return page
+
+
+def test_native_click_preflight_transport_reports_only_reason_and_field_names(worker_page):
+    result = worker_page.evaluate("""async () => {
+      const {config,api}=workerFixture, operations=[];
+      config.state.run.state='agent_running';config.tabs[1].active=true;
+      config.native.attachedTabId=1;
+      const step={id:'step-1',kind:'click',point:{x:10,y:10},value:'',selection_steps:0};
+      config.executorEnvelopeHook=async operation=>{
+        operations.push(operation);
+        if(operation==='native_begin')return {ok:true,result:{transaction_id:'tx-1',native_step:step}};
+        if(operation==='native_validate')return {ok:false,error:'control_changed',control_preflight:{
+          reason:'identity_changed',phase:'native_validate',mismatched_fields:['text','private-value'],
+          mismatch_count:999,extra:'private-content'}};
+        if(operation==='native_abort')return {ok:true,result:{aborted:true}};
+        throw Error('Unexpected operation');
+      };
+      const output=await api.executeNative(config.state,{document_token:'document-1',
+        decision:{action:'click'},facts:{date_kind:''}});
+      return {output,operations,events:config.events};
+    }""")
+    assert result["output"]["status"] == "value_mismatch"
+    assert result["output"]["dispatched"] is False
+    assert result["output"]["control_preflight"] == {
+        "reason": "identity_changed", "phase": "native_validate",
+        "mismatched_fields": ["text"], "mismatch_count": 1,
+    }
+    assert result["operations"] == ["native_begin", "native_validate", "native_abort"]
+    assert not any(event["kind"] == "native_perform" for event in result["events"])
+    assert "private-value" not in str(result["output"])
+    assert "private-content" not in str(result["output"])
+
+
+def test_native_click_after_input_failure_keeps_unknown_delivery(worker_page):
+    result = worker_page.evaluate("""async () => {
+      const {config,api}=workerFixture;
+      config.state.run.state='agent_running';config.tabs[1].active=true;
+      config.native.attachedTabId=1;
+      const step={id:'step-1',kind:'click',point:{x:10,y:10},value:'',selection_steps:0};
+      config.executorEnvelopeHook=async operation=>{
+        if(operation==='native_begin')return {ok:true,result:{transaction_id:'tx-1',native_step:step}};
+        if(operation==='native_validate')return {ok:true,result:step};
+        if(operation==='native_abort')return {ok:true,result:{aborted:true}};
+        throw Error('Unexpected operation');
+      };
+      config.performHook=async()=>{
+        const error=Error('delivery_unknown');
+        error.controlPreflight={reason:'identity_changed',phase:'native_validate',
+          mismatched_fields:['text'],mismatch_count:1};
+        throw error;
+      };
+      try {return {output:await api.executeNative(config.state,{document_token:'document-1',
+        decision:{action:'click'},facts:{date_kind:''}})};}
+      catch(error){return {error:error.message,events:config.events};}
+    }""")
+    assert result["error"] == "delivery_unknown" and "output" not in result
+    assert sum(event["kind"] == "native_perform" for event in result["events"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -272,6 +330,118 @@ def test_completed_connection_is_reused_without_dashboard_or_website_reselection
     assert all(event["kind"] == "http" for event in result["events"])
 
 
+def test_status_can_pair_initial_selected_tab_without_starting_a_workflow(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state={};
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      const status=await api.handle({operation:'status',follow_selected_tab:true});
+      return {status,calls:config.calls,events:config.events};
+    }""")
+    assert result["status"]["connection"]["tab_id"] == 3
+    assert result["status"]["run"] is None
+    assert all(call["method"] == "GET" for call in result["calls"])
+    assert not any(event["kind"].startswith("native_") for event in result["events"])
+
+
+def test_idle_tab_switch_keeps_completed_review_and_its_original_target(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state.run.state='awaiting_review';
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      const status=await api.handle({operation:'status',follow_selected_tab:true});
+      return {status,calls:config.calls,events:config.events};
+    }""")
+    assert result["status"]["connection"]["tab_id"] == 3
+    assert result["status"]["run"]["job_id"] == "b" * 32
+    assert result["status"]["run"]["state"] == "awaiting_review"
+    assert result["status"]["run_tab_id"] == 1
+    assert all(call["method"] == "GET" for call in result["calls"])
+    assert not any(event["kind"].startswith("native_") for event in result["events"])
+
+
+@pytest.mark.parametrize("run_state", ["agent_running", "agent_paused", "reviewing"])
+def test_following_selection_never_retargets_an_unfinished_run(worker_page, run_state):
+    result = worker_page.evaluate("""async runState=>{
+      const {config,api}=workerFixture;config.state.run.state=runState;
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      const notice=await api.followSelectedTab();
+      return {notice,state:await api.readState(),calls:config.calls,events:config.events};
+    }""", run_state)
+    assert result["state"]["binding"]["tab_id"] == 1
+    assert result["state"]["run"]["state"] == run_state
+    assert result["calls"] == result["events"] == []
+
+
+def test_unchanged_idle_selection_does_not_refresh_session_or_revision(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state.run=null;
+      config.tabs[2].active=false;config.tabs[1].active=true;
+      const first=await api.handle({operation:'status',follow_selected_tab:true});
+      const second=await api.handle({operation:'status',follow_selected_tab:true});
+      return {first,second,calls:config.calls};
+    }""")
+    assert result["first"]["connection"]["tab_id"] == 1
+    assert result["first"]["revision"] == result["second"]["revision"]
+    assert result["calls"] == []
+
+
+def test_idle_same_tab_new_origin_is_paired_as_a_fresh_target(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state.run=null;
+      config.tabs[2].active=false;config.tabs[1].active=true;
+      config.tabs[1].url='https://another.example.org/hotels';
+      const status=await api.handle({operation:'status',follow_selected_tab:true});
+      return {status,state:await api.readState(),calls:config.calls};
+    }""")
+    assert result["status"]["error"] is None
+    assert result["state"]["binding"]["origin"] == "https://another.example.org"
+    assert result["status"]["connection"]["url"] == "https://another.example.org/hotels"
+    assert all(call["method"] == "GET" for call in result["calls"])
+
+
+def test_changed_dashboard_session_cannot_be_adopted_by_automatic_tab_follow(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state.run=null;
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      config.session={...config.session,csrf:'different-session'};
+      let error;try{await api.followSelectedTab();}catch(problem){error=problem.message;}
+      return {error,state:await api.readState(),calls:config.calls};
+    }""")
+    assert result["error"] == "dashboard_csrf_changed"
+    assert result["state"]["binding"]["tab_id"] == 1
+    assert result["state"]["binding"]["csrf"] == "fresh-csrf"
+    assert all(call["method"] == "GET" for call in result["calls"])
+
+
+@pytest.mark.parametrize("selected_url", ["http://localhost:8120/", "edge://settings/", None])
+def test_ineligible_or_unreadable_selected_tab_preserves_existing_connection(worker_page, selected_url):
+    result = worker_page.evaluate("""async url=>{
+      const {config,api}=workerFixture;config.state.run=null;
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      if(url===null)delete config.tabs[3].url;else config.tabs[3].url=url;
+      const status=await api.handle({operation:'status',follow_selected_tab:true});
+      return {status,calls:config.calls};
+    }""", selected_url)
+    assert result["status"]["connection"]["tab_id"] == 1
+    assert result["calls"] == []
+    if selected_url is None:
+        assert "grant browser access" in result["status"]["selection_notice"]
+    else:
+        assert result["status"]["selection_notice"] == ""
+
+
+def test_disconnect_prevents_the_next_status_poll_from_pairing_again(worker_page):
+    result = worker_page.evaluate("""async()=>{
+      const {config,api}=workerFixture;config.state.run=null;
+      config.tabs[2].active=false;config.tabs[3].active=true;
+      await api.handle({operation:'disconnect'});
+      const status=await api.handle({operation:'status',follow_selected_tab:true});
+      return {status,state:await api.readState(),calls:config.calls};
+    }""")
+    assert result["status"]["connection"] is None
+    assert result["state"]["auto_connect"] is False
+    assert result["calls"] == []
+
+
 def test_explicit_start_activates_bound_site_before_the_paid_start_request(worker_page):
     result = worker_page.evaluate(
         """async()=>{
@@ -357,7 +527,7 @@ def test_observation_driver_is_confirmed_by_worker_attachment(worker_page, attac
       const {config,api}=workerFixture;
       config.state.run.state='agent_running';config.native.attachedTabId=attached?1:null;
       config.executorHook=async operation=>{
-        if(operation==='observe')return {executor_version:'0.5.2',input_driver:'dom',
+        if(operation==='observe')return {executor_version:'0.5.20',input_driver:'dom',
           document_token:'fixture-document',url:'https://hotels.example.org/',
           tab_state:{visibility:'visible',has_focus:true},frame:{controls:[]}};
         throw Error('Unexpected input');
@@ -370,7 +540,7 @@ def test_observation_driver_is_confirmed_by_worker_attachment(worker_page, attac
     if attached:
         assert result["observation"]["input_driver"] == "native_cdp"
         assert result["observation"]["native_attached"] is True
-        assert result["observation"]["worker_version"] == "0.5.2"
+        assert result["observation"]["worker_version"] == "0.5.20"
         assert result["observation"]["input_protocol"] == 1
     else:
         assert result["error"] == "native_input_detached"

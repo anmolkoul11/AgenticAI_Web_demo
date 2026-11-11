@@ -410,9 +410,13 @@ def requested_stay_dates(instructions):
 
 
 def requested_destination(instructions):
+    # A temporal "form" typo must not become part of the place and make the
+    # whole destination fail validation. Only treat it as a separator before
+    # an actual date-shaped token; preserve the original request text.
+    temporal_form = rf"form(?=\s+(?:\d{{1,4}}\b|(?:{MONTH_WORDS})\b))"
     match = re.search(
         r"\b(?:hotels?|stays?|accommodations?)\s+(?:in|near|at)\s+(.+?)"
-        r"(?=\s+(?:priced|costing|with|from|between|under|over|above|below|"
+        rf"(?=\s+(?:priced|costing|with|from|{temporal_form}|between|under|over|above|below|"
         r"for|on|check(?:-?in|-?out)?|near)\b|[,;]|$)",
         instructions,
         re.I,
@@ -627,7 +631,36 @@ def guest_counts(text):
         if component in counts and counts[component] != value:
             return None
         counts[component] = value
+    if "adults" in counts and re.search(r"\b(?:\d+\s*adults?\s+only|only\s+\d+\s*adults?)\b", text, re.I):
+        if counts.get("children", 0) != 0:
+            return None
+        counts["children"] = 0  # Explicit adults-only wording, not an occupancy default.
     return counts
+
+
+def occupancy_summary_values(text):
+    """Read explicit named counts; a guest total never supplies an adult count."""
+    labels = r"adults?|children|child|kids?|rooms?|guests?|travell?ers?"
+    # Mixed headings are not row labels. In "Rooms/Guests 3 Rooms, 4 Guests",
+    # consuming "Guests 3" invents a second total and steals the room count.
+    text = re.sub(rf"(?P<count>\b\d{{1,3}}\s*)?\b(?:{labels})(?:\s*[/&|]\s*(?:{labels}))+\b",
+                  lambda match: match[0] if match["count"] else " ", str(text), flags=re.I)
+    values = {}
+
+    def add(label, value):
+        label = label.casefold()
+        field = ("adults" if label.startswith("adult") else "rooms" if label.startswith("room")
+                 else "children" if label.startswith(("child", "kid")) else "guests")
+        values.setdefault(field, set()).add(int(value))
+
+    for match in re.finditer(
+        rf"\b(?:(\d{{1,3}})\s*({labels})\b|"
+        rf"({labels})\s*(?:(?:is|are)\s*|[:=]\s*)?(\d{{1,3}})\b)", str(text), re.I,
+    ):
+        # Consume each noun/count pair once, preserving either order without
+        # borrowing the next row's value in "Adults 4 Children 1 Rooms 3".
+        add(match[2] or match[3], match[1] or match[4])
+    return {field: sorted(counts) for field, counts in values.items()}
 
 
 def requested_guests(instructions):
@@ -646,8 +679,24 @@ def requested_guests(instructions):
     )
 
 
+def age_control(control, name=""):
+    """Recognize age inputs consistently across navigation and returned evidence."""
+    words = " ".join(str(control.get(key) or "") for key in ("label", "name"))
+    words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", words + " " + name).replace("_", " ")
+    return bool(re.search(r"\bages?\b|\bage\d+\b|\baged\b|\byears?\s+old\b|\bhow\s+old\b", words, re.I)) or (
+        control.get("tag") == "SELECT" and bool(re.search(r"\bchild\s*#?\s*\d+\b", words, re.I))
+    ) or (
+        control.get("tag") == "SELECT" and any(
+            re.search(r"\byears?\s+old\b", str(option.get("label", "")), re.I)
+            for option in control.get("options", [])
+        )
+    )
+
+
 def guest_component(control):
-    hint = " ".join(control.get(key, "") for key in ("label", "name", "placeholder"))
+    if age_control(control):
+        return None
+    hint = " ".join(str(control.get(key) or "") for key in ("label", "name", "placeholder"))
     found = [
         key
         for key, pattern in (

@@ -85,6 +85,16 @@ globalThis.agenticInspectCounter = e => {
   const owner=e.closest('[role="spinbutton"]');
   const ownedNumeric=owner&&numeric(owner);
   if(ownedNumeric) return {...ownedNumeric,method:'button',direction:direction(e)||'unknown'};
+  const namedQuantity=button=>{
+    // An actuator's "by 1" describes its effect, never the current quantity.
+    const match=accessibleName(button).match(
+      /^(?:increase|decrease|increment|decrement)\s+(.+?)(?:\s+by\s+\d+)?[.!]?$/i);
+    if(!match) return null;
+    const label=clean(match[1].replace(/^(?:the\s+)?(?:number\s+of\s+)?/i,'')
+      .replace(/\s+(?:count|quantity)$/i,''));
+    if(!label || label.length>80 || !/\p{L}/u.test(label) || /\d/.test(label)) return null;
+    return {label,key:label.toLocaleLowerCase()};
+  };
   let leanQuantityRegion=null;
   for(let row=e.parentElement,depth=0;row && depth<7;row=row.parentElement,depth++) {
     if(row.matches('body,html,main')) break;
@@ -95,6 +105,10 @@ globalThis.agenticInspectCounter = e => {
       .map(numeric).filter(Boolean);
     if(numberFields.length===1) return {...numberFields[0],method:'button',
       direction:direction(e)||'unknown'};
+    const directions=buttons.map(direction),named=buttons.map(namedQuantity);
+    if(named.every(Boolean) && named[0].key!==named[1].key) return null;
+    const namedPair=named.every(Boolean) && named[0].key===named[1].key &&
+      directions.includes('increase') && directions.includes('decrease');
     const walker=document.createTreeWalker(row,NodeFilter.SHOW_TEXT),parts=[],partNodes=[];
     let node;
     while((node=walker.nextNode())) {
@@ -113,16 +127,33 @@ globalThis.agenticInspectCounter = e => {
       .filter(item=>/^\d{1,3}$/.test(item.value) &&
         follows(buttons[0],partNodes[item.index]) && follows(partNodes[item.index],buttons[1]));
     const tokens=[...text.matchAll(/(?:^|\s)(\d{1,3})(?=\s|$)/g)];
-    if(countParts.length>1 || (!countParts.length && tokens.length!==1)) continue;
-    const count=countParts[0];
+    const allNumbers=[...text.matchAll(/\d+/g)];
+    if(countParts.length>1) return null;
+    // A semantically named pair may render its count before/after both buttons.
+    // Prefer an isolated quantity over numbers embedded in age/help text. Never
+    // use numbers from the actuator names, including their explicit click delta.
+    const isolated=namedPair ? parts.map((value,index)=>({value,index}))
+      .filter(item=>/^\d{1,3}$/.test(item.value)) : [];
+    const noun=namedPair ? named[0].label.match(/\p{L}+/gu).join('\\s+').replace(/s$/i,'')+'s?' : '';
+    const labelled=namedPair ? [
+      '(?:^|\\s)'+noun+'(?:\\s+(?:count|quantity))?\\s*[:=]?\\s*(\\d{1,3})(?=\\s|$)',
+      '(?:^|\\s)(\\d{1,3})\\s+'+noun+'(?=\\s|$)',
+    ].flatMap(pattern=>[...text.matchAll(new RegExp(pattern,'ig'))]) : [];
+    if(labelled.length>1 || countParts.length && labelled.length &&
+      Number(countParts[0].value)!==Number(labelled[0][1])) return null;
+    const count=countParts[0] || (!labelled.length && isolated.length===1 &&
+      allNumbers.length===1 ? isolated[0] : null);
+    if(!count && !labelled.length &&
+      (tokens.length!==1 || namedPair && allNumbers.length!==1)) continue;
     if(leanQuantityRegion===null && count) {
       const otherParts=parts.filter((_,index)=>index!==count.index);
       leanQuantityRegion=otherParts.length<=1 && clean(otherParts.join(' ')).length<=40 &&
         !row.querySelector('a[href],[role="link"],img,picture,video,iframe,article,h1,h2,h3,h4');
     }
-    const quantity=count ? Number(count.value) : Number(tokens[0][1]);
+    const quantity=count ? Number(count.value) : Number(labelled[0]?.[1]||tokens[0][1]);
     let rowLabel=count ? clean(parts.filter((_,i)=>i!==count.index).join(' ')) :
       clean(text.replace(/(?:^|\s)\d{1,3}(?=\s|$)/,' '));
+    if(namedPair) rowLabel=named[0].label;
     // Some steppers name their quantity using an external accessible label.
     // Read that declared relationship rather than relying on nearby page text.
     if(!rowLabel || !/\p{L}/u.test(rowLabel)) rowLabel=clean(
@@ -131,7 +162,6 @@ globalThis.agenticInspectCounter = e => {
     if(!rowLabel || !/\p{L}/u.test(rowLabel)) continue;
     if(/password|passcode|verification|\botp\b|credit card|security token/i.test(rowLabel))
       continue;
-    const directions=buttons.map(direction);
     // A clear rendered quantity row can expose its buttons without asserting
     // what an unfamiliar icon does. Only an explicitly selected fresh button
     // can then be used; numeric read-back, not button order, verifies the effect.
@@ -167,16 +197,138 @@ globalThis.agenticObserve = focus => {
       .join(' ')||
     (e.labels&&[...e.labels].map(n=>n.textContent).join(' '))||
     e.getAttribute('placeholder')||e.innerText||e.getAttribute('title')||e.name).slice(0,240);
+  // Calendar choices and date-field openers can both name a full date. Keep
+  // that distinction grounded in the actual control, shared with the executor.
+  const inspectDate=globalThis.agenticInspectDate=e=>{
+    const iso=(year,month,day)=>{
+      const y=Number(year),m=Number(month),d=Number(day);
+      if(y<1000||y>9999||m<1||m>12||d<1||d>31) return '';
+      const value=new Date(Date.UTC(y,m-1,d));
+      return value.getUTCFullYear()===y&&value.getUTCMonth()===m-1&&value.getUTCDate()===d?
+        String(y)+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'):'';
+    };
+    const parse=value=>{
+      const text=clean(value).replace(/[.;:!?]\s*$/,'')
+        .replace(/^(?:enter|choose|select|change|edit|open)\s+(?:the\s+)?(?:(?:check[ -]?in|check[ -]?out|arrival|departure|start|end)(?:\s+date)?|dates?)\s*[:.,;\u2013\u2014-]?\s*/i,'')
+        .replace(/^(?:the\s+)?selected\s+date\s+is\s*[:.,;\u2013\u2014-]?\s*/i,'')
+        .replace(/^(?:selected|chosen)\s+/i,'')
+        .replace(/\s*[,;]?\s*(?:selected|chosen)$/i,'')
+        .replace(/^(?:check[ -]?in|arrival|start(?:\s+date)?|range\s+start|check[ -]?out|departure|end(?:\s+date)?|range\s+end)(?:\s+date)?\s*[:,-]?\s*/i,'')
+        .replace(/\s*[,;:-]?\s*(?:check[ -]?in|arrival|start\s+date|range\s+start|check[ -]?out|departure|end\s+date|range\s+end)$/i,'')
+        .replace(/^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s*,?\s*/i,'');
+      let match=text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(match) return iso(match[1],match[2],match[3]);
+      const months='jan feb mar apr may jun jul aug sep oct nov dec'.split(' ');
+      match=text.match(/^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})$/i);
+      if(match) return iso(match[3],months.indexOf(match[1].slice(0,3).toLowerCase())+1,match[2]);
+      match=text.match(/^(\d{1,2})(?:st|nd|rd|th)?\s*(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*,?\s*(\d{4})$/i);
+      return match?iso(match[3],months.indexOf(match[2].slice(0,3).toLowerCase())+1,match[1]):'';
+    };
+    const name=label(e),text=clean(e.innerText);
+    const fullDate=n=>parse(n.getAttribute('data-date')||n.getAttribute('datetime'))||
+      parse(label(n))||parse(n.innerText);
+    const ownDate=fullDate(e),cell=e.closest('[role="gridcell"]');
+    const cellDate=cell&&fullDate(cell)||'';
+    const input=e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select,[role="combobox"]')||e.isContentEditable;
+    const dateWords=/\b(?:dates?|calendar|check[ -]?in|check[ -]?out|arrival|departure)\b/i;
+    const opening=/^(?:enter|choose|select|change|open|edit)\s+(?:the\s+)?(?:(?:check[ -]?in|check[ -]?out|arrival|departure|start|end)\s+)?(?:dates?|calendar)\b/i.test(name);
+    const popup=e.getAttribute('aria-haspopup'),expanded=e.hasAttribute('aria-expanded');
+    const checkable=e.matches('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"]');
+    const opener=input&&(e.matches('input[type="date"],input[type="datetime-local"],input[type="month"],input[type="week"]')||dateWords.test(name))||
+      !cell&&!checkable&&(opening||(popup&&popup!=='false'||expanded)&&(dateWords.test(name)||!!ownDate));
+    if(opener) {
+      const endpointName=name+' '+clean(e.name).slice(0,120)+' '+text.slice(0,240);
+      const start=/\b(?:check[ -]?in|arrival|start\s+date|range\s+start)\b/i.test(endpointName);
+      const end=/\b(?:check[ -]?out|departure|end\s+date|range\s+end)\b/i.test(endpointName);
+      return {date_kind:'opener',date:ownDate,selected:'',
+        date_endpoint:start!==end?(start?'check_in':'check_out'):'',owner:null};
+    }
+    const dayToken=/^\d{1,2}$/.test(name)||/^\d{1,2}$/.test(text);
+    const dateAttribute=clean(e.getAttribute('data-date')||e.getAttribute('datetime'));
+    const structuralDate=!!cell&&(dayToken||e===cell&&/\b\d{4}\b/.test(label(cell))||
+      !!cellDate&&checkable);
+    const choice=!input&&(!!ownDate||!!dateAttribute||structuralDate);
+    if(!choice) return {date_kind:'',date:'',selected:'',date_endpoint:'',owner:null};
+    const date=ownDate||cellDate;
+    const owner=cell&&date&&cellDate===date?cell:null;
+    const state=n=>{
+      if(n.matches('input[type="checkbox"],input[type="radio"]')) return String(n.checked);
+      const values=[n.getAttribute('aria-selected'),n.getAttribute('aria-checked'),
+        n.getAttribute('data-state')].map(value=>(value||'').toLowerCase());
+      if(values.some(value=>['false','unselected','unchecked','off'].includes(value))) return 'false';
+      return values.some(value=>['true','selected','checked','on'].includes(value))?'true':'';
+    };
+    const declaredState=state(e)||(owner&&owner!==e?state(owner):'');
+    const namedSelection=n=>parse(label(n))===date&&
+      /^(?:selected|chosen)\s+|\s+(?:selected|chosen)$/i.test(label(n));
+    const selectedLabel=declaredState!=='false'&&!!date&&
+      !!(namedSelection(e)||owner&&namedSelection(owner));
+    const selected=declaredState||(selectedLabel?'true':'');
+    const endpointName=name+' '+(owner&&owner!==e?label(owner):'');
+    const start=/\b(?:check[ -]?in|arrival|start\s+date|range\s+start)\b/i.test(endpointName);
+    const end=/\b(?:check[ -]?out|departure|end\s+date|range\s+end)\b/i.test(endpointName);
+    return {date_kind:'day_choice',date,selected,selected_label:selectedLabel,
+      date_endpoint:start!==end?(start?'check_in':'check_out'):'',owner};
+  };
+  // A custom age combobox has no native .value. Observe only its declared
+  // value, one explicitly owned selected option, or its compact rendered age.
+  // Popup prose and an active/highlighted option never establish selection.
+  const customAgeValue=globalThis.agenticInspectCustomAgeValue=e=>{
+    if(['INPUT','TEXTAREA','SELECT'].includes(e.tagName)||
+      e.getAttribute('role')!=='combobox'||
+      !/\bages?\b|\bage\d+\b|\baged\b|\byears?\s+old\b|\bhow\s+old\b/i
+        .test((e.name||'')+' '+label(e))) return null;
+    const compactAge=/^(?:age\s*:?\s*)?\d{1,3}(?:\s*(?:years?(?:\s+old)?|yrs?))?$/i;
+    const displayed=n=>{
+      const walker=document.createTreeWalker(n,NodeFilter.SHOW_TEXT),parts=[];
+      let node,length=0;
+      while((node=walker.nextNode())&&length<=120) {
+        const parent=node.parentElement;
+        if(!parent||!visible(parent)) continue;
+        let excluded=false;
+        for(let p=parent;p&&(p===n||n.contains(p));p=p.parentElement)
+          if(sensitive(p)||p.matches('input,textarea,select,script,style,noscript,'+
+            '[contenteditable="true"],[inert],[aria-hidden="true"]')||
+            p!==n&&p.matches('[role="option"],[role="listbox"]')) {excluded=true;break;}
+        if(!excluded) {parts.push(node.textContent);length+=node.textContent.length;}
+      }
+      const text=clean(parts.join(' '));
+      return compactAge.test(text)?text:'';
+    };
+    let value=clean(e.getAttribute('aria-valuetext')),
+      source=value?'aria-valuetext':'';
+    if(!value) {value=clean(e.getAttribute('aria-valuenow'));source=value?'aria-valuenow':'';}
+    if(!value) {
+      const ids=clean((e.getAttribute('aria-controls')||'')+' '+
+        (e.getAttribute('aria-owns')||'')).split(' ').filter(Boolean);
+      const scopes=[e,...ids.map(id=>e.getRootNode().getElementById?.(id)||
+        document.getElementById(id)).filter(Boolean)];
+      const selected=[...new Set(scopes.flatMap(scope=>[
+        ...(scope.matches('[role="option"][aria-selected="true"]')?[scope]:[]),
+        ...scope.querySelectorAll('[role="option"][aria-selected="true"]')]))]
+        .filter(option=>!sensitive(option)&&!option.closest('[inert],[aria-hidden="true"]'));
+      if(selected.length===1) {
+        const named=clean(selected[0].getAttribute('aria-label'));
+        value=compactAge.test(named)?named:displayed(selected[0]);
+        source=value?'selected_option':'';
+      }
+    }
+    if(!value) {value=displayed(e);source=value?'rendered_text':'';}
+    return {value:value.slice(0,300),value_source:source,selected_label:value.slice(0,240)};
+  };
   const validation=e=>{
     const required=!!e.required||e.getAttribute('aria-required')==='true';
     const option=e.tagName==='SELECT'&&!e.multiple?e.selectedOptions?.[0]:null;
     const optionLabel=clean(option?.textContent);
-    const selectionPlaceholder=e.tagName==='SELECT'&&!e.multiple&&(!option||
+    const customAge=customAgeValues.get(e);
+    const selectionPlaceholder=customAge?(!customAge.value||
+      /^(?:please\s+)?(?:select|choose)\b|^(?:unknown|unset|not\s+(?:set|selected))$|\b(?:age|value)\s+(?:needed|required)\b/i
+        .test(customAge.value)):e.tagName==='SELECT'&&!e.multiple&&(!option||
       option.disabled||option.hidden||
       (!clean(option.value)&&! /^(?:any|all|none|no preference)\b/i.test(optionLabel))||
       /^(?:please\s+)?(?:select|choose)(?:\s+(?:an?\s+)?(?:option|value|age|one))?[\s.…:]*$|\b(?:age|value)\s+(?:needed|required)\b/i.test(optionLabel));
     const nativeInvalid=e.willValidate===true&&e.validity?.valid===false;
-    const valueMissing=e.validity?.valueMissing===true||(required&&
+    const valueMissing=e.validity?.valueMissing===true||(required&&customAge&&selectionPlaceholder)||(required&&
       e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select')&&
       !clean(e.value));
     const errorIds=clean(e.getAttribute('aria-errormessage')).split(' ').filter(Boolean);
@@ -188,24 +340,103 @@ globalThis.agenticObserve = focus => {
     return {required,...(valueControl?{invalid:nativeInvalid||e.getAttribute('aria-invalid')==='true',
       value_missing:valueMissing,selection_placeholder:selectionPlaceholder,
       ...(e.tagName==='SELECT'?{selected_label:optionLabel.slice(0,240)}:{}),
+      ...(customAge?{selected_label:customAge.selected_label}:{}),
       ...(nativeInvalid||errorText?{validation_message:clean([nativeInvalid?e.validationMessage:'',errorText]
         .join(' ')).slice(0,240)}:{})}:{})};
   };
   const candidates=query('input,textarea,select,button,a[href],'+
-    '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],'+
+    '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],[role="tab"],'+
     '[role="spinbutton"],[role="checkbox"],[role="radio"],[contenteditable="true"]')
     .filter(e=>visible(e)&&!sensitive(e)&&!e.closest('[inert]'));
   const counters=new Map(candidates.map(e=>[e,inspectCounter(e)]));
   // aria-hidden is an accessibility annotation, not CSS invisibility. Keep
-  // physically rendered, recognized quantity actuators without exposing other
-  // accessibility-hidden controls/text or inert/credential controls.
-  const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e));
+  // physically rendered quantity actuators and stay summaries without exposing
+  // unrelated accessibility-hidden controls/text or inert/credential controls.
+  const dates=new Map(candidates.map(e=>[e,inspectDate(e)]));
+  const staySummary=e=>dates.get(e).date_kind==='opener'||
+    !counters.get(e)&&e.matches('button,[role="button"]')&&
+    /\brooms?\b/i.test(label(e))&&/\b(?:adults?|guests?|travell?ers?)\b/i.test(label(e))&&
+    (e.hasAttribute('aria-expanded')||e.hasAttribute('aria-haspopup')||
+     /number of rooms|rooms\s*\/\s*guests|rooms.*selected.*guests/i.test(label(e)));
+  const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e)||staySummary(e));
+  const customAgeValues=new Map(raw.map(e=>[e,customAgeValue(e)]));
   const validations=new Map(raw.map(e=>[e,validation(e)]));
   // Give search-form widgets priority even when background links exhaust the
   // inventory. Unresolved value fields precede foreground widget choices.
   const formScopes=query('form,[role="search"]').filter(visible);
   const popupScopes=query('[role="dialog"],[role="listbox"],[role="grid"],[role="menu"]')
     .filter(visible);
+  // Scope selected endpoints and confirmation controls to the actual rendered
+  // calendar. A multi-month dialog is one widget; unrelated popups stay separate.
+  const calendarScopes=popupScopes.filter(scope=>scope.matches('[role="dialog"],[role="grid"]')&&
+    raw.some(e=>dates.get(e).date_kind==='day_choice'&&scope.contains(e)));
+  // Some calendars omit dialog/grid roles. A compact date collection plus both
+  // explicitly named month actuators establishes its actual common container.
+  const calendarDays=raw.filter(e=>dates.get(e).date_kind==='day_choice');
+  const monthDirection=e=>{
+    if(!e.matches('button,[role="button"],a[href]')) return '';
+    const text=clean([label(e),e.getAttribute('title'),e.getAttribute('data-testid'),
+      ...[...e.querySelectorAll('svg title,svg [aria-label]')].map(n=>n.getAttribute('aria-label')||n.textContent),
+      ...[...e.querySelectorAll('svg use')].map(n=>n.getAttribute('href')||n.getAttribute('xlink:href'))
+    ].join(' ')).replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_-]/g,' ');
+    if(/\b(?:years?|decades?|weeks?|today)\b/i.test(text)&&!/\bmonth\b/i.test(text)) return '';
+    const next=/\b(?:next|forward|chevron right|arrow right)\b/i.test(text)||/^[›»→]$/.test(text);
+    const previous=/\b(?:previous|prev|back|chevron left|arrow left)\b/i.test(text)||/^[‹«←]$/.test(text);
+    if(next!==previous) return next?'next':'previous';
+    // Only a single open, symmetric rendered chevron establishes icon direction.
+    // DOM order and the position of an unlabelled button never do.
+    try {
+    const shapes=[...e.querySelectorAll('svg path,svg polyline')].filter(n=>
+      !!n.getClientRects().length&&getComputedStyle(n).visibility!=='hidden');
+    if(shapes.length!==1||/[zZ]/.test(shapes[0].getAttribute('d')||'')) return '';
+    const shape=shapes[0],matrix=shape.getScreenCTM();
+    if(!matrix||!shape.getTotalLength) return '';
+    const length=shape.getTotalLength();
+    if(!length) return '';
+    const point=t=>{const p=shape.getPointAtLength(length*t);return new DOMPoint(p.x,p.y).matrixTransform(matrix);};
+    const a=point(0),b=point(0.5),c=point(1),height=Math.abs(a.y-c.y);
+    if(height<3||Math.abs(a.x-c.x)>height*0.15||Math.abs(b.y-(a.y+c.y)/2)>height*0.15||
+      Math.abs(b.x-(a.x+c.x)/2)<height*0.25) return '';
+    return b.x>(a.x+c.x)/2?'next':'previous';
+    } catch {return '';}
+  };
+  const monthDirections=new Map(raw.map(e=>[e,monthDirection(e)]));
+  const previousMonths=raw.filter(e=>monthDirections.get(e)==='previous');
+  const nextMonths=raw.filter(e=>monthDirections.get(e)==='next');
+  const rolelessCalendars=new Set(),calendarRegions=new Map();
+  for(const day of calendarDays.filter(e=>dates.get(e).date)) {
+    for(let scope=day.parentElement;scope;scope=scope.parentElement) {
+      if(scope.matches('body,html,main,form,nav,header,footer,aside')) break;
+      let region=calendarRegions.get(scope);
+      if(!region) {
+        const days=calendarDays.filter(e=>scope.contains(e));
+        const controlCount=raw.filter(e=>scope.contains(e)).length;
+        region={oversized:days.length>180||controlCount>300,
+          calendar:new Set(days.map(e=>dates.get(e).date).filter(Boolean)).size>=7&&
+            previousMonths.some(e=>scope.contains(e))&&nextMonths.some(e=>scope.contains(e))};
+        calendarRegions.set(scope,region);
+      }
+      if(region.oversized) break;
+      if(region.calendar) {rolelessCalendars.add(scope);break;}
+    }
+  }
+  for(const scope of rolelessCalendars) if(!calendarScopes.includes(scope)) calendarScopes.push(scope);
+  const calendarScope=e=>{
+    for(let scope=e;scope;scope=scope.parentElement)
+      if(rolelessCalendars.has(scope)) return scope;
+    const dialog=e.closest('[role="dialog"]');
+    if(calendarScopes.includes(dialog)) return dialog;
+    const grid=e.closest('[role="grid"]');
+    if(calendarScopes.includes(grid)) return grid;
+    if(dates.get(e)?.date_kind==='opener') {
+      const ids=clean((e.getAttribute('aria-controls')||'')+' '+(e.getAttribute('aria-owns')||''))
+        .split(' ').filter(Boolean);
+      const scopes=ids.map(id=>e.getRootNode().getElementById?.(id)||document.getElementById(id))
+        .filter(scope=>calendarScopes.includes(scope));
+      if(scopes.length===1) return scopes[0];
+    }
+    return null;
+  };
   const counterButtons=raw.filter(e=>counters.get(e)),counterGroups=[];
   for(const button of counterButtons) {
     for(let group=button.parentElement,depth=0;group && depth<8;group=group.parentElement,depth++) {
@@ -215,13 +446,45 @@ globalThis.agenticObserve = focus => {
         clean(group.innerText).length<1800) {counterGroups.push(group);break;}
     }
   }
-  // Foreground popups/calendar/options take priority over background navigation.
+  // Keep a few visible category entry points when result links exhaust the
+  // inventory. These are observed labels, not inferred routes or click plans.
+  const categoryNavigation=new Set(raw.filter(e=>
+    e.matches('a[href],button,[role="button"],[role="tab"]') &&
+    e.getAttribute('role')!=='option' &&
+    /^(?:hotels?|stays|accommodations?|restaurants?|dining|things to do|attractions?|essentials|flights|shopping|news|sports|business|travel|technology|science)(?:\s+(?:in|near)\s+.{1,40})?$/i
+      .test(label(e))).slice(0,8));
+  const pagination=new Map();
+  for(const e of focus==='collection'?raw:[]) {
+    if(!e.matches('a[href],button,[role="button"]')) continue;
+    if(e.closest('[role="dialog"],[role="menu"],[role="listbox"]')) continue;
+    const text=label(e),nav=e.closest('nav,[role="navigation"]');
+    const numbered=nav&&[...nav.querySelectorAll('a,button')].filter(n=>/^\d{1,3}$/.test(label(n))).length>=2;
+    if(e.matches('a[rel~="next"]')||/^(?:next page|next results|go to (?:the )?next page)$/i.test(text)||
+      /^next$/i.test(text)&&numbered) pagination.set(e,'next');
+    else if(/^(?:load|show|see) more (?:results|hotels|properties|listings|articles)$/i.test(text)&&
+      e.closest('main,[role="main"]')&&!e.closest('article,[itemtype*="Product"]')) pagination.set(e,'more');
+  }
+  // Keep current stay values beside a large calendar; day cells alone must
+  // not consume the entire inventory and hide the summaries needed to commit.
+  const stayAnchors=new Set([
+    ...raw.filter(e=>dates.get(e).date_kind==='opener').slice(0,4),
+    ...raw.filter(e=>e.matches('input,textarea,select')&&!sensitive(e)&&
+      /destination|location|\bcity\b|where .*going|^(?:search|query)\b/i.test(label(e))).slice(0,2),
+    ...raw.filter(e=>staySummary(e)&&dates.get(e).date_kind!=='opener').slice(0,2)
+  ]);
+  // Foreground popups/calendar/options take priority over category navigation.
   const priority=e=>validations.get(e).invalid||validations.get(e).value_missing||
     validations.get(e).selection_placeholder ? -1 :
+    stayAnchors.has(e) ? -0.5 :
+    focus==='collection' && pagination.has(e) ? -0.4 :
+    monthDirections.get(e)&&calendarScope(e) ? -0.3 :
+    dates.get(e).date_kind==='day_choice'&&dates.get(e).selected==='true' ? -0.25 :
+    dates.get(e).date_kind==='day_choice' ? -0.1 :
     popupScopes.some(scope=>scope.contains(e)) ? 0 :
     counters.get(e)||counterGroups.some(group=>group.contains(e)) ? 0 :
     e.getAttribute('role')==='option' ? 1 :
-    formScopes.some(scope=>scope.contains(e)) ? (focus==='form'?0:2) :
+    categoryNavigation.has(e) ? 1.5 :
+    formScopes.some(scope=>scope.contains(e)) ? (focus==='form'&&!e.matches('a[href]')?0:2) :
     e.matches('input,select,textarea') ? 3 : 4;
   raw.sort((a,b)=>priority(a)-priority(b));
    const elements=raw.filter(e=>
@@ -294,7 +557,9 @@ globalThis.agenticObserve = focus => {
    const nativeForms=query('form');
    const controls=elements.map((e,i)=>{
       const box=e.closest('label,[role="group"],li,[data-testid],fieldset');
-      const selected=e.getAttribute('aria-selected')||e.getAttribute('aria-checked')||
+      const dateInfo=dates.get(e),dateScope=calendarScope(e);
+      const selected=dateInfo.date_kind==='day_choice'?dateInfo.selected:
+        e.getAttribute('aria-selected')||e.getAttribute('aria-checked')||
         e.getAttribute('data-state')||(e.matches('input[type="checkbox"],input[type="radio"]')?
           String(e.checked):'');
       const counter=counters.get(e);
@@ -315,7 +580,9 @@ globalThis.agenticObserve = focus => {
             .filter(n=>visible(n)&&n.closest('[aria-hidden="true"]')).length},
         context:clean([counter?.evidence,box?.innerText,e.parentElement?.innerText,
           e.parentElement?.parentElement?.innerText].join(' ')).slice(0,500),
-        value:['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?(e.value||'').slice(0,300):
+        ...(customAgeValues.get(e)?{value_source:customAgeValues.get(e).value_source}:{}),
+        value:customAgeValues.get(e)?customAgeValues.get(e).value:
+          ['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?(e.value||'').slice(0,300):
           e.isContentEditable?clean(e.innerText).slice(0,300):e.getAttribute('aria-valuenow')||'',
          selected,expanded:e.getAttribute('aria-expanded')||
            (editable(e)?comboOwner(e).getAttribute('aria-expanded'):'')||'',
@@ -332,9 +599,13 @@ globalThis.agenticObserve = focus => {
         options:e.tagName==='SELECT'?[...e.options].slice(0,50).map(o=>({value:o.value,
           label:clean(o.textContent),disabled:o.disabled||o.closest('optgroup')?.disabled===true,
           selected:o.selected,hidden:o.hidden})):[],
-        date:e.getAttribute('data-date')||e.getAttribute('datetime')||'',
-        date_owner_id:elements.includes(e.closest('[role="gridcell"]'))?
-          e.closest('[role="gridcell"]').getAttribute('data-agentic-loop-id'):null};
+        ...(focus==='collection'&&pagination.has(e)?{pagination:pagination.get(e)}:{}),
+        date_kind:dateInfo.date_kind,date:dateInfo.date,
+        ...(dateInfo.date_endpoint?{date_endpoint:dateInfo.date_endpoint}:{}),
+        ...(dateScope?{date_widget_id:'calendar:'+calendarScopes.indexOf(dateScope)}:{}),
+        ...(dateScope&&monthDirections.get(e)?{date_navigation:monthDirections.get(e)}:{}),
+        date_owner_id:elements.includes(dateInfo.owner)?
+          dateInfo.owner.getAttribute('data-agentic-loop-id'):null};
     });
   const unresolved=controls.filter(e=>e.enabled&&(e.invalid||e.value_missing||e.selection_placeholder));
   const validationAlerts=query('[role="alert"],[aria-live="assertive"]')
@@ -361,8 +632,10 @@ globalThis.agenticObserve = focus => {
   }
   // Readiness hints only: these do not verify availability, price or coverage.
   const excluded='form,nav,header,footer,aside,[role="dialog"],[inert]';
-  const records=[...root.querySelectorAll('article,li,[role="listitem"],'+
-    '[itemscope],[data-testid*="card"]')].filter(e=>visible(e)&&!e.closest(excluded)&&
+  const recordMarkers='[data-testid*="card" i],[data-test-target*="card" i],[data-automation*="card" i],'+
+    '[data-testid*="hotel-listing" i],[data-test-target*="hotel-listing" i],[data-automation*="hotel-listing" i],'+
+    '[data-testid*="hotel-list-item" i],[data-test-target*="hotel-list-item" i],[data-automation*="hotel-list-item" i]';
+  const records=[...root.querySelectorAll('article,li,[role="listitem"],[itemscope],'+recordMarkers)].filter(e=>visible(e)&&!e.closest(excluded)&&
       e.querySelector('a[href]')&&clean(e.innerText).length>=40);
   const resultText=chunks.join(' ');
   const priceContexts=[];
@@ -382,12 +655,35 @@ globalThis.agenticObserve = focus => {
   // longer renders its destination input. Card headlines and form echoes cannot.
   const resultHeadings=[...root.querySelectorAll('h1,h2,[role="heading"]')]
     .filter(e=>visible(e)&&!e.closest(excluded+', [aria-hidden="true"]')&&
-      !e.closest('article,li,[role="listitem"],[data-testid*="card"],'+
+      !e.closest('article,li,[role="listitem"],'+recordMarkers+','+
         '[itemtype$="/Hotel"],[itemtype$="/Product"],[itemtype$="/Article"]'))
     .map(e=>({text:clean(e.innerText),level:Number(e.getAttribute('aria-level')||
       (/^H[12]$/.test(e.tagName)?e.tagName.slice(1):0))}))
     .filter(e=>[1,2].includes(e.level)&&e.text.length>0&&e.text.length<=240).slice(0,8);
-  const results={record_count:records.filter(e=>!records.some(n=>n!==e&&e.contains(n))).length,
+  const recordLeaves=records.filter(e=>!records.some(n=>n!==e&&e.contains(n)));
+  // A bounded content-change hint for SPA refreshes, never price/availability proof.
+  // Form fields and page chrome are excluded; only actual rendered record text
+  // and link paths contribute. The signature stays out of model context.
+  let recordHash=2166136261;
+  for(const record of recordLeaves.slice(0,8)) {
+    const paths=[...record.querySelectorAll('a[href]')].slice(0,2).map(link=>{
+      try {return new URL(link.href,location.href).pathname;} catch (_) {return '';}
+    }).join('|');
+    const text=clean(record.innerText).slice(0,800)+'|'+paths;
+    for(let i=0;i<text.length;i++) recordHash=Math.imul(recordHash^text.charCodeAt(i),16777619)>>>0;
+  }
+  const resultSignature=recordLeaves.length ?
+    recordHash.toString(16).padStart(8,'0') : emptyResults.test(resultText)?'empty':null;
+  const identities=(focus==='collection'?recordLeaves:[]).map(record=>{
+    const heading=record.querySelector('h1,h2,h3,[role="heading"]');
+    const link=heading?.closest('a[href]')||heading?.querySelector('a[href]')||record.querySelector('a[href]');
+    let path='';try{path=link?new URL(link.href).pathname:'';}catch{}
+    return path+'|'+clean(heading?.innerText||link?.innerText).replace(/^\d+[.)]\s*/,'');
+  }).sort();
+  let identityHash=2166136261;
+  for(const text of identities) for(let i=0;i<text.length;i++) identityHash=Math.imul(identityHash^text.charCodeAt(i),16777619)>>>0;
+  const results={record_count:recordLeaves.length,result_signature:resultSignature,
+    ...(focus==='collection'?{record_set_signature:recordLeaves.length?identityHash.toString(16).padStart(8,'0'):emptyResults.test(resultText)?'empty':null}:{}),
     busy:[...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],[role="status"]')]
       .some(e=>visible(e)&&!e.closest(excluded)&&
         (e.getAttribute('aria-busy')==='true'||e.getAttribute('role')==='progressbar'||
@@ -400,7 +696,9 @@ globalThis.agenticObserve = focus => {
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
       text:clean(e.innerText).slice(0,800)})),
     controls_truncated:raw.length>140,visible_control_count:raw.length,
-    viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY},
+    viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY,
+      document_height:document.documentElement.scrollHeight,
+      at_page_end:Math.ceil(scrollY+innerHeight)>=document.documentElement.scrollHeight-4},
     password_or_code_visible:query('input').some(e=>visible(e)&&
       (e.type==='password'||e.autocomplete==='one-time-code'||/otp|verification|^code$/i.test(e.name)))};
 };

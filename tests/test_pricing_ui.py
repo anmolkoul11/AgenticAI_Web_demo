@@ -51,6 +51,16 @@ def test_soft_price_target_remains_a_labelled_alternative(pricing_ui):
     assert "alternative, not a budget match" in state["alternative"]
 
 
+def test_no_price_condition_does_not_display_an_invented_target(pricing_ui):
+    text = pricing_ui.evaluate("""() => {
+      showPricingSummary({pricing_summary:{applicable:true,verified:0,unverified:25,
+        comparison_requested:false,target_requested:false}});
+      return pricingNote.textContent;
+    }""")
+    assert "No price target was requested" in text
+    assert "within the price target" not in text and "Nightly defaults" not in text
+
+
 def test_returned_stay_status_is_separate_from_form_readiness(pricing_ui):
     text = pricing_ui.evaluate("""() => {
       renderBrowserOptions({state:'agent_paused',page_health:{},agent_report:{status:'paused',

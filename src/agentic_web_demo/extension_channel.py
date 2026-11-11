@@ -228,31 +228,43 @@ class ExtensionRuns:
             self.runs[channel.run_id] = item
             return item
 
-    def owned(self, run_id, sid, current):
+    def owned(self, run_id, sid, current, *, check_channel=True):
         with self.lock:
             item = self.runs.get(run_id)
             if not item or item["sid"] != sid or item["current"] is not current:
                 raise KeyError("Extension run unavailable")
-        item["channel"].guard()
+        if check_channel:
+            item["channel"].guard()
         return item
 
     def snapshot(self, item):
+        from agentic_web_demo.custom_service import workflow_job
+
         channel = item["channel"]
         status = channel.control.snapshot()
         state, guidance = status["state"], status["guidance"]
+        job, workflow = None, {}
         if item["job_id"]:
-            job = item["service"].read(item["job_id"])
-            if job["status"] not in {"queued", "running"}:
+            job = workflow_job(item["service"], item["job_id"])
+            workflow = job["workflow"]
+            if workflow["execution_job_id"] or job["status"] not in {"queued", "running"}:
                 state = job["status"]
                 guidance = (job.get("result") or {}).get("guidance") or job.get("guidance") or guidance
-        if status["state"] == "cancelled":
+            elif state in {"captured", "closed", "reviewing"}:
+                state = "reviewing"
+                guidance = "Preparing your collected results for review. Nothing is saved yet."
+        if status["state"] == "cancelled" and not workflow.get("execution_job_id"):
             # Explicit tab cancellation wins the race with the worker's generic
             # needs_input completion. Clients must discard an in-flight ACK.
             state, guidance = "cancelled", status["guidance"]
         with channel.condition:
             pending = channel.pending is not None and channel.pending["ack"] is None
         return {
-            "run_id": channel.run_id, "job_id": item["job_id"], "state": state,
+            "run_id": channel.run_id, "job_id": job["job_id"] if job else item["job_id"],
+            "plan_job_id": item["job_id"], "job_status": job["status"] if job else None,
+            "plan_id": workflow.get("plan_id"),
+            "execution_job_id": workflow.get("execution_job_id"),
+            "saved_run_id": workflow.get("saved_run_id"), "state": state,
             "guidance": guidance, "agent_report": status["agent_report"],
             "command_pending": pending, "instance_id": self.instance_id,
         }

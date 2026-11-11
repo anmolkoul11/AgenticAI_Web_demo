@@ -2,7 +2,7 @@
 
 // The dashboard is the authenticated relay. This worker never receives API keys,
 // reads cookies, or accepts webpage/external messages. Native input attaches
-// only to the explicitly connected website tab after Start/Resume consent.
+// only to the connected website tab after the user chooses Start/Resume.
 importScripts('native_input.js');
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const INPUT_PROTOCOL = 1;
@@ -21,7 +21,7 @@ let memory;
 let handling = Promise.resolve();
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve,milliseconds));
 const safeError = error => SAFE_ERRORS.has(error?.message) || RELAY_ERRORS.has(error?.message) || DASHBOARD_ERRORS.has(error?.message) ? error.message : 'execution_failed';
-const publicState = state => ({ok:true,revision:state?.revision || 0,connection:state?.binding ? {tab_id:state.binding.tab_id,title:state.binding.title,url:state.binding.url,dashboard_url:state.binding.dashboard_url,username:state.binding.username}:null,run:state?.run || null,error:state?.error || null,reconnect_required:DASHBOARD_ERRORS.has(state?.error),website_activity:state?.website_activity || null});
+const publicState = state => ({ok:true,revision:state?.revision || 0,connection:state?.binding ? {tab_id:state.binding.tab_id,title:state.binding.title,url:state.binding.url,dashboard_url:state.binding.dashboard_url,username:state.binding.username}:null,run:state?.run || null,run_tab_id:state?.run_tab_id ?? state?.binding?.tab_id ?? null,error:state?.error || null,reconnect_required:DASHBOARD_ERRORS.has(state?.error),website_activity:state?.website_activity || null});
 async function readState() {
   if (memory === undefined) memory = (await chrome.storage.session.get(STATE_KEY))[STATE_KEY] || {};
   return memory;
@@ -33,12 +33,31 @@ async function writeState(state) {
   if (memory !== state) return;
   chrome.runtime.sendMessage({type:'agentic-panel-state-v1',...publicState(state)}).catch(() => {});
 }
+async function readRunStatus(state) {
+  try { return await relay(state,'/api/extension/runs/'+state.run.run_id); }
+  catch (error) {
+    // A browser channel can expire after collection while its private saved job
+    // remains reviewable. Only read persisted status; never renew tab control.
+    if (!['run_expired','run_unavailable'].includes(error?.message) ||
+        (!FINISHED.has(state.run.state) && state.run.state !== 'reviewing' && !state.run.execution_job_id)) throw error;
+    const sourceId = state.run.plan_job_id || state.run.job_id;
+    const {job} = await relay(state,'/api/custom/jobs/'+sourceId+'/workflow');
+    const workflow = job.workflow || {};
+    return {run_id:state.run.run_id,job_id:job.job_id,
+      plan_job_id:workflow.plan_job_id || state.run.plan_job_id || sourceId,
+      plan_id:workflow.plan_id,execution_job_id:workflow.execution_job_id,
+      saved_run_id:workflow.saved_run_id,job_status:job.status,
+      state:['queued','running'].includes(job.status) && !workflow.execution_job_id ? 'reviewing':job.status,
+      guidance:job.result?.guidance || job.guidance || 'Review the workflow in your dashboard.',
+      command_pending:false};
+  }
+}
 function websiteUrl(value) {
   if (!value) throw new Error('permission_required');
   const u = new URL(value);
   if (u.protocol !== 'https:' || u.username || u.password || /^(?:localhost|127\.|0\.|\[|10\.|192\.168\.|169\.254\.)/i.test(u.hostname) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(u.hostname)) throw new Error('unsupported');
   u.hash = '';
-  const allowed = /^(?:id|item|product|article|story|hotel|listing|slug|variant|page|p|(?:item|product|article|story|hotel|listing|variant)_id|checkin|checkout|check_in|check_out|group_adults|group_children|no_rooms|adults|children|rooms|dest_id|dest_type|ss)$/i;
+  const allowed = /^(?:id|item|product|article|story|hotel|listing|slug|variant|page|p|(?:item|product|article|story|hotel|listing|variant)_id|checkin|check_in|check-in|arrival|arrival_date|arrivaldate|checkout|check_out|check-out|departure|departure_date|departuredate|adults|adult|num_adults|numadults|group_adults|rooms|room|num_rooms|numrooms|no_rooms|room_count|children|num_children|group_children|dest_id|dest_type|ss)$/i;
   u.search = new URLSearchParams([...u.searchParams].filter(([k,v])=>allowed.test(k)&&v.length<=128&&!/https?:|@|[\u0000-\u001f]/i.test(v)).slice(0,12)).toString();
   return u;
 }
@@ -92,7 +111,8 @@ async function sessionAt(tab,expected=null) {
 }
 async function relay(state,path,method='GET',body=null) {
   const b = state.binding;
-  if (!b || !/^\/api\/extension\/runs(?:\/[a-f0-9-]{32,36}(?:\/(?:next|result|control))?)?$/.test(path)) throw new Error('unsupported');
+  const workflowRead = method === 'GET' && /^\/api\/custom\/jobs\/[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\/workflow$/.test(path);
+  if (!b || (!workflowRead && !/^\/api\/extension\/runs(?:\/[a-f0-9-]{32,36}(?:\/(?:next|result|control))?)?$/.test(path))) throw new Error('unsupported');
   const dashboard = await chrome.tabs.get(b.dashboard_tab_id).catch(()=>null);
   if (!dashboard?.url) throw new Error('dashboard_tab_closed');
   if (new URL(dashboard.url).origin !== b.dashboard_url) throw new Error('dashboard_origin_changed');
@@ -151,20 +171,39 @@ async function activateWebsite(state) {
     throw new Error('website_focus_required');
   }
 }
+function safeControlPreflight(value) {
+  if (!value || typeof value !== 'object' ||
+      !['invalid_reference','reference_ambiguous','not_actionable','identity_changed',
+        'counter_changed','reference_detached','action_restricted','options_changed',
+        'focus_changed','outside_viewport','hit_target_changed'].includes(value.reason) ||
+      !['target','native_prepare','native_validate','after_scroll','after_focus'].includes(value.phase)) return null;
+  const allowed = ['tag','role','name','type','href','submits_form','text','value','counter',
+    'label','direction','method','minimum','maximum','owner_readonly','evidence','keys',
+    'options','focused','rect','hit_target'];
+  const fields = Array.isArray(value.mismatched_fields) ?
+    [...new Set(value.mismatched_fields.filter(field => allowed.includes(field)))].slice(0,12):[];
+  return {reason:value.reason,phase:value.phase,mismatched_fields:fields,mismatch_count:fields.length};
+}
 async function executorCall(state,operation,payload) {
   await selectedTab(state);
   const [answer] = await chrome.scripting.executeScript({target:{tabId:state.binding.tab_id},func:async (operation,payload,expected) => {
     const executor = globalThis.__agenticTabExecutor;
     if (executor?.version !== expected.version || executor?.input_protocol !== expected.input_protocol) return {ok:false,error:'extension_update_required'};
     try { return {ok:true,result:await executor.dispatch(operation,payload)}; }
-    catch(error) { return {ok:false,error:error?.message}; }
+    catch(error) { return {ok:false,error:error?.message,
+      ...(error.controlPreflight ? {control_preflight:error.controlPreflight}:{})}; }
   },args:[operation,payload,{version:EXTENSION_VERSION,input_protocol:INPUT_PROTOCOL}]});
   if (!answer?.result) throw new Error('delivery_unknown');
-  if (!answer.result.ok) throw new Error(SAFE_ERRORS.has(answer.result.error) ? answer.result.error : 'execution_failed');
+  if (!answer.result.ok) {
+    const error = new Error(SAFE_ERRORS.has(answer.result.error) ? answer.result.error : 'execution_failed');
+    const preflight = error.message === 'control_changed' ? safeControlPreflight(answer.result.control_preflight):null;
+    if (preflight) error.controlPreflight = preflight;
+    throw error;
+  }
   return answer.result.result;
 }
 async function executeNative(state,payload) {
-  let output = await executorCall(state,'native_begin',payload), stepCount = 0;
+  let output = await executorCall(state,'native_begin',payload), stepCount = 0, completedSteps = 0;
   const transactionId = output?.transaction_id;
   try {
     while (output?.native_step) {
@@ -183,6 +222,7 @@ async function executeNative(state,payload) {
           transaction_id:transactionId,step_id:step.id,require_focus});
       };
       await AgenticNativeInput.perform(state.binding.tab_id,step,validate);
+      completedSteps += 1;
       output = await executorCall(state,'native_continue',{document_token:payload.document_token,
         transaction_id:transactionId,step_id:step.id});
     }
@@ -190,6 +230,17 @@ async function executeNative(state,payload) {
     return {...output.result,...(stepCount ? {input_method:'native_cdp',native_steps:stepCount}:{})};
   } catch(error) {
     try { await executorCall(state,'native_abort',{document_token:payload.document_token,transaction_id:transactionId}); } catch (_) { /* no input or replay during cleanup */ }
+    const preflight = safeControlPreflight(error.controlPreflight);
+    // perform() preserves control_changed only before any input; after dispatch
+    // it reports delivery_unknown. Completed prior steps also forbid this claim.
+    if (payload.decision?.action === 'click' && !['day_choice','opener'].includes(payload.facts?.date_kind) &&
+        completedSteps === 0 && error?.message === 'control_changed' && preflight) {
+      const note = 'Click preflight: '+preflight.reason+' during '+preflight.phase+
+        (preflight.mismatched_fields.length ? ' ('+preflight.mismatched_fields.join(', ')+')':'')+
+        '. No click sent; inspect fresh controls before continuing.';
+      return {status:'value_mismatch',dispatched:false,dispatch_status:'not_dispatched',
+        control_preflight:preflight,note,guidance:note};
+    }
     throw error;
   }
 }
@@ -322,7 +373,7 @@ async function pump() {
       }
       if (!next.command) {
         const revision = state.revision;
-        const status = await relay(state,'/api/extension/runs/'+state.run.run_id);
+        const status = await readRunStatus(state);
         if ((await readState()) !== state) break;
         if (state.revision !== revision) continue;
         state.run = {...state.run,...status};
@@ -368,13 +419,20 @@ async function pump() {
 }
 async function connect(message) {
   const old = await readState();
+  if (message.automatic && old.binding) {
+    // Following a selected tab is read-only pairing, never permission to move
+    // an old workflow into a changed dashboard account or sign-in session.
+    const dashboard = await chrome.tabs.get(old.binding.dashboard_tab_id).catch(()=>null);
+    await sessionAt(dashboard,old.binding);
+    if ((await readState()) !== old) return publicState(await readState());
+  }
   if (old.run && !FINISHED.has(old.run.state)) {
     let stale = DASHBOARD_ERRORS.has(old.error);
     if (!stale) {
       try {
         // Reconnection is not a shortcut around session ownership. A healthy
         // live run remains bound to its current tab and account.
-        old.run = {...old.run,...await relay(old,'/api/extension/runs/'+old.run.run_id)};
+        old.run = {...old.run,...await readRunStatus(old)};
       } catch(error) {
         if (!DASHBOARD_ERRORS.has(error?.message) && !['run_expired','run_unavailable'].includes(error?.message)) throw error;
         await stopFor(old,error);
@@ -387,17 +445,21 @@ async function connect(message) {
       await selectedTab(old); await writeState(old); return publicState(old);
     }
   }
-  if (old.binding && (!old.run || FINISHED.has(old.run.state)) && !DASHBOARD_ERRORS.has(old.error) && (message.tab_id == null || message.tab_id === old.binding.tab_id)) {
+  const requested = message.tab_id == null ? null : await chrome.tabs.get(message.tab_id);
+  const sameOrigin = !requested?.url || new URL(requested.url).origin === old.binding?.origin;
+  const sameWindow = !requested || requested.windowId === old.binding?.window_id;
+  if (old.binding && (!old.run || FINISHED.has(old.run.state)) && !DASHBOARD_ERRORS.has(old.error) && sameOrigin && sameWindow && (message.tab_id == null || message.tab_id === old.binding.tab_id)) {
     const tab = await selectedTab(old);
     const dashboard = await chrome.tabs.get(old.binding.dashboard_tab_id).catch(()=>null);
     await sessionAt(dashboard,old.binding);
     old.binding.url = websiteUrl(tab.url).href;
     old.binding.title = String(tab.title || 'Selected website').slice(0,160);
+    old.auto_connect = true;
     await writeState(old);
     return publicState(old);
   }
   let tab;
-  if (message.tab_id != null) tab = await chrome.tabs.get(message.tab_id);
+  if (requested) tab = requested;
   else if (old.binding) tab = await chrome.tabs.get(old.binding.tab_id).catch(()=>null);
   if (!tab) [tab] = await chrome.tabs.query({active:true,currentWindow:true});
   const url = websiteUrl(tab.url);
@@ -420,21 +482,47 @@ async function connect(message) {
   // proves the exact old account/server/CSRF context, cancel that stale channel
   // to release its job slot. A changed account/session/server is not authority
   // to control the old run; in that case its existing timeout remains in force.
-  const state = {binding:{tab_id:tab.id,window_id:tab.windowId,origin:url.origin,url:url.href,title:String(tab.title||'Selected website').slice(0,160),dashboard_tab_id:dashboard.id,dashboard_url:new URL(dashboard.url).origin,username:session.username,csrf:session.csrf,instance_id:session.instance_id,ui_version:session.ui_version},run:null,pending:null,error:null};
+  if (message.automatic && (await readState()) !== old) return publicState(await readState());
+  const retainedRun = message.automatic && old.run && FINISHED.has(old.run.state) ? old.run : null;
+  const state = {binding:{tab_id:tab.id,window_id:tab.windowId,origin:url.origin,url:url.href,title:String(tab.title||'Selected website').slice(0,160),dashboard_tab_id:dashboard.id,dashboard_url:new URL(dashboard.url).origin,username:session.username,csrf:session.csrf,instance_id:session.instance_id,ui_version:session.ui_version},run:retainedRun,run_tab_id:retainedRun ? old.run_tab_id ?? old.binding?.tab_id : null,pending:null,error:null,auto_connect:true};
   if (message.reconnect && DASHBOARD_ERRORS.has(old.error) && old.run && !FINISHED.has(old.run.state) && old.binding?.csrf === session.csrf && old.binding.instance_id === session.instance_id && old.binding.username === session.username) {
     try { await relay(state,'/api/extension/runs/'+old.run.run_id+'/control','POST',{action:'cancel'}); }
     catch(error) { if (!['run_expired','run_unavailable'].includes(error?.message)) throw error; }
   }
   await writeState(state); return publicState(state);
 }
+async function followSelectedTab(starting = false) {
+  const state = await readState();
+  // A just-finished command pump may still be releasing its old target. Never
+  // let an immediate Start use that tab while idle selection is deferred.
+  if (starting && pumping && (!state.run || FINISHED.has(state.run.state))) throw new Error('operation_conflict');
+  if (state.auto_connect === false || state.pending || pumping ||
+      (state.run && !FINISHED.has(state.run.state)) ||
+      (state.binding && DASHBOARD_ERRORS.has(state.error))) return '';
+  const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+  if (!tab) return '';
+  if (!tab.url) return 'Open Browser Companion from the selected website tab to grant browser access.';
+  let url;
+  try { url = websiteUrl(tab.url); } catch (_) { return ''; }
+  if (state.binding?.tab_id === tab.id && state.binding.window_id === tab.windowId &&
+      state.binding.origin === url.origin && state.binding.url === url.href &&
+      state.binding.title === String(tab.title || 'Selected website').slice(0,160)) return '';
+  if ((await readState()) !== state) return '';
+  await connect({tab_id:tab.id,automatic:true});
+  return '';
+}
 async function handle(message) {
   if (message.operation === 'connect') return connect(message);
+  const selectionNotice = (message.operation === 'status' && message.follow_selected_tab === true) || message.operation === 'start' ?
+    await followSelectedTab(message.operation === 'start') : '';
   const state = await readState();
   if (message.operation === 'status') {
-    if (state.run && !DASHBOARD_ERRORS.has(state.error) && !FINISHED.has(state.run.state)) {
+    // Review is a handoff, not the end of the workflow. Keep reading the shared
+    // job after collection so dashboard approval/saving is reflected here too.
+    if (state.run && !DASHBOARD_ERRORS.has(state.error)) {
       try {
         const revision = state.revision;
-        const status = await relay(state,'/api/extension/runs/'+state.run.run_id);
+        const status = await readRunStatus(state);
         if ((await readState()) === state && state.revision === revision) {
           state.run = {...state.run,...status}; await writeState(state);
         }
@@ -444,9 +532,10 @@ async function handle(message) {
     const latest = await readState();
     if (latest.error || latest.run?.collection_only || !ACTIVE.has(latest.run?.state)) await releaseNative(latest);
     if (!latest.run?.collection_only) pump();
-    return publicState(latest);
+    return {...publicState(latest),selection_notice:selectionNotice};
   }
   if (message.operation === 'start') {
+    if (selectionNotice) throw new Error('permission_required');
     if (!state.binding) throw new Error('Connect the website tab first.');
     if (DASHBOARD_ERRORS.has(state.error)) throw new Error(state.error);
     if (state.run && !FINISHED.has(state.run.state)) throw new Error('Pause or cancel the existing workflow first.');
@@ -454,12 +543,13 @@ async function handle(message) {
     if (message.native_input_confirmed !== true) throw new Error('native_input_consent_required');
     const tab = await activateWebsite(state);
     const body = {url:websiteUrl(tab.url).href,tab_id:tab.id,instructions:message.instructions,record_limit:message.record_limit,output_fields:message.output_fields || [],business_rules:message.business_rules || [],publish_event:!!message.publish_event,agent_confirmed:true,agent_visual_confirmed:false,authorized:true,allow_model_api:true};
+    body.collection_extent = message.collection_extent || 'preview';
     let result;
     try { result = await relay(state,'/api/extension/runs','POST',body); }
     catch(error) { await releaseNative(state); throw error; }
     // A new run gets a new state object. An old pump must retain its old run ID
     // while its final response/ACK is still in flight.
-    const nextState = {...state,run:{...result,state:'agent_running',guidance:'Starting in the selected tab.',collection_only:false},pending:null,error:null};
+    const nextState = {...state,run:{...result,state:'agent_running',guidance:'Starting in the selected tab.',collection_only:false},run_tab_id:tab.id,pending:null,error:null};
     await writeState(nextState); pump(); return publicState(nextState);
   }
   if (message.operation === 'control') {
@@ -495,6 +585,13 @@ async function handle(message) {
     if (session.ui_version !== state.binding.ui_version) throw new Error('dashboard_updated');
     if (session.username !== state.binding.username) throw new Error('dashboard_account_changed');
     if (session.csrf !== state.binding.csrf) throw new Error('dashboard_csrf_changed');
+    // Resolve a preview that was already saved to its original execution. This
+    // is read-only; opening review never submits another approval.
+    const revision = state.revision;
+    const status = await readRunStatus(state);
+    if ((await readState()) !== state || state.revision !== revision) return publicState(await readState());
+    state.run = {...state.run,...status};
+    await writeState(state);
     await chrome.scripting.executeScript({target:{tabId:state.binding.dashboard_tab_id},func:jobId=>window.postMessage({type:'agentic-extension-review-v1',job_id:jobId},location.origin),args:[state.run.job_id]});
     const dashboard = await chrome.tabs.update(state.binding.dashboard_tab_id,{active:true}); await chrome.windows.update(dashboard.windowId,{focused:true});
     return publicState(state);
@@ -503,7 +600,8 @@ async function handle(message) {
     if (state.run && !FINISHED.has(state.run.state) && !DASHBOARD_ERRORS.has(state.error)) throw new Error('Cancel the workflow before disconnecting.');
     // A changed dashboard session must never be used to control an old account's
     // run. Drop only our local binding; the old channel is paused/timeout-bound.
-    await releaseNative(state); await writeState({}); return publicState({});
+    const disconnected = {auto_connect:false};
+    await releaseNative(state); await writeState(disconnected); return publicState(disconnected);
   }
   throw new Error('Unknown browser companion operation.');
 }

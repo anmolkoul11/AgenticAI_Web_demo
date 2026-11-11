@@ -4,7 +4,7 @@ import pytest
 from test_browser_agent import agent_page as shared_agent_page
 from test_browser_agent import controls, decision, tools_for
 
-from agentic_web_demo.browser_agent import BrowserAgent, resolve_counter_decision
+from agentic_web_demo.browser_agent import BrowserAgent, normalize_counter_click, resolve_counter_decision
 from agentic_web_demo.browser_task import TaskLedger, compact_observation
 from agentic_web_demo.custom_browser import BrowserControl
 from agentic_web_demo.custom_fetch import WebsiteError
@@ -105,6 +105,102 @@ def test_local_generic_quantity_is_not_tied_to_hotel_occupancy(agent_page):
     result = tools.execute(decision("set_counter", down["id"], "2"))
     assert result["status"] == "counter_verified" and result["observed"] == 2
     assert result["steps"] == 2
+
+
+def named_delta_widget(unit="adult", count=2, *, placement="before", display="number"):
+    """Accessibility names describe the delta; only rendered text supplies the value."""
+    if display == "prefix":
+        rendered, expression = f"{unit}s {count}", f"'{unit}s '+value"
+    elif display == "suffix":
+        rendered, expression = f"{count} {unit}s", f"value+' {unit}s'"
+    else:
+        rendered, expression = str(count), "String(value)"
+    quantity = f"<output class=count data-current={count}>{rendered}</output>"
+    buttons = []
+    for direction, delta in (("Decrease", -1), ("Increase", 1)):
+        buttons.append(
+            f"<button aria-label='{direction} {unit} count by 1' onclick=\""
+            "window.counterClicks=(window.counterClicks||0)+1;"
+            "const count=this.closest('[data-named-counter]').querySelector('.count');"
+            f"const value=Number(count.dataset.current)+({delta});"
+            f"count.dataset.current=value;count.textContent={expression};\">"
+            f"{'+' if delta > 0 else '-'} new value</button>"
+        )
+    stepper = buttons[0] + (quantity if placement == "between" else "") + buttons[1]
+    return (
+        "<section data-named-counter>"
+        + (quantity if placement == "before" else "")
+        + f"<div class=stepper>{stepper}</div>"
+        + (quantity if placement == "after" else "")
+        + "</section>"
+    )
+
+
+@pytest.mark.parametrize("placement", ["before", "between", "after"])
+@pytest.mark.parametrize(
+    "unit,before,target", [("adult", 2, 3), ("adult", 3, 3), ("room", 1, 4), ("ticket", 4, 1)]
+)
+def test_local_named_delta_controls_read_actual_quantity_and_absolute_target(
+    agent_page, placement, unit, before, target
+):
+    agent_page.set_content(named_delta_widget(unit, before, placement=placement))
+    tools = tools_for(agent_page)
+    found = detected(tools)
+    assert len(found) == 2
+    assert all(control["counter"]["label"] == unit for control in found)
+    assert all(control["counter"]["value"] == before for control in found)
+    direction = "increase" if target > before else "decrease"
+    selected = next(control for control in found if control["counter"]["direction"] == direction)
+    result = tools.execute(decision("set_counter", selected["id"], str(target)))
+    assert result["status"] == "counter_verified" and result["observed"] == target
+    assert result["steps"] == abs(target - before)
+    fresh = next(control for control in detected(tools) if control["counter"]["direction"] == direction)
+    repeated = tools.execute(decision("set_counter", fresh["id"], str(target)))
+    assert repeated["status"] == "counter_verified" and repeated["steps"] == 0
+    assert (agent_page.evaluate("window.counterClicks") or 0) == abs(target - before)
+
+
+@pytest.mark.parametrize("display", ["prefix", "suffix"])
+def test_local_named_delta_row_label_count_is_distinct_from_age_metadata(agent_page, display):
+    markup = named_delta_widget(count=2, display=display).replace(
+        "<div class=stepper>", "<p>Ages <span>18</span> or above</p><div class=stepper>"
+    )
+    agent_page.set_content(markup)
+    tools = tools_for(agent_page)
+    found = detected(tools)
+    assert len(found) == 2 and all(control["counter"]["value"] == 2 for control in found)
+    selected = next(control for control in found if control["counter"]["direction"] == "increase")
+    result = tools.execute(decision("set_counter", selected["id"], "5"))
+    assert result["status"] == "counter_verified" and result["observed"] == 5
+    assert agent_page.evaluate("window.counterClicks") == 3
+
+
+def test_local_named_delta_does_not_supply_a_missing_current_quantity(agent_page):
+    markup = named_delta_widget().replace("<output class=count data-current=2>2</output>", "")
+    agent_page.set_content(markup)
+    assert not detected(tools_for(agent_page))
+
+
+def test_local_named_delta_rejects_conflicting_current_quantities(agent_page):
+    markup = named_delta_widget(display="prefix").replace(
+        "</section>", "<output>Adults 4</output></section>"
+    )
+    agent_page.set_content(markup)
+    assert not detected(tools_for(agent_page))
+
+
+def test_local_named_delta_does_not_promote_age_when_current_text_is_unreadable(agent_page):
+    markup = named_delta_widget().replace(
+        ">2</output>", ">Adults (2)</output><p>Ages <span>18</span> or above</p>"
+    )
+    agent_page.set_content(markup)
+    assert not detected(tools_for(agent_page))
+
+
+def test_local_named_delta_does_not_pair_different_quantities(agent_page):
+    markup = named_delta_widget().replace("Increase adult count by 1", "Increase room count by 1")
+    agent_page.set_content(markup)
+    assert not detected(tools_for(agent_page))
 
 
 def test_local_nested_counter_rows_survive_background_inventory_limit(agent_page):
@@ -416,6 +512,73 @@ def test_semantic_counter_resolution_preserves_selected_numeric_control():
         decision("set_counter", "0:adults", "3"), TaskLedger("Find hotels for 3 adults"), references
     )
     assert field == "adults" and resolved.control_id == "0:adults"
+
+
+def named_counter_references(unit="adult", value=2, direction="increase"):
+    facts = {
+        "id": "0:quantity",
+        "tag": "BUTTON",
+        "role": "button",
+        "label": f"Increase {unit} count by 1",
+        "counter": None if value is None else {
+            "label": unit,
+            "value": value,
+            "direction": direction,
+            "method": "button",
+            "evidence": f"{unit} {value}",
+        },
+    }
+    return {facts["id"]: (None, None, facts)}
+
+
+@pytest.mark.parametrize("before,target", [(3, 3), (2, 3), (2, 5), (1, 4)])
+def test_counter_click_normalizes_to_the_requested_total_even_when_already_correct(before, target):
+    task = TaskLedger(f"Find hotels for {target} adults")
+    references = named_counter_references(value=before)
+    raw = decision("click", "0:quantity", "1")
+    normalized = normalize_counter_click(raw, task, references)
+    assert normalized.action == "set_counter" and normalized.value == str(target)
+    assert normalized.purpose == "set_field" and raw.action == "click"
+    resolved, field = resolve_counter_decision(normalized, task, references)
+    assert field == "adults" and resolved.value == str(target)
+
+
+def test_counter_click_without_readable_current_count_cannot_fall_back_to_a_raw_click():
+    task = TaskLedger("Find hotels for 3 adults")
+    references = named_counter_references(value=None)
+    normalized = normalize_counter_click(decision("click", "0:quantity"), task, references)
+    assert normalized.action == "set_counter" and normalized.value == "3"
+    with pytest.raises(WebsiteError, match="0 matching controls"):
+        resolve_counter_decision(normalized, task, references)
+
+
+def test_counter_click_with_malformed_current_value_is_not_an_actionable_counter():
+    task = TaskLedger("Find hotels for 3 adults")
+    references = named_counter_references()
+    references["0:quantity"][2]["counter"]["value"] = None
+    normalized = normalize_counter_click(decision("click", "0:quantity"), task, references)
+    assert normalized.action == "set_counter" and normalized.value == "3"
+    with pytest.raises(WebsiteError, match="no readable current value"):
+        resolve_counter_decision(normalized, task, references)
+
+
+@pytest.mark.parametrize("value", [None, 0])
+def test_unrequested_child_quantity_never_receives_a_directional_raw_click(value):
+    references = named_counter_references(unit="child", value=value)
+    with pytest.raises(WebsiteError, match="requested absolute target"):
+        normalize_counter_click(
+            decision("click", "0:quantity"), TaskLedger("Find hotels for 3 adults"), references
+        )
+
+
+def test_readable_unknown_stepper_click_also_uses_the_requested_absolute_target():
+    task = TaskLedger("Find hotels for 3 adults")
+    references = named_counter_references(value=3, direction="unknown")
+    references["0:quantity"][2]["label"] = "Adults"
+    normalized = normalize_counter_click(decision("click", "0:quantity"), task, references)
+    assert normalized.action == "set_counter" and normalized.value == "3"
+    resolved, field = resolve_counter_decision(normalized, task, references)
+    assert field == "adults" and resolved.value == "3"
 
 
 def test_numeric_probe_does_not_displace_controls_from_model_observation():

@@ -26,15 +26,24 @@ def test_sidepanel_markup_matches_packaged_script():
     script = (EXTENSION / "sidepanel.js").read_text(encoding="utf-8")
     assert all(count == 1 for count in Counter(parser.ids).values())
     assert set(re.findall(r'byId\("([^"\n]+)"\)', script)) <= set(parser.ids)
+    assert set(re.findall(r'setText\("([^"\n]+)"', script)) <= set(parser.ids)
     assert "innerHTML" not in script
     assert "agentic-panel-v1" in script and "agentic-panel-state-v1" in script
     assert "agent_visual_confirmed:false" in script
-    assert 'send("status")' in script
+    assert 'send("status", {follow_selected_tab:true})' in script
     assert 'action("control",' in script
-    assert 'id="native-input-consent"' in html
+    assert 'id="native-input-consent"' not in html
+    assert 'id="consent"' not in html
+    assert 'type="checkbox"' not in html
+    assert '<select id="publish"><option value="no" selected>No</option>' in html
+    assert 'publish_event:byId("publish").value === "yes"' in script
+    assert "Start controls this tab" in html
+    assert "Resume continues control of this tab" in html
     assert "native_input_confirmed" in script
     assert 'src="sidepanel.js"' in html and 'href="sidepanel.css"' in html
     assert 'role="alert"' in html and 'role="status"' in html
+    assert 'id="connection-status"' in html and 'aria-live="polite"' in html
+    assert 'class="status-dot" aria-hidden="true"' in html
     assert "before saving" in html and "not screenshots" in html
     assert 'id="observation-diagnostics"' in html
     assert "report.observation_diagnostics" in script
@@ -49,7 +58,7 @@ def test_sidepanel_markup_matches_packaged_script():
     assert "pollInFlight || !panelActive" in script
     assert "value.revision < (current.revision || 0)" in script
     assert 'operation === "status" ? 2:1' in script
-    assert 'await action("status"); return;' in script
+    assert 'await action("status", {follow_selected_tab:true}); return;' in script
     assert "companion_reply_unknown" in script
     assert "current.website_activity?.observation" in script
     assert "async function requestReply(message, timeout)" in script

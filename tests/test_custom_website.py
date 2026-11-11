@@ -273,7 +273,8 @@ def test_preview_save_and_one_attempt(service, monkeypatch, framework):
     assert service.records(job["job_id"])["records"][1]["price"] == "250"
     assert job["result"]["delivery"]["published"] == 0
     replay = finished(service, custom_service.execute(service, plan_id, revision))
-    assert replay["status"] == "failed"
+    assert replay["job_id"] == job["job_id"]
+    assert replay["status"] == "completed"
 
 
 def test_expired_plan_does_not_save(service):

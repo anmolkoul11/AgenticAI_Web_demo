@@ -17,7 +17,8 @@ class ExtensionStart(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     tab_id: StrictInt = Field(ge=0, le=2_147_483_647)
     instructions: str = Field(min_length=1, max_length=2000)
-    record_limit: StrictInt = Field(default=25, ge=1, le=50)
+    collection_extent: Literal["preview", "all_results"] = "preview"
+    record_limit: StrictInt = Field(default=50, ge=1, le=500)
     output_fields: list[str] = Field(default_factory=list, max_length=16)
     business_rules: list[Condition] = Field(default_factory=list, max_length=5)
     publish_event: StrictBool = False
@@ -28,6 +29,8 @@ class ExtensionStart(BaseModel):
 
     @model_validator(mode="after")
     def consent(self):
+        if self.collection_extent == "preview" and self.record_limit > 50:
+            raise ValueError("Limited previews support at most 50 records; choose All results for more.")
         if not all((self.agent_confirmed, self.authorized, self.allow_model_api)):
             raise ValueError("Explicit workflow and paid-model consent required")
         if self.agent_visual_confirmed:
@@ -63,9 +66,11 @@ def register_extension_routes(app, *, manager, accounts, active, user_service, g
         if request.headers.get("x-dashboard-instance") != manager.instance_id:
             raise HTTPException(409, "Dashboard changed. Reconnect the extension to this dashboard.")
 
-    def owned(request, run_id):
+    def owned(request, run_id, *, check_channel=True):
         try:
-            return manager.owned(run_id, request.session.get("sid"), active(request))
+            return manager.owned(
+                run_id, request.session.get("sid"), active(request), check_channel=check_channel,
+            )
         except KeyError:
             raise HTTPException(404, "Extension run unavailable for this signed-in session.") from None
         except WebsiteError:
@@ -87,6 +92,7 @@ def register_extension_routes(app, *, manager, accounts, active, user_service, g
                 source="extension", framework="langgraph", workflow_mode="automatic",
                 urls=[values.url], instructions=values.instructions,
                 record_limit=values.record_limit, output_fields=values.output_fields,
+                collection_extent=values.collection_extent,
                 business_rules=values.business_rules, publish_event=values.publish_event,
                 authorized=True, allow_model_api=True, agent_confirmed=True,
             )
@@ -121,9 +127,40 @@ def register_extension_routes(app, *, manager, accounts, active, user_service, g
     @app.get("/api/extension/runs/{run_id}", dependencies=dependency)
     def status(request: Request, run_id: str):
         try:
-            return manager.snapshot(owned(request, run_id))
+            item = owned(request, run_id, check_channel=False)
+            snapshot = manager.snapshot(item)
+            # Review and saving outlive browser-command authority. Reading an
+            # already finished job never extends permission to control its tab.
+            if (snapshot["job_status"] in {"queued", "running"}
+                    and not snapshot["execution_job_id"] and snapshot["state"] != "reviewing"):
+                item["channel"].guard()
+            return snapshot
+        except WebsiteError:
+            raise HTTPException(410, "Extension run expired or was cancelled. The website tab stays open.") from None
         except (ValueError, OSError):
             raise HTTPException(404, "Extension job unavailable.") from None
+
+    @app.get("/api/custom/jobs/{job_id}/workflow", dependencies=[Depends(guard)])
+    def workflow(request: Request, job_id: str):
+        service = user_service(request)
+        try:
+            job = custom_service.workflow_job(service, job_id)
+        except (ValueError, OSError, KeyError):
+            raise HTTPException(404, "Workflow unavailable for this account.") from None
+        browser = None
+        with manager.lock:
+            items = [item for item in manager.runs.values()
+                     if item["service"] is service
+                     and item["sid"] == request.session.get("sid")
+                     and item["current"] is active(request)]
+        for item in items:
+            if item["job_id"] not in {job_id, job["workflow"]["plan_job_id"]}:
+                continue
+            snapshot = manager.snapshot(item)
+            browser = {**item["channel"].control.snapshot(), **snapshot}
+            job["workflow"]["plan_job_id"] = item["job_id"]
+            break
+        return {"job": job, "source_job_id": job_id, "browser": browser}
 
     @app.post("/api/extension/runs/{run_id}/next", dependencies=dependency)
     def next_command(request: Request, run_id: str):

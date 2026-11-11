@@ -15,7 +15,7 @@ from agentic_web_demo.record_identity import identity_field
 from agentic_web_demo.source_fields import normalized, quote_in_block
 from agentic_web_demo.stay_scope import destination_matches, requested_stay
 
-CONTRACT_VERSION = "stay-pricing-v2"
+CONTRACT_VERSION = "stay-pricing-v3"
 COMPUTED_FIELDS = (
     "pricing_combined_nightly",
     "pricing_basis",
@@ -104,7 +104,9 @@ def _source_group(record, pages, field, columns):
     sources = record.get("evidence_sources", {})
     provenance = sources.get(field) or sources.get(identity) or {}
     source_url = provenance.get("source_url", record.get("source_url"))
-    matches = [page for page in pages if page.get("url") == source_url]
+    matches = [page for page in pages if page.get("url") == source_url
+               and (not record.get("source_capture_id")
+                    or page.get("capture_id") == record["source_capture_id"])]
     if len(matches) != 1:
         return None, [], "price_source_unavailable"
     page = matches[0]
@@ -538,6 +540,21 @@ def _observed_prices(record, page, blocks, scope, requested, columns):
                 "_eligible": bool(owns and kind != "unknown" and not original),
                 "_fields": [],
             })
+    # A selected list-wide mode applies only to one unlabelled current amount.
+    # Local total/nightly labels and original prices retain their own meanings.
+    settings = [block for block in page.get("blocks", [])
+                if block.get("content_role") == "price_setting" and block.get("association") == "page"
+                and not block.get("group_id")]
+    kinds = {_basis_from_text(block["text"], scope, requested) for block in settings}
+    current = [item for item in observations if item["role"] != "original"]
+    if (len(kinds) == 1 and "unknown" not in kinds and current
+            and len({item["amount"] for item in current}) == 1
+            and all(item["kind"] == "unknown" for item in current)
+            and all(_price_amounts(item["quote"]) == {_decimal(item["amount"])} for item in current)):
+        for item in current:
+            item.update(kind=next(iter(kinds)), _eligible=True, evidence_method="page_price_setting",
+                        basis_evidence={"block_ids": [block["id"] for block in settings],
+                                        "quotes": [block["text"] for block in settings]})
     # Old captures retain the strict single-amount/source-quote checks. Neither
     # an alias such as nightly_price nor a model-provided basis is source proof.
     for field in _price_fields(columns):
@@ -624,10 +641,37 @@ def _budget(pricing, constraints):
     return "within_target"
 
 
+def price_comparison_requested(instructions, filters=(), output_fields=()):
+    """An inferred price column does not create a user-requested comparison."""
+    return bool(
+        any(item["kind"] == "price" for item in requested_constraints(instructions))
+        or re.search(r"\bnightly\b|\bper night\b|/\s*night\b", instructions, re.I)
+        or any(re.search(r"nightly|per_night", str(name), re.I) for name in (output_fields or ()))
+        or any(PRICE_NAME.search(str(_column(item, "field")))
+               or str(_column(item, "field")).startswith("pricing_") for item in (filters or ()))
+    )
+
+
+def pricing_review_issues(pricing, *, require_price):
+    """Keep optional price warnings while always enforcing requested stay scope."""
+    if not pricing or pricing.get("status") != "unverified":
+        return []
+    reasons = list(pricing.get("issues") or ["requested_stay_price_unverified"])
+    if require_price:
+        return reasons
+    stay = [reason for reason in reasons if reason.startswith("requested_stay_")
+            or reason in {"price_context_occupancy_mismatch", "price_context_nights_mismatch"}]
+    if not stay and pricing.get("scope_status") in {"mismatch", "unverified"}:
+        stay.append("requested_stay_mismatch" if pricing["scope_status"] == "mismatch"
+                    else "requested_stay_scope_unverified")
+    return stay
+
+
 def assess_pricing(records, pages, instructions, columns):
     """Assess source-verified rows only; never manufacture a missing quote or price."""
     requested = requested_stay(instructions)
     constraints = requested_constraints(instructions)
+    require_price = price_comparison_requested(instructions)
     names = [_column(column, "name") for column in columns]
     nightly = any(item.get("basis") == "nightly" for item in constraints) or bool(
         re.search(r"\bnightly\b|\bper night\b|/\s*night\b", instructions, re.I)
@@ -712,8 +756,10 @@ def assess_pricing(records, pages, instructions, columns):
         }
         if requested_currencies and requested_currencies != {currency}:
             issues.append("requested_currency_unverified")
-        tax_disclosure = _charge_disclosure(text, r"\btax(?:es)?\b")
-        fee_disclosure = _charge_disclosure(text, r"\b(?:fees?|charges?)\b")
+        basis_evidence = (selected or {}).get("basis_evidence") or {}
+        charge_text = text + " " + " ".join(basis_evidence.get("quotes", []))
+        tax_disclosure = _charge_disclosure(charge_text, r"\btax(?:es)?\b")
+        fee_disclosure = _charge_disclosure(charge_text, r"\b(?:fees?|charges?)\b")
         taxes = tax_disclosure["status"]
         fees = fee_disclosure["status"]
         if any(item.get("taxes_requested") == "included" for item in constraints):
@@ -755,11 +801,12 @@ def assess_pricing(records, pages, instructions, columns):
                 }
             else:
                 issues.append("stay_total_night_count_unverified")
-        if comparison is None:
+        if comparison is None and nightly:
             issues.append("nightly_comparison_unverified")
         issues = list(dict.fromkeys(issues))
         pricing = {
             "status": "unverified" if issues else "verified",
+            "comparison_requested": require_price,
             "scope_status": scope["status"],
             "price_field": field,
             "displayed_amount": selected["amount"] if selected else row.get(field),
@@ -802,6 +849,7 @@ def assess_pricing(records, pages, instructions, columns):
                 "quote": selected["quote"] if selected else row.get("evidence", {}).get(field, ""),
             },
             "currency_evidence": _currency_evidence(blocks, page or {}, currency),
+            "basis_evidence": basis_evidence,
             "source_context": {
                 "record_group_verified": bool(blocks),
                 "stay_scope": scope,
@@ -845,6 +893,8 @@ def assess_pricing(records, pages, instructions, columns):
         },
         "summary": {
             "contract_version": CONTRACT_VERSION, "applicable": applicable,
+            "comparison_requested": require_price,
+            "target_requested": any(item["kind"] == "price" for item in constraints),
             "applicable_count": len(assessments),
             "verified": sum(row.get("pricing", {}).get("status") == "verified" for row in rows),
             "unverified": sum(

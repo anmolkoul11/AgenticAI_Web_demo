@@ -9,6 +9,8 @@ import hashlib
 import json
 import re
 
+from agentic_web_demo.browser_task import discovery_query_control, occupancy_widget_action
+
 NAVIGATION_CONTEXT_CHARS = 14000
 OBSERVATION_CONTEXT_CHARS = 8000
 FOCUSED_CONTEXT_CHARS = 6500
@@ -16,7 +18,7 @@ FOCUSED_OBSERVATION_CHARS = 3500
 _FORM_HINTS = re.compile(
     r"\b(?:destination|search|check.?in|check.?out|arrival|departure|dates?|calendar|"
     r"next month|previous month|adults?|children|rooms?|guests?|travel[el]ers?|"
-    r"done|apply|close|dismiss|filters?|currency|price|rating|sort|load more|next page)\b",
+    r"done|apply|update|confirm|close|dismiss|filters?|currency|price|rating|sort|load more|next page)\b",
     re.I,
 )
 _QUERY_FILLER = set(
@@ -84,6 +86,8 @@ def _affordance(item):
         return ["click"], "Navigation link, not prepared form submit."
     if item.get("counter"):
         return ["set_counter"], "Set absolute count."
+    if item.get("date_kind") in {"opener", "date_opener"}:
+        return ["click"], "Date field opener: inspect its calendar without reselecting verified dates."
     if item.get("date") or role == "gridcell":
         return ["click"], "Calendar choice: click."
     if tag == "INPUT" and item.get("type") in {"checkbox", "radio"}:
@@ -142,6 +146,229 @@ def _submission_controls(observation, checklist):
     ]
 
 
+def _navigation_stage(observation, checklist):
+    """Project the ledger's current discovery targets, never stale page handles."""
+    stage = checklist.get("navigation_stage") or {}
+    if stage.get("phase") not in {
+        "discover_category", "discover_location", "prepare_stay", "collect_results", "await_response"
+    }:
+        return {}
+    available = {
+        item.get("id") for frame in observation.get("frames", [])
+        for item in frame.get("controls", []) if item.get("enabled", True)
+    }
+    return {
+        "phase": stage["phase"],
+        "category": _short(stage.get("category", ""), 40),
+        "stay_form_visible": bool(stage.get("stay_form_visible")),
+        **{
+            key: list(dict.fromkeys(cid for cid in stage.get(key, []) if cid in available))[:limit]
+            for key, limit in (("control_ids", 6), ("category_control_ids", 6), ("query_control_ids", 3))
+        },
+        "hint": _short(stage.get("hint", ""), 220),
+    }
+
+
+def observed_matching_results_ready(checklist, *, empty=False, document_id=None):
+    """Accept the ledger's independently observed results without inventing Search."""
+    scope = checklist.get("result_scope") or {}
+    transition = checklist.get("search_transition") or {}
+    provenance = transition.get("submission_provenance") or {}
+    inspection = provenance.get("occupancy_inspection") or {}
+    requested_counts = {field for field in ("adults", "children", "rooms")
+                        if field in (scope.get("requested") or {})}
+    fields = scope.get("fields") or []
+    document = transition.get("result_document_id")
+    summary = provenance.get("committed_summary") or {}
+    summary_fields = {field.get("field"): field for field in summary.get("fields", [])}
+    summary_verified = bool(
+        summary.get("method") == "committed_results_summary" and summary.get("document_id") == document
+        and fields and set(summary_fields) == {field.get("field") for field in fields}
+        and all(summary_fields[field["field"]].get("status") == "verified"
+                and str(summary_fields[field["field"]].get("observed")) == str(field.get("observed"))
+                for field in fields)
+    )
+    form = [item for item in checklist.get("requirements", []) if item.get("application") == "form"]
+    retained_details = bool(
+        checklist.get("collection_mode") == "linked_details"
+        and transition.get("retained_for_linked_details") is True
+        and form and all(
+            item.get("status") == "verified" and item.get("method") == "retained_search_context"
+            for item in form
+        )
+    )
+    return bool(
+        checklist.get("matching_results_observed") is True
+        and checklist.get("search_submitted") is False
+        and checklist.get("search_response_pending") is False
+        and not checklist.get("unresolved_form_fields")
+        and not checklist.get("request_error")
+        and scope.get("status") == "verified"
+        and scope.get("source") == "returned_page"
+        and not scope.get("contradictions")
+        and fields and all(item.get("status") == "verified" for item in fields)
+        and document and scope.get("document_id") == document
+        and (document_id is None or document_id == document or retained_details)
+        and transition.get("scope") == "observed_matching_results_only"
+        and transition.get("attempted") is False
+        and transition.get("confirmed") is False
+        and transition.get("attempt_status") == "matching_results_observed"
+        and transition.get("dispatch_status") == "not_attempted"
+        and transition.get("result_state") in ({"empty"} if empty else {"observed", "empty"})
+        and provenance.get("actor") == "website"
+        and provenance.get("action") is None
+        and (
+            provenance.get("evidence_method") in {"returned_url", "observed_result_refresh"}
+            or provenance.get("evidence_method") == "committed_results_summary" and summary_verified
+            or provenance.get("evidence_method") == "post_commit_readback"
+            and (provenance.get("applied_evidence_method") in {"returned_url", "observed_result_refresh"}
+                 or provenance.get("applied_evidence_method") == "committed_results_summary" and summary_verified)
+            and inspection.get("method") == "post_commit_readback"
+            and inspection.get("document_id") == document
+            and requested_counts
+            and set(inspection.get("checked_counts") or {}) == requested_counts
+            and all(
+                isinstance(inspection.get("checked_counts", {}).get(field), int)
+                and not isinstance(inspection["checked_counts"][field], bool)
+                and inspection["checked_counts"][field] >= 0
+                and str(inspection.get("checked_counts", {}).get(field)) == str(scope.get("requested", {}).get(field))
+                and (inspection.get("readings", {}).get(field) or {}).get("status") == "verified"
+                and str(inspection["readings"][field].get("value")) == str(scope.get("requested", {}).get(field))
+                for field in requested_counts
+            )
+        )
+    )
+
+
+def calendar_navigation(observation, checklist):
+    """Choose one observed month arrow, then require a fresh calendar window."""
+    pending = [item for item in checklist.get("requirements", [])
+               if item.get("field") in {"check_in", "check_out"} and item.get("status") != "verified"]
+    next_field = (checklist.get("calendar_progress") or {}).get("next_field")
+    if next_field == "check_out":
+        pending = [item for item in checklist.get("requirements", []) if item.get("field") == next_field]
+    if not pending or (checklist.get("calendar_progress") or {}).get("status") == "awaiting_commit":
+        return None
+    field = next((item for item in pending if item["field"] == "check_in"), pending[0])
+    target = str(field.get("expected") or "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target):
+        return None
+    available = [item for frame in observation.get("frames", []) for item in frame.get("controls", [])]
+    days = [item for item in available if item.get("date_kind") == "day_choice"
+            and item.get("date_widget_id") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(item.get("date") or ""))]
+    owners = {(str(item.get("id")).partition(":")[0], item["date_widget_id"]) for item in days}
+    if len(owners) != 1 or len({item["date"] for item in days}) < 7:
+        return None
+    months = {}
+    for item in days:
+        months.setdefault(item["date"][:7], set()).add(item["date"])
+    # Adjacent-month spillover cells are not another displayed month panel.
+    panels = [month for month, values in months.items() if len(values) >= 15]
+    if not panels:
+        return None
+    first, last = min(panels), max(panels)
+    direction = "next" if target[:7] > last else "previous" if target[:7] < first else None
+    if not direction:
+        return None  # Never skip an in-window disabled/unavailable requested date.
+    frame, widget = next(iter(owners))
+    arrows = [item for item in available if item.get("date_navigation") == direction
+              and item.get("date_widget_id") == widget and item.get("enabled", True)
+              and str(item.get("id")).partition(":")[0] == frame]
+    if len(arrows) != 1:
+        return None
+    return {"phase": "navigate_calendar", "fields": [field["field"]],
+            "control_ids": [arrows[0]["id"]], "visible_months": [first, last],
+            "next_action": {"action": "click", "control_id": arrows[0]["id"], "value": ""},
+            "hint": f"Requested {target}; visible calendar months {first} through {last}. "
+                    f"Click the observed {direction}-month arrow once, then observe the new dates."}
+
+
+def calendar_completion(observation, checklist):
+    dates = {item.get("field"): item for item in checklist.get("requirements", [])
+             if item.get("field") in {"check_in", "check_out"}}
+    progress = checklist.get("calendar_progress") or {}
+    draft_ready = (progress.get("status") == "awaiting_commit"
+                   and progress.get("document_id") == observation.get("document_id", observation.get("url")))
+    if set(dates) != {"check_in", "check_out"} or (
+        not draft_ready and any(item.get("status") != "verified" for item in dates.values())
+    ):
+        return None
+    items = [item for frame in observation.get("frames", []) for item in frame.get("controls", [])]
+    widgets = {(str(item.get("id")).partition(":")[0], item["date_widget_id"])
+               for item in items if item.get("date_kind") == "day_choice" and item.get("date_widget_id")}
+    if len(widgets) != 1:
+        # Roleless/two-pane pickers may expose zero or multiple day scopes.
+        # Do not combine their selection proof or click an unowned Apply. A
+        # uniquely expanded date opener can still close its OWN form popup.
+        openers = [item for item in items if item.get("date_kind") == "opener"
+                   and item.get("expanded") == "true" and item.get("enabled", True)]
+        if len(openers) != 1 or any(item.get("status") != "verified" for item in dates.values()):
+            return None
+        opener = openers[0]
+        frame = str(opener.get("id")).partition(":")[0]
+        scope = opener.get("form_scope")
+        days = [item for item in items if item.get("date_kind") == "day_choice"]
+        if not scope or not days or any(
+            item.get("form_scope") != scope or str(item.get("id")).partition(":")[0] != frame
+            for item in days
+        ):
+            return None
+        action = {"action": "click", "control_id": opener["id"], "value": ""}
+        return {"phase": "confirm_calendar", "fields": ["check_in", "check_out"],
+                "control_ids": [opener["id"]], "widget_id": "opener:" + opener["id"], "frame": frame,
+                "close_actions": [action], "next_action": action,
+                "evidence_control_ids": [days[0]["id"]],
+                "hint": "Both form dates are verified. Toggle the unique expanded date opener once, "
+                        "then inspect its closed summary; do not merge unrelated calendar scopes."}
+    frame, widget = next(iter(widgets))
+    if draft_ready and (progress.get("widget_id") != widget or progress.get("frame") != frame):
+        return None
+    by_id = {item.get("id"): item for item in items}
+    for field in checklist.get("unresolved_form_fields", []):
+        control = by_id.get(field.get("control_id"), {})
+        if (str(control.get("label") or control.get("name") or "").strip().casefold() not in {"search", "query", "q"}
+                or control.get("date_widget_id") == widget):
+            return None
+    available = [item for item in items if item.get("enabled", True)
+                 and str(item.get("id")).partition(":")[0] == frame]
+    confirms = [item["id"] for item in available if item.get("date_widget_id") == widget
+                and not item.get("submits_form")
+                and (item.get("tag") == "BUTTON" or item.get("role") == "button")
+                and re.fullmatch(r"done|apply|update|close|confirm|ok", str(item.get("label") or ""), re.I)]
+    openers = [item["id"] for item in available if item.get("date_kind") == "opener"]
+    fallback = [item["id"] for item in available if item.get("date_widget_id") == widget
+                and item.get("date_kind") != "opener"
+                and (item.get("tag") == "BUTTON" or item.get("role") == "button")]
+    expanded_openers = [item["id"] for item in available if item.get("date_kind") == "opener"
+                        and item.get("expanded") == "true"
+                        and (not item.get("date_widget_id") or item.get("date_widget_id") == widget)]
+    # Some sites ignore Escape on the form opener. An explicitly expanded,
+    # unique opener is a reversible toggle; do not click a closed/unknown one.
+    toggles = expanded_openers if len(expanded_openers) == 1 else []
+    targets = confirms or toggles or fallback or openers
+    if not targets:
+        return None
+    witnesses = [item["id"] for item in items if item.get("date_kind") == "day_choice"
+                 and item.get("date_widget_id") == widget and str(item.get("id")).partition(":")[0] == frame]
+    actions = []
+    if len(confirms) == 1:
+        actions.append({"action": "click", "control_id": confirms[0], "value": ""})
+    if not confirms or len(confirms) == 1:
+        actions.extend({"action": "click", "control_id": cid, "value": ""} for cid in toggles)
+        actions.append({"action": "press", "control_id": (toggles or fallback or openers or targets)[0], "value": "Escape"})
+    action = actions[0] if actions else None
+    return {"phase": "confirm_calendar", "fields": ["check_in", "check_out"], "control_ids": targets[:3],
+            "widget_id": widget, "frame": frame, "close_actions": actions,
+            "evidence_control_ids": list(dict.fromkeys(progress.get("control_ids", []) + witnesses[:1])),
+            **({"next_action": action} if action else {}),
+            "hint": ("The requested days are selected in the draft calendar; the committed form still needs readback. "
+                     if draft_ready else "Both requested dates are already verified in the open calendar. ")
+            + ("Use its observed Done/Apply/Close control once. " if confirms else
+               "Toggle the uniquely expanded date opener once. " if toggles else
+               "Press Escape on one listed calendar control once to dismiss it without changing a day. ")
+            + "Do not reselect dates or open global Search; then inspect the stay summary and results."}
+
+
 def _interaction_focus(observation, checklist):
     items = {
         item.get("id"): item
@@ -149,7 +376,16 @@ def _interaction_focus(observation, checklist):
         for item in frame.get("controls", [])
     }
     requirements = checklist.get("requirements", [])
+    navigation = _navigation_stage(observation, checklist)
+    discovering = navigation.get("phase") in {"discover_category", "discover_location"} and not navigation.get("stay_form_visible")
     base = "Guidance only: do not refill verified fields or reopen an expanded widget. "
+    scope_fields = (checklist.get("result_scope") or {}).get("fields", [])
+    location_has_results = observation.get("results", {}).get("record_count", 0) > 0 and any(
+        field.get("field") == "destination" and field.get("status") == "verified"
+        and "returned_results_heading" in field.get("method", "") for field in scope_fields
+    )
+    if location_has_results:
+        base += "Hotel cards for the requested location are already here. Use its date/guest controls; do not reopen or refill the separate site Search. "
     if checklist.get("collection_scope", {}).get("allowed_modes") == ["current_page"]:
         return {
             "phase": "collect_starting_page",
@@ -165,7 +401,59 @@ def _interaction_focus(observation, checklist):
             "control_ids": [],
             "hint": "Search submitted: wait/inspect the response. Do not submit/navigate again.",
         }
+    if observed_matching_results_ready(
+        checklist, document_id=observation.get("document_id", observation.get("url"))
+    ):
+        retained = checklist["search_transition"]["result_document_id"] != observation.get(
+            "document_id", observation.get("url")
+        )
+        return {
+            "phase": "collect_results",
+            "fields": [],
+            "control_ids": [],
+            "hint": (
+                "The captured results independently verified the requested stay criteria. "
+                "This detail page's availability and prices still need source evidence; "
+                if retained else
+                "The website already displays results with independently verified requested stay criteria; "
+            )
+            + (
+                "continue collecting requested linked pages. "
+                if checklist.get("collection_mode") == "linked_details"
+                else "collect the requested results/sources. "
+            )
+            + "Do not refill the form or submit Search again. No Search click was recorded.",
+        }
+    completed_calendar = calendar_completion(observation, checklist)
+    if completed_calendar:
+        return completed_calendar
+    guest_completion = occupancy_widget_action(observation, checklist)
+    if guest_completion:
+        return {
+            "phase": "confirm_widget",
+            "fields": [item["field"] for item in requirements
+                       if item.get("field") in {"adults", "children", "rooms"}],
+            "control_ids": [guest_completion["control_id"]],
+            "next_action": guest_completion,
+            "hint": "Guest values match. " + (
+                "Use the observed confirmation button once. " if guest_completion["action"] == "click"
+                else "Press Escape on the expanded guest opener without editing any count. "
+            ) + "Then read the closed summary and updated listings below. Do not use site Search.",
+        }
     unresolved = checklist.get("unresolved_form_fields") or []
+    open_stay_widget = (checklist.get("result_handoff") or {}).get("reason") in {
+        "stay_widget_open", "occupancy_widget_open"
+    }
+    if open_stay_widget:
+        unresolved = [item for item in unresolved
+                      if not (discovery_query_control(items.get(item.get("control_id"), {}))
+                              and str(item.get("label") or "").strip().casefold() in {"search", "query", "q"})]
+    if discovering:
+        # An empty generic site query must not prevent opening the requested
+        # category. Actual required dependent fields (including child ages)
+        # remain ahead of discovery; only ledger-identified query fields yield.
+        queries = set(navigation.get("query_control_ids", []))
+        unresolved = [item for item in unresolved if item.get("control_id") not in queries]
     if unresolved:
         return {
             "phase": "complete_required_fields",
@@ -230,6 +518,9 @@ def _interaction_focus(observation, checklist):
                 "control_ids": options[:6],
                 "hint": base + "Choose the matching owned suggestion before switching widgets.",
             }
+    month_navigation = calendar_navigation(observation, checklist)
+    if month_navigation:
+        return month_navigation
     dates = [
         item
         for item in checklist.get("visible_date_choices", [])
@@ -242,7 +533,48 @@ def _interaction_focus(observation, checklist):
             "phase": "set_dates",
             "fields": [first],
             "control_ids": [item["control_id"] for item in dates if item["field"] == first],
-            "hint": base + "Finish this open calendar: check-in before check-out.",
+            "hint": base + (
+                "The draft check-in is selected; choose check-out without selecting check-in again."
+                if (checklist.get("calendar_progress") or {}).get("next_field") == "check_out"
+                else "Finish this open calendar: check-in before check-out."
+            ),
+        }
+    core_pending = [item["field"] for item in form
+                    if item.get("field") in {"destination", "check_in", "check_out"}
+                    and item.get("status") != "verified"]
+    if (checklist.get("calendar_progress") or {}).get("next_field") == "check_out":
+        core_pending = [field for field in core_pending if field != "check_in"]
+        if "check_out" not in core_pending:
+            core_pending.append("check_out")
+    guest_rows_visible = any(item.get("counter") or item.get("widget_scope") == "counter"
+                             for item in items.values())
+    if core_pending and navigation.get("stay_form_visible") and not guest_rows_visible:
+        targets = [item.get("control_id") for item in form if item.get("field") in core_pending
+                   and item.get("control_id") in items]
+        for item in items.values():
+            if "destination" in core_pending and discovery_query_control(item):
+                targets.append(item["id"])
+            if set(core_pending) & {"check_in", "check_out"} and (
+                (item.get("date_kind") in {"opener", "date_opener"} or item.get("type") == "date")
+                and (not item.get("date_endpoint") or item["date_endpoint"] in core_pending)
+                or re.search(r"\b(?:next|previous|prev)\s+month\b", str(item.get("label") or ""), re.I)
+            ):
+                targets.append(item["id"])
+        return {
+            "phase": "prepare_stay", "fields": core_pending,
+            "control_ids": list(dict.fromkeys(targets))[:8],
+            "hint": "The existing place/dates are not yet verified for this request. Correct the destination "
+            "and full requested date range before reopening guests for readback. Use the stay date controls; "
+            "if the calendar is open, navigate to the requested month. Existing hotel cards may belong to the previous search.",
+        }
+    returned_core_mismatch = [field["field"] for field in scope_fields
+                              if field.get("field") in {"destination", "check_in", "check_out"}
+                              and field.get("status") == "mismatch"]
+    if returned_core_mismatch and not core_pending and not guest_rows_visible:
+        return {
+            "phase": "await_applied_stay", "fields": returned_core_mismatch, "control_ids": [],
+            "hint": "The form values match, but returned place/date evidence differs. Wait for the website's "
+            "update and inspect the applied criteria. Do not reselect correct dates, reopen guests, or claim these cards match yet.",
         }
     rows = []
     for requirement in requirements:
@@ -258,7 +590,9 @@ def _interaction_focus(observation, checklist):
         if ids:
             rows.append((requirement, ids))
     pending = [
-        (requirement, ids) for requirement, ids in rows if requirement.get("status") != "verified"
+        (requirement, ids) for requirement, ids in rows
+        if requirement.get("status") != "verified"
+        and requirement.get("next_action") != "confirm_or_close_widget"
     ]
     if pending:
         return {
@@ -267,23 +601,16 @@ def _interaction_focus(observation, checklist):
             "control_ids": list(dict.fromkeys(cid for _, ids in pending for cid in ids))[:8],
             "hint": base + "Finish all visible pending rows before closing/switching widgets.",
         }
-    if rows:
-        frames = {str(cid).split(":", 1)[0] for _, ids in rows for cid in ids}
-        confirm = [
-            item["id"]
-            for item in items.values()
-            if re.fullmatch(r"done|apply|close", str(item.get("label", "")), re.I)
-            and item.get("enabled", True)
-            and str(item["id"]).split(":", 1)[0] in frames
-        ]
-        if confirm:
-            return {
-                "phase": "confirm_widget",
-                "fields": [item[0]["field"] for item in rows],
-                "control_ids": confirm[:4],
-                "hint": base
-                + "Visible counts match; confirm/close once, then inspect the summary.",
-            }
+    if discovering and navigation.get("control_ids"):
+        return {
+            "phase": navigation["phase"],
+            "fields": [],
+            "control_ids": navigation["control_ids"],
+            "hint": navigation["hint"] or (
+                "Open the requested listing category before individual records. "
+                "Location discovery is navigation; it is not a completed stay search."
+            ),
+        }
     for requirement in form:
         field = items.get(requirement.get("control_id"), {})
         if requirement.get("status") == "verified" or not field:
@@ -314,6 +641,13 @@ def _interaction_focus(observation, checklist):
                 "control_ids": [field["id"]],
                 "hint": "Matching text is uncommitted: open its suggestions once, then inspect.",
             }
+    if open_stay_widget:
+        return {
+            "phase": "inspect_stay_widget", "fields": list(checklist.get("pending_fields", [])),
+            "control_ids": [cid for cid in (checklist.get("result_handoff") or {}).get("widget_control_ids", []) if cid in items],
+            "hint": "The stay widget is already open. Inspect form/dialog to read its values and confirmation control. "
+            "Close the completed widget, then collect the updated hotel cards below. Do not reopen the widget or use site Search.",
+        }
     submit = (
         _submission_controls(observation, checklist)
         if (ready and checklist.get("submission_ready", True))
@@ -369,6 +703,11 @@ def _control(item, expected_values=(), *, focused=False, include_geometry=True):
         "form_scope",
         "widget_scope",
         "date",
+        "date_kind",
+        "date_endpoint",
+        "date_widget_id",
+        "date_navigation",
+        "pagination",
         "href",
         "option_primary",
         "editable",
@@ -380,7 +719,12 @@ def _control(item, expected_values=(), *, focused=False, include_geometry=True):
         "validation_message",
     )
     actions, hint = _affordance(item)
+    if (item.get("date_kind") == "opener" or item.get("date_widget_id")) and item.get("enabled", True):
+        if "press" not in actions:
+            actions.append("press")
     result = {"supported_actions": actions}
+    if item.get("date_kind") == "opener" or item.get("date_widget_id"):
+        result["supported_keys"] = ["Escape"]
     if hint:
         result["action_hint"] = hint
     for key in keys:
@@ -485,8 +829,18 @@ def _observation(observation, checklist, budget, task, *, focused=False, include
     mandatory_ids = (
         required_ids | date_ids | (submit_ids if form_required else set())
         | {item.get("control_id") for item in checklist.get("unresolved_form_fields", [])}
+        | set((checklist.get("calendar_progress") or {}).get("control_ids", []))
     ) & observed_ids
-    focus_ids = set(_interaction_focus(observation, checklist)["control_ids"])
+    navigation = _navigation_stage(observation, checklist)
+    if navigation.get("phase") in {"discover_category", "discover_location"} and not navigation.get("stay_form_visible"):
+        # Category links are actionable discovery controls, not background
+        # record links to discard merely because stay fields are still pending.
+        mandatory_ids.update(navigation.get("control_ids", []))
+        mandatory_ids.update(navigation.get("category_control_ids", []))
+        mandatory_ids.update(navigation.get("query_control_ids", []))
+    focus = _interaction_focus(observation, checklist)
+    focus_ids = set(focus["control_ids"])
+    mandatory_ids |= set(focus.get("evidence_control_ids", [])) & observed_ids
     if focused:
         counters = {
             item.get("control_id")
@@ -498,7 +852,7 @@ def _observation(observation, checklist, budget, task, *, focused=False, include
             item.get("id")
             for frame in observation.get("frames", [])
             for item in frame.get("controls", [])
-            if re.fullmatch(r"done|apply|close", str(item.get("label", "")), re.I)
+            if re.fullmatch(r"done|apply|update|confirm|ok|close", str(item.get("label", "")), re.I)
             and item.get("enabled", True)
         }
         mandatory_ids |= focus_ids | (option_ids & observed_ids) | counters | confirms
@@ -663,8 +1017,23 @@ def _build_navigation_context(
         "requirements": _requirements(checklist),
         "pending_fields": list(checklist.get("pending_fields", [])),
         "search_submitted": bool(checklist.get("search_submitted")),
+        "matching_results_observed": observed_matching_results_ready(
+            checklist,
+            document_id=(payload.get("observation") or {}).get(
+                "document_id", (payload.get("observation") or {}).get("url")
+            ),
+        ),
         "search_response_pending": bool(checklist.get("search_response_pending")),
     }
+    navigation = _navigation_stage(payload.get("observation") or {}, checklist)
+    if navigation:
+        compact_checklist["navigation_stage"] = navigation
+    if checklist.get("result_handoff"):
+        compact_checklist["result_handoff"] = {
+            key: copy.deepcopy(checklist["result_handoff"][key])
+            for key in ("ready", "reason", "scope_status", "record_count", "unverified_fields", "mismatched_fields")
+            if key in checklist["result_handoff"]
+        }
     if checklist.get("unresolved_form_fields"):
         compact_checklist["unresolved_form_fields"] = [
             {key: _short(item[key], 180) if key in {"label", "validation_message"}
@@ -688,6 +1057,12 @@ def _build_navigation_context(
         }
     if checklist.get("collection_scope"):
         compact_checklist["collection_scope"] = copy.deepcopy(checklist["collection_scope"])
+    if isinstance(checklist.get("site_behavior"), dict):
+        compact_checklist["site_behavior"] = {
+            key: _short(checklist["site_behavior"][key], 180)
+            for key in ("site", "search_mode", "reason")
+            if isinstance(checklist["site_behavior"].get(key), str)
+        }
     if checklist.get("information_need_feedback"):
         compact_checklist["information_need_feedback"] = copy.deepcopy(
             checklist["information_need_feedback"][-3:]
@@ -716,6 +1091,7 @@ def _build_navigation_context(
         compact_checklist["result_scope"] = {
             "status": scope.get("status"),
             "source": "returned_page",
+            "document_id": scope.get("document_id"),
             "fields": [
                 {key: copy.deepcopy(item[key]) for key in ("field", "expected", "observed", "status") if key in item}
                 for item in scope.get("fields", [])[:6]
@@ -780,6 +1156,10 @@ def _build_navigation_context(
             for key in (
                 "attempted",
                 "confirmed",
+                "attempt_status",
+                "dispatch_status",
+                "result_state",
+                "retained_for_linked_details",
                 "scope",
                 "status",
                 "method",
@@ -789,7 +1169,13 @@ def _build_navigation_context(
             )
             if key in checklist["search_transition"]
         }
-    for key in ("request_error", "date_resolution"):
+        if compact_checklist["matching_results_observed"]:
+            provenance = checklist["search_transition"]["submission_provenance"]
+            compact_checklist["search_transition"]["submission_provenance"] = {
+                key: copy.deepcopy(provenance[key])
+                for key in ("actor", "action", "evidence_method") if key in provenance
+            }
+    for key in ("request_error", "date_resolution", "calendar_progress"):
         if _nonempty(checklist.get(key)):
             compact_checklist[key] = copy.deepcopy(checklist[key])
     dates = checklist.get("visible_date_choices", [])
@@ -861,6 +1247,8 @@ def _build_navigation_context(
     )
     # Focus IDs must also be present in the model's bounded current inventory.
     result["interaction_focus"] = _interaction_focus(result["observation"], checklist)
+    if "navigation_stage" in compact_checklist:
+        compact_checklist["navigation_stage"] = _navigation_stage(result["observation"], checklist)
     # Explicit count metrics are content-free and support before/after comparison.
     result["context_metrics"] = {
         "raw_chars": _size(
@@ -889,13 +1277,18 @@ def build_navigation_context(
         payload.get("observation") or {}, payload.get("task_checklist") or {}
     )
     focused = focus["phase"] in {
+        "discover_category",
+        "discover_location",
         "fill_fields",
         "open_suggestions",
         "wait_suggestions",
         "choose_option",
         "set_dates",
+        "prepare_stay",
+        "await_applied_stay",
         "set_counters",
         "confirm_widget",
+        "inspect_stay_widget",
         "submit_search",
         "awaiting_results",
     }

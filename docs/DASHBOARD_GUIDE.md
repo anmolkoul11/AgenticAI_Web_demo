@@ -1,5 +1,17 @@
 # Demo Dashboard MVP
 
+## Simplified task actions
+
+Start/Create, Run, Resume and Save now confirm their own actions; repeated
+permission checkboxes are removed. A short note by Start explains paid AI use
+and the selected browser access. Optional screenshots and event publishing stay
+under Settings. Saving a partial preview uses **Save available results**.
+
+Dashboard UI version **2026-11-09.2** requires a backend restart and page refresh.
+This interface cleanup has not been exercised by an automated or live run during
+implementation. Website sign-in, genuinely missing values and source issues still
+receive specific instructions when action is needed.
+
 ## Agent in your existing Chrome or Edge tab
 
 The primary choices are **Open a new browser** (Playwright) and **Use my current tab**.

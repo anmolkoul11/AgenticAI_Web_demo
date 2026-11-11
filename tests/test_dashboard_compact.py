@@ -49,7 +49,7 @@ def test_only_one_task_surface_is_visible_and_settings_are_closed(compact_ui):
         .map(([name]) => name),
       settings:advanced.open, browser:advanced.contains($('web-browser-mode')),
       fields:advanced.contains($('web-output-fields')),
-      permissionOutside:!advanced.contains($('web-normal-confirm')),
+      repeatedPermission:$('web-normal-confirm') !== null,
       reviewSettings:reviewDetails.open, warnings:reviewWarnings.open
     })""")
     assert result == {
@@ -58,7 +58,7 @@ def test_only_one_task_surface_is_visible_and_settings_are_closed(compact_ui):
         "settings": False,
         "browser": True,
         "fields": True,
-        "permissionOutside": True,
+        "repeatedPermission": False,
         "reviewSettings": False,
         "warnings": False,
     }

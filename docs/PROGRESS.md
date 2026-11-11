@@ -1,5 +1,796 @@
 # Progress
 
+## Individual listing links - 2026-11-11, manual verification pending
+
+Booking plan `00c94096-b842-43b9-885e-e879c7914b12` saved 50 hotels. All 50
+had an exact hotel-name block with one individual hotel href in the retained
+source, but the inferred eight-column schema omitted a URL field. The output
+contract therefore had no URL role; only the capture-page `source_url` survived
+in saved run `e17d50a2-2062-4be4-b730-2f90ddb4fe9b` and its export.
+
+Extraction now retains an existing unique identity-bound captured URL as
+`record_url` metadata, independently of model-selected columns. The original
+`source_url` remains the capture reference. Ambiguous, unrelated page-wide or
+unusable URLs are not guessed. Metadata is added after the existing duplicate
+and filter decisions. Preview tables and saved snapshot columns retain the
+individual link; existing cards already prefer it. Linked-source reconciliation
+keeps its existing behavior. No navigation, capture, date/guest, pricing,
+relevance, save-approval or model-prompt behavior changed; no extra API calls.
+
+Added offline regression cases in `tests/test_record_link_metadata.py` for
+omitted URL columns, record-group links, ambiguity, unrelated links and approved
+snapshot persistence. No tests, validators, application/browser startup or live
+workflows were run. Restart the backend and refresh the dashboard for UI version
+`2026-11-11.1`, then make a fresh Booking capture; existing approved exports are
+unchanged. Check that individual hotel links open the hotel while the source
+reference still opens the results page. Also manually recheck Tripadvisor and
+the news workflows. Suggested local regression command for the user:
+
+```powershell
+uv run --locked pytest tests/test_record_link_metadata.py tests/test_detail_enrichment.py tests/test_headline_role_extraction.py tests/test_custom_website.py -v
+```
+
+## Content headlines versus programme labels - 2026-11-10, manual verification pending
+
+The BBC screenshot and saved plan `3772a8f3...` confirmed that both the programme
+heading and episode headline were captured under the same URL. The model chose
+the H2 programme label (for example Football Daily). Existing validation found
+two headings, had no unique preferred heading, and then accepted either literal
+heading as an article title. This was not a bad automatic headline repair.
+
+Extractor **website-extractor-v19** asks the existing extraction call to select
+the actual headline block and identify separate label blocks. The source roles
+must reference captured heading/link IDs and the same record group/URL. A
+validated selection can repair a programme-valued title or its wrong evidence;
+it does not choose H2/H3 by rank, longest text, repeated words or a URL slug.
+Native detail H1 handling and the legacy unique-heading path remain. Missing
+role selection on a genuinely ambiguous multi-heading record is flagged.
+Selected groups remain bound through subsequent field validation, including
+identical headlines under different URLs. Batch coverage uses that selected
+group instead of counting every card sharing a programme name.
+
+The user explicitly wants relevant editorial items with audio included under
+their real content headline. Captured programme and media-format labels can
+remain separate fields; no audio/video exclusion was introduced. Hotel source
+identities, search/date/guest behavior, pricing, and saving are unchanged.
+Source-role choice is still a semantic model decision: validation proves the
+chosen wording and association, not independent semantic truth. No extra model
+call, automatic retry or browser action was added.
+
+Authored helper, extraction, group-isolation, repeated-programme, mixed H2/H3,
+link-headline and hotel-isolation regressions. No tests, test collection,
+syntax/lint checks, validators, application/browser startup, live workflows or
+paid API calls were run. Restart the backend and start a new extraction; frozen
+old previews and saved records are not rewritten. See `ARTICLE_COLLECTION_FIX.md`.
+
+## Article capture and topic collection - 2026-11-10, manual verification pending
+
+Inspected user3's NYTimes sports plan `a8440677...` and BBC runs `5266fe38...`,
+`90818a14...`, and plan `3772a8f3...`. NYTimes retained 50 raw source cards;
+two were accepted and 48 were AI-assessed unrelated, with no business-rule
+filter exclusions. The retained sources contained only two clear sports links,
+both accepted. This does not prove that any specific relevant captured article
+was rejected; the old preview did not retain each excluded candidate's reason.
+Its structural card ordering also consumed the cap before later page content.
+
+BBC did capture the homepage. One run then repeated Capture and prohibited
+section navigation. Another reached collection but its first record window
+failed: full capture had 131 URL-associated groups, while the card-window
+inventory detected zero wrapped records. The empty window became the generic
+extension `execution_failed` message.
+
+Backend **browser-agent-v20.31**, Companion **0.5.23**, dashboard
+**2026-11-10.1** add article-only source ordering and bounded literal topic/section
+prioritization, plus capture windows for independent linked headlines without
+card wrappers. After a grounded current-page article capture, the same settled
+document hands off to extraction without another paid navigation decision.
+Detail/search tasks, changed documents, busy pages and ungrounded captures do
+not use that shortcut. Topic cues order candidates, never decide acceptance.
+
+Excluded article candidates now keep their AI reason and matching source quote
+in preview/history and saved snapshots, displayed under a collapsed review
+panel. Unverified titles/quotes are labelled rather than presented as captured
+facts. Exact paragraph headlines now count in article batch coverage; incidental
+body mentions do not count. Existing record/byte/call limits remain in place.
+
+Booking's explicit Search, Tripadvisor's live updates, dates, counters, stay and
+price verification, approvals, and known hotel-card ordering are unchanged.
+The additional source ordering/priorities are enabled for article tasks only.
+Regression cases were authored, including hotel isolation and unchanged known
+hotel-card windows. No tests, collection, syntax/lint checks, validators,
+application/browser startup, live workflows or paid calls were run.
+
+See `ARTICLE_COLLECTION_FIX.md` for manual scenarios and local test commands.
+Restart the backend, refresh the dashboard, reload Companion 0.5.23 and refresh
+the website before starting a fresh task; old retained previews are unchanged.
+
+## Dashboard and branding regression cases - 2026-11-09, authored only
+
+Added shared-logo/PNG-packaging checks and expanded dashboard cases for scoped
+Start/Resume/Save, collapsed screenshot settings, optional data sharing,
+complete/partial previews, missing keys, and duplicate submission protection.
+Existing affected fixtures now use the explicit button events. The targeted
+commands and manual website scenarios are in `DASHBOARD_REGRESSION_TEST_CASES.md`.
+No tests, test collection, linters, validators, browser/application startup,
+live workflows or paid API calls were run; the user will execute the cases.
+
+## Shared dashboard and Companion logo - 2026-11-09
+
+The dashboard, Companion side panel and popup now use the same navy **a.** mark
+with a mint dot. The vector asset is stored at `dashboard/static/logo.svg` and
+copied into the extension's `icons/logo.svg`. Matching PNG exports supply the
+16/32/48/128 pixel toolbar and extension-management icons; both interfaces also
+use the shared mark as their favicon. The old extension sparkle is removed.
+
+Companion is **0.5.22** with matching executor version. Refresh the dashboard,
+reload the extension and refresh the website tab. The generated logo was viewed;
+no tests, validators, browser/application startup or workflow/API calls ran.
+
+## Dashboard confirmation and copy cleanup - 2026-11-09, manual verification pending
+
+Dashboard UI **2026-11-09.2** removes repeated confirmation checkboxes from
+Website Studio, Hotel demo and API setup. Start/Create, reviewed Run, Resume
+and Save are the explicit scoped actions. The UI derives the existing
+authorization flags from those actual button events; backend validation,
+reviewed revisions and final save remain in place. Settings changes and status
+polling do not start paid calls.
+
+One short notice explains paid AI/content use near Start, with normal-network
+access disclosed when selected. Screenshots and optional publishing use No/Yes
+settings. Functional choices such as selected links, manual collection, all
+cities and remembering a key remain available. Optional task settings are
+collapsed, repeated setup/review/storage copy is shorter, and the saved status
+uses a concise confirmation instead of repeated human-review boilerplate.
+
+Partial previews offer **Save available results** beside a short coverage note.
+Button guards prevent duplicate submissions; Save becomes available as soon as
+the current preview and revision are loaded. No website navigation, model
+decision or extraction rules were changed. Initial automatic approval review
+rejected removing disclosures without a scoped confirmation; the final design
+preserves concise notices and explicit action confirmation instead.
+
+Regression sources were updated for the new actions. No tests, validators,
+application/browser startup, live workflows or paid API calls ran. Restart the
+backend and refresh the dashboard. Manual acceptance should cover Start,
+optional screenshots, Resume, complete/partial Save, Hotel demo Run and API setup.
+
+## Manual feedback and future fixes - 2026-11-09
+
+The user reports that the record-limit and shared-state changes work in live
+use. Some runs still need manual Resume because an action appears to make no
+change or the agent incorrectly detects a loop. These intermittent navigation
+issues remain open; the implementation has not been independently tested.
+
+Future work:
+
+- Improve action verification for delayed rendering and controls whose changes
+  are already applied, reducing false no-progress pauses.
+- Detect when requested values or results are already present and continue
+  collection instead of repeatedly editing the same control.
+- Refresh stale control observations and distinguish genuine repeated failures
+  from false loops, with bounded recovery and clear pause reasons.
+- Preserve legitimate pauses for missing user information or access challenges;
+  reduce unnecessary manual Resume without blindly repeating dispatched actions.
+
+## Companion record limits and shared save state - 2026-11-09, manual verification pending
+
+Companion **0.5.21** provides a slider and editable record count from 0 to 500,
+defaulting to 50. Zero keeps Start disabled and explains that no task will run.
+Counts above 50 select batched collection; changing collection mode preserves
+the selected count. The Companion API uses the same default and upper bound.
+
+Saved user1/user3 history showed successful saves followed by failed duplicate
+attempts from reopened previews. Approval now follows the original execution
+under the account's service lock, including failed or interrupted attempts;
+it never repeats saving or event publishing. Old review links resolve to that
+execution, and repeated dashboard review opens preserve the current approval.
+
+Both interfaces read canonical workflow state. The Companion keeps refreshing
+after collection, reports extraction as preparing results, and distinguishes
+review, saving and saved states. Read-only review can resolve persisted jobs
+after browser-command expiry or channel pruning. This does not renew input
+authority. The dashboard follows the same execution for progress and downloads,
+and a double-click or simultaneous review cannot submit a second save.
+
+Dashboard UI version **2026-11-09.1** requires a backend restart and dashboard
+refresh. Reload Companion 0.5.21 and refresh the website before manual acceptance.
+Browser navigation, site-specific search behavior, extraction and eligibility
+rules were not changed. Tests and local fixture cases were authored/updated,
+but no tests, validators, application startup, live workflows or API calls ran.
+
+## Large occupancy counter budget - 2026-11-09, manual verification pending
+
+User3 Tripadvisor job `987664fe...` paused after four valid decisions with the
+guest panel open and two generic unsupported counter outcomes. The user supplied
+New York, December 24–30, 2026, 18 adults and ten rooms; the displayed prior
+summary had six guests and three rooms. The executor rejected changes requiring
+more than ten steps, even though its allowed target range already reached 30.
+That budget can block the requested adult adjustment before any input.
+
+Backend **v20.30** / Companion **0.5.20** allow up to 30 verified counter steps
+within the existing 0–30 target range and actual observed website bounds.
+Worker/native transaction budgets already support 30. Every step still reads
+back the result; disabled controls, lost identity, missing progress, read-only
+fields and real site limits still stop input. Managed-browser counters use the
+same step budget and a bounded time allowance.
+
+Known before-input refusals now return the reason, current/target values,
+requested delta and applicable bounds, with explicit zero attempts. The agent
+pauses once on a structured refusal or legacy unsupported outcome rather than
+repeating an unchanged request. Legacy exceptions do not claim zero dispatch
+without proof. Older loaded helpers remain usable for small adjustments, but
+requests requiring more than ten steps get a clear update instruction before
+input. Booking's search policy and extraction paths were not modified.
+
+Authored source scenarios for six-to-18, decreasing counts, 30-step boundaries,
+native transaction readback and genuine range/read-only refusals. No tests,
+validators, application/browser startup or API calls were run. Restart backend,
+reload Companion 0.5.20, refresh the website and start a fresh task for manual
+acceptance of the exact New York request.
+
+## User3 returned-room conflict and source-preview repair - 2026-11-09, manual verification pending
+
+Inspected profile `9a759524-a3d0-48b5-a9f2-573603e64f21`, job `c3e61313...`,
+matching the user's user3 activity. Search was confirmed after nine model calls;
+the collector paused after 2.8 seconds with no retained cards, destination
+unverified and rooms mismatched. The user supplied New Jersey, November 28–30,
+2026, five adults and three rooms. The saved diagnostics lacked the actual
+returned room values, so they do not prove which control caused the conflict.
+
+Backend **v20.29** repairs a further preview-boundary bug: a lost destination
+heading, changed ordering of room candidates, or newly visible mismatch on the
+same confirmed-search document was treated as a new search. Those are now
+capturable as read-only source evidence. Exact result document/URL, original
+requested stay, settled cards and first-page checks remain. Unknown/mismatched
+scope is not promoted to matching results, and unverified previews do not
+paginate. Existing review/save eligibility checks remain unchanged.
+
+The returned-scope parser also accepted free-text room stock from arbitrary
+controls as selected occupancy. Explicit notices such as “Only 1 room left,”
+“2 rooms remaining” and “fewer than 3 rooms” no longer supply applied party
+counts. Actual URL values, native guest fields, counters and the existing
+Tripadvisor summary parser remain. This is a concrete source vulnerability,
+not a proven diagnosis of the lost user3 control value.
+
+Collection diagnostics now retain bounded expected/observed stay values, status,
+method and short supporting quotes. This avoids another field-name-only mismatch
+report. Companion **0.5.19** remains compatible. Authored source cases cover
+missing headings, reordered/new mismatch evidence, real scope changes and stock
+versus actual room counts. No tests, validators, application/browser startup or
+provider calls were run. Restart the backend and begin a fresh user3 workflow
+for manual acceptance; inspect the new room evidence before approving records.
+
+## Website search modes and grounded form scheduling - 2026-11-09, manual verification pending
+
+The latest Booking plan `46549605...` did explicitly submit Search (runtime
+action 13, confirmed transition). It spent 78 seconds in navigation: 30.389s
+observing and 27.703s across seven model calls. The collector then lost
+destination verification. Its initial captured source already had fresh returned
+heading evidence, “New York: 431 properties found,” and verified dates/guests;
+the next control inventory lacked that destination heading. This was not a
+missing Search click. The user manually collected the original partial snapshot;
+24 of 25 candidates passed. `86934c12...` is a failed duplicate execution attempt,
+not a new navigation failure.
+
+Backend **v20.28** adds bounded `site_behavior` metadata from exact hostname or
+real subdomain boundaries. Booking hotel edits require an explicit Search;
+matching editable form labels alone cannot trigger live-result adoption.
+Tripadvisor retains verified live-update adoption. Already-confirmed submissions
+are not repeated, and an initial already-applied full-criteria result URL can
+still be reused. Unknown portals keep observed-behaviour fallback. Nonhotel and
+current-page article tasks retain their existing path. Model context and
+technical diagnostics expose the selected site/search mode.
+
+After destination/dates are verified, a uniquely observed guest opener or a
+uniquely bound pending numeric counter can run directly through the existing
+executor/resolver. Counters use absolute request values, fresh readback and the
+same per-step verification; ambiguous widgets fall back to the model. Unchanged
+runtime operations are not repeated. Child ages remain user-provided/manual.
+This removes model decisions for known guest controls; no measured speedup is
+claimed without a live acceptance run.
+
+The collector can recover destination proof from a new passive capture of the
+current returned-results heading when that is the only missing field and the
+previous same-document proof came from a captured heading. It does not promote
+the old quote or pre-search field to fresh evidence. The captured first window
+is reused during collection; missing/conflicting new headings still block or
+retain the existing explicit source-preview policy.
+
+Authored source cases for site modes, hostname boundaries, unchanged article
+behaviour, local guest planning and fresh heading verification. Companion
+**0.5.19** remains compatible; there is no extension protocol change. No tests,
+validators, application/browser startup or provider calls were run. Restart the
+backend and start a fresh workflow for manual verification of Booking Search,
+Tripadvisor's same-page updates and news current-page extraction.
+
+## Confirmed-search source preview handoff - 2026-11-09, manual verification pending
+
+Booking job `88e8c7da...` confirmed Search after eight model decisions, then
+paused in the full-list collector after 1.3 seconds with zero source cards.
+The activity intentionally handed off a source preview with unverified returned
+stay scope. The collector contradicted that contract: both its initial scope
+gate and its per-window gate required verified scope before retaining anything.
+The saved diagnostics do not identify which returned stay field was missing;
+the screenshot alone does not prove all dates and requested rooms for every
+offer. It also visibly warns that some options have fewer than four rooms.
+
+Agent **v20.27** / Companion **0.5.19** allow that existing source-preview
+handoff only on the original confirmed-search document and exact result URL,
+with settled cards and unchanged returned facts. Captured scope remains
+unverified/mismatched, with contradictions intact; pre-search form values do not
+become returned-page proof. Passive capture/scroll can collect the current list.
+Unverified preview collection stops before further pagination, marks partial
+coverage and continues into normal read-only extraction/review. A genuinely
+new result document still needs fresh verified scope. Existing review/save
+eligibility gates are unchanged.
+
+If fresh returned-page proof later becomes verified, collection captures a new
+coherent source group rather than combining its proof with an earlier quote.
+Explicit short list-level availability cautions survive record-window capture
+as literal page context, not proof that all listings match or all listings fail.
+
+Collection progress now uses the existing Companion diagnostics wrapper instead
+of overwriting it with a raw agent report. It preserves adapter/version details
+and reports bounded scope status, unverified/mismatched field names and
+contradiction codes. UI labels source previews separately from verified results.
+
+Authored source regression cases for anchored preview capture, changed scope,
+pagination limits, coherent proof upgrades and literal notice capture. No tests,
+validators, application/browser startup or model/API calls were run. Manual
+acceptance requires backend restart, Companion 0.5.19 reload and website refresh.
+Repeat Edison / November 28–30, 2026 / six adults / four rooms / zero children;
+confirm collection retains the visible cards, uncertainty remains visible and
+records are not saved or labelled requested-stay matches without verification.
+
+## Full collection and search-step follow-up - 2026-11-08, manual verification pending
+
+User1 Tripadvisor run `a50d0c75...` used Limited preview, limit 25. All ten
+returned candidates passed; there was no ten-record batch cap or rejection loss.
+Its single capture hit text/link limits, with 68 detected roots and 2,631 omitted
+characters. The source also mixed Edison and nearby/sidebar hotel links, so DOM
+marker counts are not the number of exact destination matches. The same run
+spent 13 model decisions/21 actions, including seven Hotels clicks; repeated
+same-route reloads were incorrectly treated as progress when document tokens
+changed.
+
+Booking `4812e5bd...` requested Edison, November 28–30, 2026, six adults, four
+rooms and zero children. Selected checkout had full-year evidence while the
+calendar was open, but an unconfirmed click meant that evidence did not survive
+closing the picker. The yearless closed summary then made checkout pending,
+reopening the picker before occupancy was attempted. Two-month/roleless calendar
+scope handling also prevented the earlier runtime closure helper from running.
+
+Agent **v20.26** / Companion **0.5.18** restore All results as the UI default;
+the previous Limited-preview default was the reason expanded collection did not
+run. Search retains its normal observation priorities; the isolated collector
+handles later pagination and paid extraction batches. Its first snapshot no
+longer performs three loading scrolls that collection would immediately rewind.
+Current-category anchors cannot reload the same route repeatedly, and a new
+document token alone is not category progress. Actual query/pagination changes,
+form submissions and widget buttons keep their separate paths.
+
+Calendar evidence retains fresh selected full dates only within the same
+document and matching current summary, with edits invalidating stale proof.
+Calendar closure uses a uniquely associated expanded opener when an actual
+multi-month picker has no single month-scope ID. It does not combine unrelated
+calendars or infer a year from the machine date.
+
+Authored source regressions for the category loop and retained calendar evidence.
+No tests, validators, application/browser startup or provider calls were run.
+Restart backend v20.26, reload Companion 0.5.18 and refresh the website before
+manual acceptance. Repeat the exact Edison Booking request above, then verify
+Tripadvisor reaches capture without repeated Hotels clicks. Compare collected
+source cards, eligible candidates and final records separately; collection limits
+and unmatched/nearby source cards remain disclosed.
+
+## Search and collection regression repair - 2026-11-08, manual verification pending
+
+Reviewed saved user1 runs and the supplied Booking Companion activity. Tripadvisor
+Raleigh (`cdbe5f93...`) verified all five stay fields and detected 60 cards, then
+continued the newly defaulted bulk collection to 128 source cards/two pages
+before cancellation. Booking (`622e4572...`) never attempted Search: the calendar
+kept a stale check-in-only draft while the visible form showed both dates, and
+the agent repeatedly sent Escape. A second Tripadvisor run (`39fc43b4...`) also
+allowed the model to put `4` from the guest requirement into the generic Search
+box before correcting it. The saved decisions had no provider/authentication
+failure. These are different failure points, not one extraction failure.
+
+Agent **v20.25** / Companion **0.5.17** restore **Limited preview** (25 records)
+as the default. **All results** remains an explicit choice. Result-pagination
+discovery, priority and identity hashing now run only in the collector's own
+observation focus after search readiness; they cannot reorder the search agent's
+calendar days or destination suggestions. Existing native-input helpers that
+support normal search are not rejected solely for missing bulk capture support.
+Bulk capture still checks the returned record-window capability before using it.
+
+Fresh verified form dates override old calendar draft markers. Calendar closure
+uses a uniquely expanded opener where available, followed by one scoped Escape
+fallback; unchanged close actions are not repeated or sent back to the model in
+a paid loop. Hotel Search fields also reject occupancy/date fragments instead
+of borrowing arbitrary literal numbers from the prompt. Valid destination
+discovery and nonhotel text queries retain their existing path.
+
+Added source regression scenarios for date closure, stale draft state, Search
+value grounding, helper compatibility and collection-only pagination priority.
+No tests, validators, application startup, browser automation or provider calls
+were run. Manual acceptance remains required after backend restart, Companion
+0.5.17 reload and website refresh; check the normal search-to-preview path first,
+then explicitly select All results for a separate collection check.
+
+## All-results collection - 2026-11-08, manual verification pending
+
+The saved Raleigh run (`26804396-ea35-4a0e-b514-a6ccf593cfbb`, plan
+`a095c94d-8b07-40a4-ab57-ff58a6ea5acc`) saved all 16 accepted candidates.
+Its request limit was 25, but the single source capture was truncated and did
+not reach the page end. Review did not reject the other displayed listings;
+they had not reached extraction as source records.
+
+Agent **v20.24**, Companion **0.5.16** and extractor **v18** add **All results**
+to the live-browser and connected-tab workflows. It is the UI default for
+automatic live collection; **Limited preview** preserves the existing path.
+After the search is ready, collection rewinds the current list, captures groups
+of up to ten cards before scrolling, and follows observed same-origin Next or
+Load more controls. These passive collection steps do not require additional
+navigation model decisions. Requested stay scope is checked on new result pages.
+Repeated source identities are retained once; a later richer card can replace
+its earlier source group without combining amounts from different captures.
+
+Collection stops at the available list end, the configured maximum (up to 5,000
+source cards), 100 result pages or four active collection minutes. Ambiguous or
+stalled pagination, unsupported layouts and scope changes are disclosed or
+pause for attention. This collects the current result list, not every URL on
+the domain. Counts describe source cards; relevance, deduplication and source
+validation can reduce the final approved record count.
+
+Each disjoint source batch gets a separate paid extraction call with a shared
+output-field contract. Full navigation diagnostics are excluded from these
+batch prompts. Capture IDs and unique evidence IDs distinguish windows sharing
+the same real URL. Review reports collection and extraction completeness, missing
+candidate coverage and aggregated usage. Partial results remain reviewable;
+saving and optional publishing still require approval. More results cost more
+extraction calls; both UIs display this before Start.
+
+Authored collection, pagination, deduplication, record-limit and extraction-batch
+regression source. No tests, validators, application/browser startup or provider
+calls were run, as requested. Restart the backend, reload Companion 0.5.16 and
+refresh the website before manual acceptance. Repeat the Raleigh November 28–30,
+2026 / four adults / two rooms request in All results mode; compare the retained
+source count with the listings reached by scrolling and pagination. Also check
+that a maximum of 25 is labelled partial, and Limited preview keeps its limit.
+
+## Request-aware price review and caption capture - 2026-11-08, verification pending
+
+Read saved job `7dac240c-1f71-45bc-9bb3-8492ca9056af`: requested Virginia,
+November 28–30, four adults, three rooms and zero children. Returned stay scope
+and USD currency were verified. All 25 prices lacked basis evidence; there were
+no price constraints or extraction filters. The user confirmed the website's
+display mode was “Nightly price with fees,” absent from captured source blocks.
+
+Companion 0.5.15 broadens only exact price-caption capture to short visible spans,
+controls with differing ARIA labels and H1 page wrappers. Hidden/menu alternatives,
+unselected radios and record-local captions do not become global evidence.
+Coverage now reports captured/not-found/ambiguous price settings and their count.
+
+Agent v20.23 / pricing contract v3 correct the unconditional price gate. Inferred
+optional prices no longer invent a nightly selection requirement; their source
+warnings remain visible and persist through review/save. Explicit price bounds,
+nightly output requests and mismatched/unknown requested stay scope still gate
+eligibility. Save recomputes the same policy and preserves approved-data equality
+checks. UI price summaries no longer invent a target for this request.
+
+Added source-only regression cases for the real assessment engine's optional
+plan/save flow and negative cases, plus collector/UI coverage. No tests,
+validators, application/browser startup or provider calls were run. Backend
+restart, Companion reload, website refresh and manual verification are pending.
+
+## Month navigation and review handoff - 2026-11-08, verification pending
+
+Investigated saved v20.21 job `525acaae-5641-4a26-bba5-1556da2ebf7c` for Charlotte,
+December 28–30, four adults, three rooms and zero children. The agent reached
+ready in four model decisions; ten extracted records then failed review. Its
+post-Update row proof retained adults=4/children=0, but capture's final observation
+replaced that with missing rows after the popup closed. Full-date evidence
+methods were also absent from captured-heading reconciliation's allowlist. The
+first card retained `$106` without a price-basis label; page-level display mode
+was excluded by the collector.
+
+Agent v20.22 preserves post-commit guest proof only across an unchanged document,
+summary and fresh core stay criteria, and aligns date-method reconciliation.
+Companion 0.5.14 captures selected page-wide pricing mode and reserves calendar
+arrows/days. Scoped icon direction and the actual visible month window drive
+one month step at a time, with no repeat on an unchanged window. Pricing uses
+page mode only for one unlabelled current amount and retains separate source
+evidence, local labels, originals and ambiguity.
+
+Added regression source for these handoffs and negative cases. Backend restart,
+extension reload, website refresh and a fresh workflow are required. No tests,
+validators, application/browser startup or API calls were run. Live acceptance
+and source completeness remain pending manual review.
+
+## Shared guest vocabulary for source validation - 2026-11-08, verification pending
+
+The latest v20.20 run reports no mismatched criteria, but adults/children remain
+unverified after the panel closes. Recorded real counter evidence uses `adult`,
+`child`, `room`; the returned-scope checker recognized adult/room but its plural
+stemming accepted `children` and rejected singular `child`. This prevented a
+valid post-Update inspection from satisfying all criteria and allowed the runtime
+to fall back to Update/reopen again.
+
+Agent v20.21 shares the existing guest-component normalizer between readback and
+returned-scope validation. Age recognition moved to the same shared layer while
+remaining available through its previous import path. Native age values and
+child ordinal captions are excluded from quantity and destination inference.
+Readback failure is a workflow pause rather than a missing-input claim. Companion
+stays 0.5.13; restart the backend and start a fresh task. Added regression source
+with the real singular counter labels, 4/5 adults, zero children, age fields and
+actual count mismatches. No tests, validators, browser/app startup or live/API
+calls ran; manual acceptance is pending.
+
+## Deep calendar audit and draft-state correction - 2026-11-08, verification pending
+
+Read the full saved v20.19 report for job `87bfc32d-95c9-4365-ae48-dcdacf755f6b`.
+December 28 was selected at step 5, followed by twelve runtime repeats; the model
+made only three decisions. Check-in remained pending because a single draft pick
+does not verify a complete committed range. The controller reused that same flag
+to choose the next action, and forcibly bypassed selected-day protection. General
+fingerprint loop detection also treated rerenders/scrolls as different actions.
+The calendar could crowd the stay-summary controls out of the 140-control cap.
+
+Agent v20.20 separates draft progress, committed form proof and returned results.
+A confirmed start advances to checkout, then commit/close and full-date readback.
+Semantic date receipts prevent repeated uncertain dispatch. Both observers retain
+stay anchors/selected days, including physically visible background summaries
+marked `aria-hidden` by a modal. Physical page identity preserves a draft across SPA
+URL updates, while full navigation invalidates it. Actual stay-widget updates are
+not mistaken for an unsubmitted catalogue detour. Explicit Resume reconciles
+manual changes against a fresh observation. Selected interiors require bounded
+reselection intent, rather than any pending date triggering an override.
+
+Companion 0.5.13 is required; restart the backend, reload the extension and refresh
+the website before a fresh task. Fixtures were authored for the failed state,
+uncertain dispatch, URL changes, crowded observation and version compatibility.
+No tests, validators, application/browser startup or live/model/API calls ran.
+The saved-run investigation and source review do not establish live acceptance.
+
+## Prior stay, count parsing and date priority - 2026-11-08, verification pending
+
+Investigated the latest v20.18 metadata and the immediately preceding saved run.
+The prior full report falsely parsed `Rooms/Guests 3 Rooms, 4 Guests` as guest
+totals `[3, 4]`, preventing independent guest proof, and treated `New York City
+Hotels` as a mismatch for New York. Agent v20.19 corrects those parsing/matching
+paths, prioritizes current destination/date criteria before guest readback, and
+allows observed requested-city navigation away from the previous city's results.
+Unique full-date choices/openers can run locally; selecting checkout gets a
+bounded passive wait. Unsupported requested-day selections are rejected before
+input. Literal adults-only wording targets zero children without inventing an
+unspecified count. Companion stays 0.5.12; restart the backend and start a fresh
+task. Regression sources were authored and source reviewed only. No tests,
+validators, app/browser startup or live/model/API calls were executed.
+
+## Guest-panel completion and collection - verification pending
+
+Agent v20.18 shares guest completion between runtime execution and model focus.
+Matching live rows can use an observed Update/Done button even when its widget
+type differs from the counters. An unrelated required global Search no longer
+takes priority over closing the guest widget. A unique expanded guest opener
+supports Escape when no confirmation button exists; no count is changed.
+After closure, a bounded passive wait precedes a fresh applied-scope/results
+read. Unknown ages, required dependent values, mismatches and ambiguous controls
+remain blockers. Help now reports open control IDs, guest statuses and completion
+action. Restart the backend and use a fresh task; Companion stays 0.5.12. Source
+fixtures were authored, but no tests, validators, application/browser startup or
+live/model/API calls were run. Manual acceptance remains pending.
+
+## Query aliases and missing-input messages - 2026-11-07, verification pending
+
+Agent v20.17 separates generic Search/query navigation metadata from persistent
+hotel stay criteria. A destination already grounded in the request releases
+redundant query bindings; it does not authorize arbitrary action values. Missing
+field errors retain the visible label even when declaration fails before dispatch.
+The bounded temporal `form` typo is accepted, and a canonical model destination
+can use a literal request quote when the lightweight parser misses the place.
+Calendar success alone does not identify the cause of a destination/search loop.
+Extension Help exposes backend version, grounded field names and handoff blockers.
+Restart the backend and use a fresh task; Companion stays 0.5.12. Source regression
+cases were authored, with no tests, validators, startup or live/API calls executed.
+
+## Automatic criteria updates without Search - 2026-11-07, verification pending
+
+Agent v20.16 includes `counter_verified` in actual edit tracking and preserves
+the earlier record baseline when a later Update only closes its widget. Read-only
+date opener clicks no longer reset that baseline. Changed result records after
+a criteria edit can establish auto-refresh without a captured busy frame.
+Search preflight adopts results that became ready during model planning instead
+of validating an unnecessary query. Known destination queries no longer request
+new Search data from the user. `result_handoff` records exact collection blockers.
+This is a backend update; Companion stays 0.5.12. Regression sources were authored
+but no tests, validators, browser/app startup or model/API calls were executed.
+
+## Existing hotel result recognition and manual Resume - 2026-11-07, verification pending
+
+Companion 0.5.12 / agent v20.15 recognizes "Hotels and Places to Stay" headings,
+preserves observed full dates on date openers, and shares named-count parsing
+across form and returned-result checks. Fresh committed summaries beside hotel
+cards can establish the current applied state without replaying Search or
+witnessing a refresh while the user operates the page. Proof is revalidated;
+unknown years and guest/adult splits are not guessed. Manual Resume discards
+transient navigation/loop state without resetting usage or submit guards.
+Matching result headings prevent destination retyping. Adapter record selectors
+and supported stay query aliases now agree. Source regression cases were added;
+no tests, validators, live workflows, app startup or model/API calls ran.
+
+## Charlotte adults-only request and Update - 2026-11-07, verification pending
+
+Companion 0.5.11 / agent v20.14 verifies only requested occupancy targets,
+recognizes Update alongside Apply/Done, and applies matching live guest counts
+without another model decision. Separate global Search inputs do not block the
+stay widget; unsupported Enter actions no longer ask the user for a Search
+value. Matching applied results are considered before reopening guest controls.
+Passive result waits retain witnessed busy cycles. Generic click preflight
+diagnostics carry phase/reason/field names, without values or automatic replay.
+The old guest-opener failure's exact cause remains unconfirmed from its generic
+log. New Charlotte fixtures were authored; no tests, validators, browser, app
+startup or model/API calls were executed. Manual verification remains pending.
+
+## Child age after Update and exact guest counts - 2026-11-07, verification pending
+
+Companion 0.5.10 / agent v20.13 addresses the reported age-7 selection followed
+by Update and Resume. Manual confirmation stays pending while the age field is
+closed; a unique observed rooms/guests summary can reopen it for age readback,
+including labels saying "rooms is 3" and "guests is 5" without popup metadata.
+Missing or invalid ages still pause and no default age is selected automatically.
+
+Final stay verification must establish 4 adults, 1 child and 3 rooms separately.
+A summary of 5 total guests does not prove the adult count, and a closed summary
+of 2 rooms must not satisfy the requested 3. Check the actual quantity rows and
+the applied stay before collecting results. Restart the backend, reload Companion
+0.5.10, refresh the website and start a fresh workflow for manual acceptance.
+Regression fixtures were authored and source reviewed only. No tests, validators,
+app/browser startup or model/API calls were run; live success remains unverified.
+
+## Preserve correct dates and close the calendar - 2026-11-07, verification pending
+
+Completed the interrupted date changes for the confirmed open-calendar case.
+Companion 0.5.9 / agent v20.12 distinguish openers/day choices, read full-year
+selected ranges consistently in form and returned-stay validation, and focus the
+next action on closing a verified calendar. Openers containing a selected date
+are not sent through day-click verification. Already-correct ranges are protected;
+selected interiors remain usable when a different endpoint is requested.
+
+Calendar ownership uses observed roles or bounded date/month-navigation structure.
+Global Search openers and actual query/stay submits remain distinct; unknown ages
+and true required queries stay guarded. Native date preflight reports reasons
+without weakening identity/hit tests. Existing-page hotel category headings can
+identify returned destination without requiring a result count in that heading.
+No tests, validators, app/browser startup or configured API calls were run.
+Authored fixtures and manual live acceptance remain pending. No commit or push.
+
+## Exact counters and same-page result handoff - 2026-11-07, verification pending
+
+Companion 0.5.8 / agent v20.11 reads explicitly labelled quantity actuators and
+rendered row values; 'by 1' is never treated as the current count. Raw directional
+clicks use the same request-derived absolute target and readback as set_counter.
+Already-correct values cause zero input, and unresolved unchanged evidence cannot
+fall back to blind increments. Counter fixtures cover varied row layouts/targets.
+
+The ledger separately adopts independently verified applied stay results, retaining
+truthful website provenance rather than inventing a Search action. A matching URL
+or witnessed result refresh after criteria application is needed; editable fields
+and unchanged old cards are insufficient. Same-page pending submissions can be
+confirmed from fresh result evidence. Counter mismatches, missing ages, open
+widgets and unknown dispatches remain guarded. Model focus, collection, empty
+results and both browser adapters support this handoff. Generic Search validation
+does not block applied matching results. Source prices still need review.
+
+Regression cases were authored and source reviewed only. No tests, validators,
+app/browser startup or configured API calls were run. Live acceptance remains for
+the user. No commit or push performed.
+
+## Location/category discovery before stay search - 2026-11-07, verification pending
+
+Completed the interrupted Tripadvisor navigation changes. Agent v20.10 derives
+location discovery, category discovery and actual stay-form preparation from fresh
+controls. Grounded city-result/category clicks do not trigger the pre-search
+navigation pause. Runtime destination filling waits for a real stay form. The
+bounded DOM inventory and compact navigation context retain relevant category and
+city-result controls instead of preserving only the generic Search field.
+
+Companion 0.5.7 includes the observer update; the failed log used 0.5.5. Final stay
+submission, unknown-outcome and required dependent-field checks remain. The agent
+uses shared source-grounded guidance, not hardcoded Tripadvisor routes or model
+training. Regression scenarios were authored and source reviewed only. No tests,
+validators, app/browser startup or model calls were run. Live acceptance and price/
+availability review remain for the user. No commit or push performed.
+
+## Browser panel visual refresh - 2026-11-07, verification pending
+
+Companion 0.5.6 adds text-labelled green/connected, red/disconnected and
+yellow/attention states, including pauses and uncertain connections. Friendly
+workflow labels distinguish working, waiting, preparing results and review-ready;
+they do not imply automatic saving or result completeness. Website identity and
+primary actions are clearer. Settings, usage/access explanations and diagnostics
+are expandable, and the request collapses once per new run to keep progress easy
+to reach. Polling preserves disclosure choices and unchanged live-region text.
+
+Updated existing UI fixtures and authored connection-status regressions. No tests,
+validators, app/browser startup, visual preview or model calls were run. Manual
+visual and live verification remains pending. No commit or push performed.
+
+## Automatic tab connection and hotel discovery - 2026-11-07, verification pending
+
+Browser Companion 0.5.5 follows eligible selected tabs while idle, rechecks before
+Start and preserves the previous completed review. Live/paused runs retain their
+target. Dashboard/settings tabs do not replace it; explicit Disconnect disables
+automatic following. Account/session changes still require reconnection. Browser
+access to a newly selected tab can require opening the companion from its icon.
+
+Removed recurring paid/native-input checkboxes: Start/Resume authorize scoped
+execution within existing limits. Optional publishing is a Yes/No select, default
+No. No model or input action occurs merely from automatic pairing.
+
+Agent v20.9 distinguishes observed links/category tabs in generic search popups
+from form choices, and query-only native discovery forms from stay searches. It
+prioritizes the requested listing category before individual results, preserves
+unknown-value/child-age handoff, and does not count discovery as verified stay
+availability. Dashboard version 2026-11-07.1. Regression cases were authored;
+no tests, validators, application/browser startup or model calls were run.
+Manual Tripadvisor and cross-site acceptance remains pending. No commit or push.
+
+## Resume after closing the guest panel - 2026-11-06, verification pending
+
+Fixed the confirmed Done/Resume loop: the first resumed observation could not see
+the age controls, but consumed the manual confirmation anyway. Agent v20.8 keeps
+that confirmation pending until the fields can be read on the same document.
+It can reopen one uniquely observed guest summary, wait once for rendering, and
+read valid entered ages. Search and count-changing buttons cannot be chosen as
+openers. Missing/invalid fields still pause; no age is inferred or rewritten.
+
+The existing approval controls now appear beside Resume while paused. Extension
+0.5.4 / dashboard 2026-11-06.4. Added source-only cases for Done, an open popup,
+delayed fields, age zero, an incomplete age and unsafe opener candidates. No
+tests, validators, application/browser startup or model calls were run.
+
+## User-provided form values and article kinds - 2026-11-06, verification pending
+
+Resumed the interrupted news/hotel fixes. Article requests now require a captured
+headline, independently of the model's content-type label. Game-launch links,
+coverage landing pages and navigation receive explicit record-level rejection
+reasons. Real short headlines and stories mentioning games remain supported.
+
+Agent v20.7 checks actual edits against user-grounded field values. A new model
+interpretation or a number elsewhere in the request cannot authorize a child's
+age. Native selects, direct fills/checks, counters, owned custom options and
+value-changing keys use this check. Missing values pause the existing run with
+"Waiting for your input"; the user fills the website and explicitly resumes.
+Unprovided child ages, including site defaults, require confirmation before a
+model decision. Confirmed manual ages stay tied to that document/value and are
+not editable by the agent without request grounding. Ambiguous sibling-age
+assignments require manual input rather than reusing another child's age.
+
+Extension 0.5.3, dashboard 2026-11-06.3, extractor v17. Regression cases were
+authored and source reviewed; no tests, validators, app/browser startup or model
+calls were run. Manual acceptance remains pending. No commit or push performed.
+
+## Homepage article capture roles - 2026-11-06, verification pending
+
+Investigated the NYT sports run `c0569779-86bb-45d0-8d1d-544c6293cedc`.
+Browser collection completed, but the homepage was retained as `detail`; all
+eight candidate headlines then failed the primary-article-headline check.
+Invented optional `source_type` labels were secondary issues, not a reason to
+relax source verification.
+
+Agent v20.6 grounds capture roles in collection topology. Current-page and
+search-result collection use neutral `page` provenance; a retained linked index
+cannot become a detail simply because a later decision says `detail`. Explicit
+captured article-headline semantics still enforce primary-headline validation
+for a direct article. Extractor v16 clarifies neutral multi-record pages,
+unsupported type labels and requested record kinds.
+
+Regression scenarios were authored but not run. Live validation remains with
+the user: homepage article cards, direct article headings, linked index/detail
+collection and unsupported optional fields. Captures may remain partial when
+text/link limits are reached; no website-wide completeness is claimed.
+
 ## Dynamic required fields before Search - 2026-11-06, verification pending
 
 Agent v20.5 and extension 0.5.2 surface newly required/invalid inputs, including

@@ -35,12 +35,15 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agentic_web_demo.browser_context import build_navigation_context, screenshot_selection
+from agentic_web_demo.browser_context import build_navigation_context, calendar_completion, calendar_navigation, screenshot_selection
 from agentic_web_demo.browser_runtime import bound_controls, identity, state_fingerprint, transition
-from agentic_web_demo.browser_task import TaskLedger, occupancy_component
+from agentic_web_demo.browser_task import MissingFormValue, TaskLedger, age_control, discovery_query_control, occupancy_component, occupancy_components, occupancy_widget_action, search_opener, widget_control
+from agentic_web_demo.capture import clean_url
 from agentic_web_demo.custom_fetch import WebsiteError, origin
+from agentic_web_demo.source_fields import article_content, article_priority_terms
 from agentic_web_demo.stay_scope import (
     observed_result_scope,
+    reconcile_captured_occupancy,
     reconcile_captured_result_scope,
     url_stay_values,
 )
@@ -48,7 +51,9 @@ from agentic_web_demo.stay_scope import (
 MAX_CALLS = 30
 MAX_SECONDS = 300
 MAX_PAGES = 6
-PROMPT_VERSION = "browser-agent-v20.5"
+MAX_COUNTER_TARGET = 30
+MAX_COUNTER_STEPS = 30
+PROMPT_VERSION = "browser-agent-v20.31"
 SENSITIVE = (
     'input[type="password"],input[type="email"],input[type="tel"],'
     'input[autocomplete="username"],input[autocomplete="one-time-code"],'
@@ -66,9 +71,15 @@ Never handle credentials, bypass access, reserve/pay, change accounts, message,
 publish to websites or download. Otherwise pause_reason=none.
 
 The checklist owns grounded values, including canonical dates: do not change them.
+Follow site_behavior for stay searches: explicit_submit requires Search after edits;
+live_update uses verified refreshed results. An observed/unknown site needs page
+evidence to choose its behavior. Keep current_page article tasks on their existing path.
 Use requirements=[] for known actions. Bind only actual value fields, not options,
 calendar cells or openers. Unchanged known bindings may use request_quote="";
 NEW fields need verbatim request quotes and transformation interpretation.
+For a hotel location use the canonical name destination, grounded in the user's
+literal place wording. A field captioned Search is not an extra requested value;
+do not create redundant search/query prerequisites for an already known place.
 Declare only this action's needs (max three). No guessed dates or hotel fields for
 other tasks. Price/rating/topic/output filters normally follow in extraction.
 
@@ -78,19 +89,55 @@ click first. Do not refill verified values. select is ONLY native SELECT with an
 exact enabled option. Autocomplete: fill missing/wrong text; open_suggestions once
 if closed; wait/inspect for suggestions_pending or wait_suggestions; select_option
 clicks a fresh owned option. Read primary AND subtitle: city/airport/park/AI differ.
+Popup ownership is not proof that every item supplies a field value: actual links
+and category tabs navigate. For requested listings, enter the corresponding
+listing category/search form before opening an individual result. A generic site
+search can discover that category/location; it is not the completed stay search.
+Follow navigation_stage: if the requested category is absent, discover the requested
+location, then choose that category among its visible links/tabs. A destination
+overview or general results page is an intermediate step, not an individual hotel
+result or a completed dates-and-guests search. Do not restart the global query when
+the requested category link is already visible. Category wording comes from the
+fresh page, not a guessed URL or selector.
+Hotel cards may already be below the form on the same URL. When result_scope and
+matching_results_observed confirm current committed criteria, capture/finish those
+cards; do not recreate a Search transition. Manual Resume requires a fresh read,
+not a new search. Use date/guest widgets for remaining criteria. A guest total
+does not independently establish the number of adults or children.
+Some sites apply field changes immediately. Observe the updated cards after each
+change; Done/Update may only close a widget. Never invent a separate Search step.
+Opening category/location links does not require a new empty Search requirement;
+declare form bindings only for the value field this action actually changes.
+After discovery, continue to the actual dates/guest form. Do not refill a correct
+location merely because its generic Search box remains visible, or return to a
+category already opened. Use the fresh controls and transition to choose the next
+missing step; unrelated individual hotel links do not prepare the requested search.
 Typed text is not selection. Never reopen an expanded widget or repeat an unchanged
 click. Finish the open widget before switching. Use requested visible_date_choices
-before advancing months, check-in then check-out. set_counter uses the requested
+before advancing months, check-in then check-out. Interpret date_kind: an opener
+opens the calendar even when its label contains a full
+selected date; a day_choice is an actual day. When both requested dates already
+verify, follow confirm_calendar to dismiss the widget, never toggle selected days
+or jump to global Search. Escape can close a calendar without changing dates.
+set_counter uses the requested
 absolute integer on an actual numeric field/stepper, not guessed button order.
+Do not fall back to raw plus/minus clicks after a counter read fails. A named
+increase/decrease control also uses the requested total; inspect its readable row
+count, and never treat 'by 1' in an actuator label as the current count.
 After changing a count or choice, inspect newly revealed required fields before
 leaving the widget. A child count may reveal one age selector per child. Use only
 ages supplied by the user, bound to the correct child; never guess an age or use
 a default. If a newly required value is missing, pause with the field name and ask
 the user to fill it in the website, then Resume. Required/invalid fields take
-priority over Done, switching widgets and Search. Set all rows and dependent
+priority over guessing: an interpretation or an incidental number from the request
+does not supply a new value. Preserve manually entered values. Leave unrequested
+optional fields unchanged; wait for explicit Resume after requesting user input.
+Required fields precede Done, switching widgets and Search. Set all rows and dependent
 fields then Done/confirm/close and read the summary; confirm_or_close_widget
-means do not change correct counts. Omitted enabled means enabled. Search only
-with all form values verified; awaiting response means wait/inspect, no resubmit
+means do not change correct counts. Omitted enabled means enabled. Submit the
+actual stay search only with all form values verified. A separate query-only
+discovery form can navigate to that search; it does not verify stay results.
+Awaiting response means wait/inspect, no resubmit
 or edits. No progress means another observed control, focused inspect or one wait;
 an uncertain click is not a failed click to retry.
 
@@ -130,23 +177,30 @@ one distinct detail page, not a headline-only finish. Stop within five details a
 six total sources; partial coverage is reported, never claimed complete.
 
 Use recent_actions/last_transition. finish captures source for extraction/filtering,
-not proof of availability or records; use it after a completed listing search.
+not proof of availability or records; use it for verified existing results or after
+a completed listing search.
 For detail/context requests, capture useful index then actual relevant links and
 up to five details; six captures max. capture=index/detail/page; finish value=detail
 only on detail pages, else page. Include brief visible evidence. Scroll only to
 load content. Navigation is bounded; omissions aren't absence. Consented images
 clarify layout, not source evidence: DOM IDs/rectangles, never coordinate actions.
 
-purpose=submit_search for Search/Find/submitting Enter; set_field for form/widget;
-navigate for links; collect for source capture. fill uses literal value; select an
-exact native option; check=true/false; set_counter an integer target. press supports
-Enter/Escape/Tab/arrows/Home/End/Space; scroll=up/down. Tool errors are feedback,
+purpose=submit_search for the actual requested form Search/Find/submitting Enter;
+navigate for discovery/category links or tabs; set_field for form/widget;
+collect for source capture. fill uses literal value; select an
+exact native option; check=true/false; set_counter an integer target. press uses
+Enter for actual form submission or Escape to close a widget; other keys require
+an advertised affordance. scroll=up/down. Tool errors are feedback,
 not permission to repeat a possibly completed click. Stay within supplied budgets.
 click/fill/select/check/press/set_counter need control_id; other actions use null.
 Examples: occupancy Done closes a widget (set_field), never submit_search; the
 actual form Search submits after all values are verified. "Find sports headlines"
 means current_page, capture then extract; "open relevant links for full context"
 means linked_details, retain the index then open actual matching detail sources.
+matching_results_observed means applied matching results were independently
+observed without claiming an agent Search click. Collect these sources; do not
+reopen or submit Search. An unknown attempted submission still needs passive
+confirmation, and a mismatched guest count is never a match.
 Returned result_scope is separate from pre-search form proof. A catalog with
 "Price from"/default occupancy does not verify the requested stay. If a new
 catalog document needs one fresh form search, verify its own fields first.
@@ -374,6 +428,9 @@ def resolve_counter_decision(decision, task, references):
     """Bind a requested row/target to a unique observed stepper, not a guessed click."""
     facts = references.get(decision.control_id, (None, None, {}))[2]
     counter = facts.get("counter")
+    if counter and (not isinstance(counter.get("value"), int)
+                    or isinstance(counter.get("value"), bool) or counter["value"] < 0):
+        raise WebsiteError("The counter has no readable current value. Inspect it before changing the quantity.")
     field = task.counter_field(facts)
     requirement = task.requirements.get(field)
     if not field or not requirement or requirement["application"] != "form":
@@ -400,16 +457,17 @@ def resolve_counter_decision(decision, task, references):
     selected_id = decision.control_id
     if counter:
         direction = "increase" if int(target) >= counter["value"] else "decrease"
-        if counter["value"] == int(target) or counter["direction"] in {
-            direction,
-            "unknown",
-            "both",
-        }:
+        if counter["value"] == int(target) or counter.get("direction") == direction or (
+            counter.get("method") != "button" and counter.get("direction") in {"unknown", "both"}
+        ):
             return decision.model_copy(update={"value": target, "purpose": "set_field"}), field
     candidates = [
         (control_id, candidate)
         for control_id, (_, _, candidate) in references.items()
         if candidate.get("counter")
+        and isinstance(candidate["counter"].get("value"), int)
+        and not isinstance(candidate["counter"]["value"], bool)
+        and candidate["counter"]["value"] >= 0
         and control_id.split(":", 1)[0] == str(selected_id).split(":", 1)[0]
         and task.counter_field(candidate) == field
         and candidate["counter"]["direction"]
@@ -433,6 +491,33 @@ def resolve_counter_decision(decision, task, references):
     return decision.model_copy(
         update={"control_id": candidates[0][0], "value": target, "purpose": "set_field"}
     ), field
+
+
+def normalize_counter_click(decision, task, references):
+    """A stepper click still means the requested total, never an unchecked delta."""
+    if decision.action != "click":
+        return decision
+    facts = references.get(decision.control_id, (None, None, {}))[2]
+    counter = facts.get("counter") or {}
+    field = task.counter_field(facts)
+    button = facts.get("tag") in {"BUTTON", "INPUT"} or facts.get("role") == "button"
+    label = str(facts.get("label") or facts.get("text") or "")
+    quantity_label = bool(field) or bool(re.search(
+        r"\b(?:adults?|children|child|kids?|rooms?|guests?|travelers?|count|quantity)\b|\bnumber of\b|\bby\s+\d+\b",
+        label, re.I,
+    ))
+    directional = counter.get("method") == "button"
+    directional = directional or button and quantity_label and bool(re.search(
+        r"\b(?:increase|decrease|increment|decrement|add|remove|plus|minus)\b",
+        label, re.I,
+    ))
+    if not directional:
+        return decision
+    requirement = task.requirements.get(field) or {}
+    target = str(requirement.get("expected", ""))
+    if requirement.get("application") != "form" or not re.fullmatch(r"\d{1,2}", target):
+        raise WebsiteError("A quantity button needs one requested absolute target. No increment was clicked.")
+    return decision.model_copy(update={"action": "set_counter", "value": target, "purpose": "set_field"})
 
 
 def redact(value, secrets):
@@ -533,6 +618,16 @@ COUNTER_OBSERVATION = r"""e => {
   const owner=e.closest('[role="spinbutton"]');
   const ownedNumeric=owner&&numeric(owner);
   if(ownedNumeric) return {...ownedNumeric,method:'button',direction:direction(e)||'unknown'};
+  const namedQuantity=button=>{
+    // An actuator's "by 1" describes its effect, never the current quantity.
+    const match=accessibleName(button).match(
+      /^(?:increase|decrease|increment|decrement)\s+(.+?)(?:\s+by\s+\d+)?[.!]?$/i);
+    if(!match) return null;
+    const label=clean(match[1].replace(/^(?:the\s+)?(?:number\s+of\s+)?/i,'')
+      .replace(/\s+(?:count|quantity)$/i,''));
+    if(!label || label.length>80 || !/\p{L}/u.test(label) || /\d/.test(label)) return null;
+    return {label,key:label.toLocaleLowerCase()};
+  };
   let leanQuantityRegion=null;
   for(let row=e.parentElement,depth=0;row && depth<7;row=row.parentElement,depth++) {
     if(row.matches('body,html,main')) break;
@@ -543,6 +638,10 @@ COUNTER_OBSERVATION = r"""e => {
       .map(numeric).filter(Boolean);
     if(numberFields.length===1) return {...numberFields[0],method:'button',
       direction:direction(e)||'unknown'};
+    const directions=buttons.map(direction),named=buttons.map(namedQuantity);
+    if(named.every(Boolean) && named[0].key!==named[1].key) return null;
+    const namedPair=named.every(Boolean) && named[0].key===named[1].key &&
+      directions.includes('increase') && directions.includes('decrease');
     const walker=document.createTreeWalker(row,NodeFilter.SHOW_TEXT),parts=[],partNodes=[];
     let node;
     while((node=walker.nextNode())) {
@@ -561,16 +660,33 @@ COUNTER_OBSERVATION = r"""e => {
       .filter(item=>/^\d{1,3}$/.test(item.value) &&
         follows(buttons[0],partNodes[item.index]) && follows(partNodes[item.index],buttons[1]));
     const tokens=[...text.matchAll(/(?:^|\s)(\d{1,3})(?=\s|$)/g)];
-    if(countParts.length>1 || (!countParts.length && tokens.length!==1)) continue;
-    const count=countParts[0];
+    const allNumbers=[...text.matchAll(/\d+/g)];
+    if(countParts.length>1) return null;
+    // A semantically named pair may render its count before/after both buttons.
+    // Prefer an isolated quantity over numbers embedded in age/help text. Never
+    // use numbers from the actuator names, including their explicit click delta.
+    const isolated=namedPair ? parts.map((value,index)=>({value,index}))
+      .filter(item=>/^\d{1,3}$/.test(item.value)) : [];
+    const noun=namedPair ? named[0].label.match(/\p{L}+/gu).join('\\s+').replace(/s$/i,'')+'s?' : '';
+    const labelled=namedPair ? [
+      '(?:^|\\s)'+noun+'(?:\\s+(?:count|quantity))?\\s*[:=]?\\s*(\\d{1,3})(?=\\s|$)',
+      '(?:^|\\s)(\\d{1,3})\\s+'+noun+'(?=\\s|$)',
+    ].flatMap(pattern=>[...text.matchAll(new RegExp(pattern,'ig'))]) : [];
+    if(labelled.length>1 || countParts.length && labelled.length &&
+      Number(countParts[0].value)!==Number(labelled[0][1])) return null;
+    const count=countParts[0] || (!labelled.length && isolated.length===1 &&
+      allNumbers.length===1 ? isolated[0] : null);
+    if(!count && !labelled.length &&
+      (tokens.length!==1 || namedPair && allNumbers.length!==1)) continue;
     if(leanQuantityRegion===null && count) {
       const otherParts=parts.filter((_,index)=>index!==count.index);
       leanQuantityRegion=otherParts.length<=1 && clean(otherParts.join(' ')).length<=40 &&
         !row.querySelector('a[href],[role="link"],img,picture,video,iframe,article,h1,h2,h3,h4');
     }
-    const quantity=count ? Number(count.value) : Number(tokens[0][1]);
+    const quantity=count ? Number(count.value) : Number(labelled[0]?.[1]||tokens[0][1]);
     let rowLabel=count ? clean(parts.filter((_,i)=>i!==count.index).join(' ')) :
       clean(text.replace(/(?:^|\s)\d{1,3}(?=\s|$)/,' '));
+    if(namedPair) rowLabel=named[0].label;
     // Some steppers name their quantity using an external accessible label.
     // Read that declared relationship rather than relying on nearby page text.
     if(!rowLabel || !/\p{L}/u.test(rowLabel)) rowLabel=clean(
@@ -579,7 +695,6 @@ COUNTER_OBSERVATION = r"""e => {
     if(!rowLabel || !/\p{L}/u.test(rowLabel)) continue;
     if(/password|passcode|verification|\botp\b|credit card|security token/i.test(rowLabel))
       continue;
-    const directions=buttons.map(direction);
     // A clear rendered quantity row can expose its buttons without asserting
     // what an unfamiliar icon does. Only an explicitly selected fresh button
     // can then be used; numeric read-back, not button order, verifies the effect.
@@ -617,16 +732,138 @@ AGENT_OBSERVATION = r"""focus => {
       .join(' ')||
     (e.labels&&[...e.labels].map(n=>n.textContent).join(' '))||
     e.getAttribute('placeholder')||e.innerText||e.getAttribute('title')||e.name).slice(0,240);
+  // Calendar choices and date-field openers can both name a full date. Keep
+  // that distinction grounded in the actual control, shared with the executor.
+  const inspectDate=globalThis.agenticInspectDate=e=>{
+    const iso=(year,month,day)=>{
+      const y=Number(year),m=Number(month),d=Number(day);
+      if(y<1000||y>9999||m<1||m>12||d<1||d>31) return '';
+      const value=new Date(Date.UTC(y,m-1,d));
+      return value.getUTCFullYear()===y&&value.getUTCMonth()===m-1&&value.getUTCDate()===d?
+        String(y)+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'):'';
+    };
+    const parse=value=>{
+      const text=clean(value).replace(/[.;:!?]\s*$/,'')
+        .replace(/^(?:enter|choose|select|change|edit|open)\s+(?:the\s+)?(?:(?:check[ -]?in|check[ -]?out|arrival|departure|start|end)(?:\s+date)?|dates?)\s*[:.,;\u2013\u2014-]?\s*/i,'')
+        .replace(/^(?:the\s+)?selected\s+date\s+is\s*[:.,;\u2013\u2014-]?\s*/i,'')
+        .replace(/^(?:selected|chosen)\s+/i,'')
+        .replace(/\s*[,;]?\s*(?:selected|chosen)$/i,'')
+        .replace(/^(?:check[ -]?in|arrival|start(?:\s+date)?|range\s+start|check[ -]?out|departure|end(?:\s+date)?|range\s+end)(?:\s+date)?\s*[:,-]?\s*/i,'')
+        .replace(/\s*[,;:-]?\s*(?:check[ -]?in|arrival|start\s+date|range\s+start|check[ -]?out|departure|end\s+date|range\s+end)$/i,'')
+        .replace(/^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s*,?\s*/i,'');
+      let match=text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(match) return iso(match[1],match[2],match[3]);
+      const months='jan feb mar apr may jun jul aug sep oct nov dec'.split(' ');
+      match=text.match(/^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})$/i);
+      if(match) return iso(match[3],months.indexOf(match[1].slice(0,3).toLowerCase())+1,match[2]);
+      match=text.match(/^(\d{1,2})(?:st|nd|rd|th)?\s*(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*,?\s*(\d{4})$/i);
+      return match?iso(match[3],months.indexOf(match[2].slice(0,3).toLowerCase())+1,match[1]):'';
+    };
+    const name=label(e),text=clean(e.innerText);
+    const fullDate=n=>parse(n.getAttribute('data-date')||n.getAttribute('datetime'))||
+      parse(label(n))||parse(n.innerText);
+    const ownDate=fullDate(e),cell=e.closest('[role="gridcell"]');
+    const cellDate=cell&&fullDate(cell)||'';
+    const input=e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select,[role="combobox"]')||e.isContentEditable;
+    const dateWords=/\b(?:dates?|calendar|check[ -]?in|check[ -]?out|arrival|departure)\b/i;
+    const opening=/^(?:enter|choose|select|change|open|edit)\s+(?:the\s+)?(?:(?:check[ -]?in|check[ -]?out|arrival|departure|start|end)\s+)?(?:dates?|calendar)\b/i.test(name);
+    const popup=e.getAttribute('aria-haspopup'),expanded=e.hasAttribute('aria-expanded');
+    const checkable=e.matches('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"]');
+    const opener=input&&(e.matches('input[type="date"],input[type="datetime-local"],input[type="month"],input[type="week"]')||dateWords.test(name))||
+      !cell&&!checkable&&(opening||(popup&&popup!=='false'||expanded)&&(dateWords.test(name)||!!ownDate));
+    if(opener) {
+      const endpointName=name+' '+clean(e.name).slice(0,120)+' '+text.slice(0,240);
+      const start=/\b(?:check[ -]?in|arrival|start\s+date|range\s+start)\b/i.test(endpointName);
+      const end=/\b(?:check[ -]?out|departure|end\s+date|range\s+end)\b/i.test(endpointName);
+      return {date_kind:'opener',date:ownDate,selected:'',
+        date_endpoint:start!==end?(start?'check_in':'check_out'):'',owner:null};
+    }
+    const dayToken=/^\d{1,2}$/.test(name)||/^\d{1,2}$/.test(text);
+    const dateAttribute=clean(e.getAttribute('data-date')||e.getAttribute('datetime'));
+    const structuralDate=!!cell&&(dayToken||e===cell&&/\b\d{4}\b/.test(label(cell))||
+      !!cellDate&&checkable);
+    const choice=!input&&(!!ownDate||!!dateAttribute||structuralDate);
+    if(!choice) return {date_kind:'',date:'',selected:'',date_endpoint:'',owner:null};
+    const date=ownDate||cellDate;
+    const owner=cell&&date&&cellDate===date?cell:null;
+    const state=n=>{
+      if(n.matches('input[type="checkbox"],input[type="radio"]')) return String(n.checked);
+      const values=[n.getAttribute('aria-selected'),n.getAttribute('aria-checked'),
+        n.getAttribute('data-state')].map(value=>(value||'').toLowerCase());
+      if(values.some(value=>['false','unselected','unchecked','off'].includes(value))) return 'false';
+      return values.some(value=>['true','selected','checked','on'].includes(value))?'true':'';
+    };
+    const declaredState=state(e)||(owner&&owner!==e?state(owner):'');
+    const namedSelection=n=>parse(label(n))===date&&
+      /^(?:selected|chosen)\s+|\s+(?:selected|chosen)$/i.test(label(n));
+    const selectedLabel=declaredState!=='false'&&!!date&&
+      !!(namedSelection(e)||owner&&namedSelection(owner));
+    const selected=declaredState||(selectedLabel?'true':'');
+    const endpointName=name+' '+(owner&&owner!==e?label(owner):'');
+    const start=/\b(?:check[ -]?in|arrival|start\s+date|range\s+start)\b/i.test(endpointName);
+    const end=/\b(?:check[ -]?out|departure|end\s+date|range\s+end)\b/i.test(endpointName);
+    return {date_kind:'day_choice',date,selected,selected_label:selectedLabel,
+      date_endpoint:start!==end?(start?'check_in':'check_out'):'',owner};
+  };
+  // A custom age combobox has no native .value. Observe only its declared
+  // value, one explicitly owned selected option, or its compact rendered age.
+  // Popup prose and an active/highlighted option never establish selection.
+  const customAgeValue=globalThis.agenticInspectCustomAgeValue=e=>{
+    if(['INPUT','TEXTAREA','SELECT'].includes(e.tagName)||
+      e.getAttribute('role')!=='combobox'||
+      !/\bages?\b|\bage\d+\b|\baged\b|\byears?\s+old\b|\bhow\s+old\b/i
+        .test((e.name||'')+' '+label(e))) return null;
+    const compactAge=/^(?:age\s*:?\s*)?\d{1,3}(?:\s*(?:years?(?:\s+old)?|yrs?))?$/i;
+    const displayed=n=>{
+      const walker=document.createTreeWalker(n,NodeFilter.SHOW_TEXT),parts=[];
+      let node,length=0;
+      while((node=walker.nextNode())&&length<=120) {
+        const parent=node.parentElement;
+        if(!parent||!visible(parent)) continue;
+        let excluded=false;
+        for(let p=parent;p&&(p===n||n.contains(p));p=p.parentElement)
+          if(sensitive(p)||p.matches('input,textarea,select,script,style,noscript,'+
+            '[contenteditable="true"],[inert],[aria-hidden="true"]')||
+            p!==n&&p.matches('[role="option"],[role="listbox"]')) {excluded=true;break;}
+        if(!excluded) {parts.push(node.textContent);length+=node.textContent.length;}
+      }
+      const text=clean(parts.join(' '));
+      return compactAge.test(text)?text:'';
+    };
+    let value=clean(e.getAttribute('aria-valuetext')),
+      source=value?'aria-valuetext':'';
+    if(!value) {value=clean(e.getAttribute('aria-valuenow'));source=value?'aria-valuenow':'';}
+    if(!value) {
+      const ids=clean((e.getAttribute('aria-controls')||'')+' '+
+        (e.getAttribute('aria-owns')||'')).split(' ').filter(Boolean);
+      const scopes=[e,...ids.map(id=>e.getRootNode().getElementById?.(id)||
+        document.getElementById(id)).filter(Boolean)];
+      const selected=[...new Set(scopes.flatMap(scope=>[
+        ...(scope.matches('[role="option"][aria-selected="true"]')?[scope]:[]),
+        ...scope.querySelectorAll('[role="option"][aria-selected="true"]')]))]
+        .filter(option=>!sensitive(option)&&!option.closest('[inert],[aria-hidden="true"]'));
+      if(selected.length===1) {
+        const named=clean(selected[0].getAttribute('aria-label'));
+        value=compactAge.test(named)?named:displayed(selected[0]);
+        source=value?'selected_option':'';
+      }
+    }
+    if(!value) {value=displayed(e);source=value?'rendered_text':'';}
+    return {value:value.slice(0,300),value_source:source,selected_label:value.slice(0,240)};
+  };
   const validation=e=>{
     const required=!!e.required||e.getAttribute('aria-required')==='true';
     const option=e.tagName==='SELECT'&&!e.multiple?e.selectedOptions?.[0]:null;
     const optionLabel=clean(option?.textContent);
-    const selectionPlaceholder=e.tagName==='SELECT'&&!e.multiple&&(!option||
+    const customAge=customAgeValues.get(e);
+    const selectionPlaceholder=customAge?(!customAge.value||
+      /^(?:please\s+)?(?:select|choose)\b|^(?:unknown|unset|not\s+(?:set|selected))$|\b(?:age|value)\s+(?:needed|required)\b/i
+        .test(customAge.value)):e.tagName==='SELECT'&&!e.multiple&&(!option||
       option.disabled||option.hidden||
       (!clean(option.value)&&! /^(?:any|all|none|no preference)\b/i.test(optionLabel))||
       /^(?:please\s+)?(?:select|choose)(?:\s+(?:an?\s+)?(?:option|value|age|one))?[\s.…:]*$|\b(?:age|value)\s+(?:needed|required)\b/i.test(optionLabel));
     const nativeInvalid=e.willValidate===true&&e.validity?.valid===false;
-    const valueMissing=e.validity?.valueMissing===true||(required&&
+    const valueMissing=e.validity?.valueMissing===true||(required&&customAge&&selectionPlaceholder)||(required&&
       e.matches('input:not([type="checkbox"]):not([type="radio"]),textarea,select')&&
       !clean(e.value));
     const errorIds=clean(e.getAttribute('aria-errormessage')).split(' ').filter(Boolean);
@@ -638,24 +875,103 @@ AGENT_OBSERVATION = r"""focus => {
     return {required,...(valueControl?{invalid:nativeInvalid||e.getAttribute('aria-invalid')==='true',
       value_missing:valueMissing,selection_placeholder:selectionPlaceholder,
       ...(e.tagName==='SELECT'?{selected_label:optionLabel.slice(0,240)}:{}),
+      ...(customAge?{selected_label:customAge.selected_label}:{}),
       ...(nativeInvalid||errorText?{validation_message:clean([nativeInvalid?e.validationMessage:'',errorText]
         .join(' ')).slice(0,240)}:{})}:{})};
   };
   const candidates=query('input,textarea,select,button,a[href],'+
-    '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],'+
+    '[role="button"],[role="option"],[role="combobox"],[role="gridcell"],[role="tab"],'+
     '[role="spinbutton"],[role="checkbox"],[role="radio"],[contenteditable="true"]')
     .filter(e=>visible(e)&&!sensitive(e)&&!e.closest('[inert]'));
   const counters=new Map(candidates.map(e=>[e,inspectCounter(e)]));
   // aria-hidden is an accessibility annotation, not CSS invisibility. Keep
-  // physically rendered, recognized quantity actuators without exposing other
-  // accessibility-hidden controls/text or inert/credential controls.
-  const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e));
+  // physically rendered quantity actuators and stay summaries without exposing
+  // unrelated accessibility-hidden controls/text or inert/credential controls.
+  const dates=new Map(candidates.map(e=>[e,inspectDate(e)]));
+  const staySummary=e=>dates.get(e).date_kind==='opener'||
+    !counters.get(e)&&e.matches('button,[role="button"]')&&
+    /\brooms?\b/i.test(label(e))&&/\b(?:adults?|guests?|travell?ers?)\b/i.test(label(e))&&
+    (e.hasAttribute('aria-expanded')||e.hasAttribute('aria-haspopup')||
+     /number of rooms|rooms\s*\/\s*guests|rooms.*selected.*guests/i.test(label(e)));
+  const raw=candidates.filter(e=>!e.closest('[aria-hidden="true"]')||counters.get(e)||staySummary(e));
+  const customAgeValues=new Map(raw.map(e=>[e,customAgeValue(e)]));
   const validations=new Map(raw.map(e=>[e,validation(e)]));
   // Give search-form widgets priority even when background links exhaust the
   // inventory. Unresolved value fields precede foreground widget choices.
   const formScopes=query('form,[role="search"]').filter(visible);
   const popupScopes=query('[role="dialog"],[role="listbox"],[role="grid"],[role="menu"]')
     .filter(visible);
+  // Scope selected endpoints and confirmation controls to the actual rendered
+  // calendar. A multi-month dialog is one widget; unrelated popups stay separate.
+  const calendarScopes=popupScopes.filter(scope=>scope.matches('[role="dialog"],[role="grid"]')&&
+    raw.some(e=>dates.get(e).date_kind==='day_choice'&&scope.contains(e)));
+  // Some calendars omit dialog/grid roles. A compact date collection plus both
+  // explicitly named month actuators establishes its actual common container.
+  const calendarDays=raw.filter(e=>dates.get(e).date_kind==='day_choice');
+  const monthDirection=e=>{
+    if(!e.matches('button,[role="button"],a[href]')) return '';
+    const text=clean([label(e),e.getAttribute('title'),e.getAttribute('data-testid'),
+      ...[...e.querySelectorAll('svg title,svg [aria-label]')].map(n=>n.getAttribute('aria-label')||n.textContent),
+      ...[...e.querySelectorAll('svg use')].map(n=>n.getAttribute('href')||n.getAttribute('xlink:href'))
+    ].join(' ')).replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_-]/g,' ');
+    if(/\b(?:years?|decades?|weeks?|today)\b/i.test(text)&&!/\bmonth\b/i.test(text)) return '';
+    const next=/\b(?:next|forward|chevron right|arrow right)\b/i.test(text)||/^[›»→]$/.test(text);
+    const previous=/\b(?:previous|prev|back|chevron left|arrow left)\b/i.test(text)||/^[‹«←]$/.test(text);
+    if(next!==previous) return next?'next':'previous';
+    // Only a single open, symmetric rendered chevron establishes icon direction.
+    // DOM order and the position of an unlabelled button never do.
+    try {
+    const shapes=[...e.querySelectorAll('svg path,svg polyline')].filter(n=>
+      !!n.getClientRects().length&&getComputedStyle(n).visibility!=='hidden');
+    if(shapes.length!==1||/[zZ]/.test(shapes[0].getAttribute('d')||'')) return '';
+    const shape=shapes[0],matrix=shape.getScreenCTM();
+    if(!matrix||!shape.getTotalLength) return '';
+    const length=shape.getTotalLength();
+    if(!length) return '';
+    const point=t=>{const p=shape.getPointAtLength(length*t);return new DOMPoint(p.x,p.y).matrixTransform(matrix);};
+    const a=point(0),b=point(0.5),c=point(1),height=Math.abs(a.y-c.y);
+    if(height<3||Math.abs(a.x-c.x)>height*0.15||Math.abs(b.y-(a.y+c.y)/2)>height*0.15||
+      Math.abs(b.x-(a.x+c.x)/2)<height*0.25) return '';
+    return b.x>(a.x+c.x)/2?'next':'previous';
+    } catch {return '';}
+  };
+  const monthDirections=new Map(raw.map(e=>[e,monthDirection(e)]));
+  const previousMonths=raw.filter(e=>monthDirections.get(e)==='previous');
+  const nextMonths=raw.filter(e=>monthDirections.get(e)==='next');
+  const rolelessCalendars=new Set(),calendarRegions=new Map();
+  for(const day of calendarDays.filter(e=>dates.get(e).date)) {
+    for(let scope=day.parentElement;scope;scope=scope.parentElement) {
+      if(scope.matches('body,html,main,form,nav,header,footer,aside')) break;
+      let region=calendarRegions.get(scope);
+      if(!region) {
+        const days=calendarDays.filter(e=>scope.contains(e));
+        const controlCount=raw.filter(e=>scope.contains(e)).length;
+        region={oversized:days.length>180||controlCount>300,
+          calendar:new Set(days.map(e=>dates.get(e).date).filter(Boolean)).size>=7&&
+            previousMonths.some(e=>scope.contains(e))&&nextMonths.some(e=>scope.contains(e))};
+        calendarRegions.set(scope,region);
+      }
+      if(region.oversized) break;
+      if(region.calendar) {rolelessCalendars.add(scope);break;}
+    }
+  }
+  for(const scope of rolelessCalendars) if(!calendarScopes.includes(scope)) calendarScopes.push(scope);
+  const calendarScope=e=>{
+    for(let scope=e;scope;scope=scope.parentElement)
+      if(rolelessCalendars.has(scope)) return scope;
+    const dialog=e.closest('[role="dialog"]');
+    if(calendarScopes.includes(dialog)) return dialog;
+    const grid=e.closest('[role="grid"]');
+    if(calendarScopes.includes(grid)) return grid;
+    if(dates.get(e)?.date_kind==='opener') {
+      const ids=clean((e.getAttribute('aria-controls')||'')+' '+(e.getAttribute('aria-owns')||''))
+        .split(' ').filter(Boolean);
+      const scopes=ids.map(id=>e.getRootNode().getElementById?.(id)||document.getElementById(id))
+        .filter(scope=>calendarScopes.includes(scope));
+      if(scopes.length===1) return scopes[0];
+    }
+    return null;
+  };
   const counterButtons=raw.filter(e=>counters.get(e)),counterGroups=[];
   for(const button of counterButtons) {
     for(let group=button.parentElement,depth=0;group && depth<8;group=group.parentElement,depth++) {
@@ -665,13 +981,45 @@ AGENT_OBSERVATION = r"""focus => {
         clean(group.innerText).length<1800) {counterGroups.push(group);break;}
     }
   }
-  // Foreground popups/calendar/options take priority over background navigation.
+  // Keep a few visible category entry points when result links exhaust the
+  // inventory. These are observed labels, not inferred routes or click plans.
+  const categoryNavigation=new Set(raw.filter(e=>
+    e.matches('a[href],button,[role="button"],[role="tab"]') &&
+    e.getAttribute('role')!=='option' &&
+    /^(?:hotels?|stays|accommodations?|restaurants?|dining|things to do|attractions?|essentials|flights|shopping|news|sports|business|travel|technology|science)(?:\s+(?:in|near)\s+.{1,40})?$/i
+      .test(label(e))).slice(0,8));
+  const pagination=new Map();
+  for(const e of focus==='collection'?raw:[]) {
+    if(!e.matches('a[href],button,[role="button"]')) continue;
+    if(e.closest('[role="dialog"],[role="menu"],[role="listbox"]')) continue;
+    const text=label(e),nav=e.closest('nav,[role="navigation"]');
+    const numbered=nav&&[...nav.querySelectorAll('a,button')].filter(n=>/^\d{1,3}$/.test(label(n))).length>=2;
+    if(e.matches('a[rel~="next"]')||/^(?:next page|next results|go to (?:the )?next page)$/i.test(text)||
+      /^next$/i.test(text)&&numbered) pagination.set(e,'next');
+    else if(/^(?:load|show|see) more (?:results|hotels|properties|listings|articles)$/i.test(text)&&
+      e.closest('main,[role="main"]')&&!e.closest('article,[itemtype*="Product"]')) pagination.set(e,'more');
+  }
+  // Keep current stay values beside a large calendar; day cells alone must
+  // not consume the entire inventory and hide the summaries needed to commit.
+  const stayAnchors=new Set([
+    ...raw.filter(e=>dates.get(e).date_kind==='opener').slice(0,4),
+    ...raw.filter(e=>e.matches('input,textarea,select')&&!sensitive(e)&&
+      /destination|location|\bcity\b|where .*going|^(?:search|query)\b/i.test(label(e))).slice(0,2),
+    ...raw.filter(e=>staySummary(e)&&dates.get(e).date_kind!=='opener').slice(0,2)
+  ]);
+  // Foreground popups/calendar/options take priority over category navigation.
   const priority=e=>validations.get(e).invalid||validations.get(e).value_missing||
     validations.get(e).selection_placeholder ? -1 :
+    stayAnchors.has(e) ? -0.5 :
+    focus==='collection' && pagination.has(e) ? -0.4 :
+    monthDirections.get(e)&&calendarScope(e) ? -0.3 :
+    dates.get(e).date_kind==='day_choice'&&dates.get(e).selected==='true' ? -0.25 :
+    dates.get(e).date_kind==='day_choice' ? -0.1 :
     popupScopes.some(scope=>scope.contains(e)) ? 0 :
     counters.get(e)||counterGroups.some(group=>group.contains(e)) ? 0 :
     e.getAttribute('role')==='option' ? 1 :
-    formScopes.some(scope=>scope.contains(e)) ? (focus==='form'?0:2) :
+    categoryNavigation.has(e) ? 1.5 :
+    formScopes.some(scope=>scope.contains(e)) ? (focus==='form'&&!e.matches('a[href]')?0:2) :
     e.matches('input,select,textarea') ? 3 : 4;
   raw.sort((a,b)=>priority(a)-priority(b));
    const elements=raw.filter(e=>
@@ -744,7 +1092,9 @@ AGENT_OBSERVATION = r"""focus => {
    const nativeForms=query('form');
    const controls=elements.map((e,i)=>{
       const box=e.closest('label,[role="group"],li,[data-testid],fieldset');
-      const selected=e.getAttribute('aria-selected')||e.getAttribute('aria-checked')||
+      const dateInfo=dates.get(e),dateScope=calendarScope(e);
+      const selected=dateInfo.date_kind==='day_choice'?dateInfo.selected:
+        e.getAttribute('aria-selected')||e.getAttribute('aria-checked')||
         e.getAttribute('data-state')||(e.matches('input[type="checkbox"],input[type="radio"]')?
           String(e.checked):'');
       const counter=counters.get(e);
@@ -765,7 +1115,9 @@ AGENT_OBSERVATION = r"""focus => {
             .filter(n=>visible(n)&&n.closest('[aria-hidden="true"]')).length},
         context:clean([counter?.evidence,box?.innerText,e.parentElement?.innerText,
           e.parentElement?.parentElement?.innerText].join(' ')).slice(0,500),
-        value:['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?(e.value||'').slice(0,300):
+        ...(customAgeValues.get(e)?{value_source:customAgeValues.get(e).value_source}:{}),
+        value:customAgeValues.get(e)?customAgeValues.get(e).value:
+          ['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?(e.value||'').slice(0,300):
           e.isContentEditable?clean(e.innerText).slice(0,300):e.getAttribute('aria-valuenow')||'',
          selected,expanded:e.getAttribute('aria-expanded')||
            (editable(e)?comboOwner(e).getAttribute('aria-expanded'):'')||'',
@@ -782,9 +1134,13 @@ AGENT_OBSERVATION = r"""focus => {
         options:e.tagName==='SELECT'?[...e.options].slice(0,50).map(o=>({value:o.value,
           label:clean(o.textContent),disabled:o.disabled||o.closest('optgroup')?.disabled===true,
           selected:o.selected,hidden:o.hidden})):[],
-        date:e.getAttribute('data-date')||e.getAttribute('datetime')||'',
-        date_owner_id:elements.includes(e.closest('[role="gridcell"]'))?
-          e.closest('[role="gridcell"]').getAttribute('data-agentic-loop-id'):null};
+        ...(focus==='collection'&&pagination.has(e)?{pagination:pagination.get(e)}:{}),
+        date_kind:dateInfo.date_kind,date:dateInfo.date,
+        ...(dateInfo.date_endpoint?{date_endpoint:dateInfo.date_endpoint}:{}),
+        ...(dateScope?{date_widget_id:'calendar:'+calendarScopes.indexOf(dateScope)}:{}),
+        ...(dateScope&&monthDirections.get(e)?{date_navigation:monthDirections.get(e)}:{}),
+        date_owner_id:elements.includes(dateInfo.owner)?
+          dateInfo.owner.getAttribute('data-agentic-loop-id'):null};
     });
   const unresolved=controls.filter(e=>e.enabled&&(e.invalid||e.value_missing||e.selection_placeholder));
   const validationAlerts=query('[role="alert"],[aria-live="assertive"]')
@@ -811,8 +1167,10 @@ AGENT_OBSERVATION = r"""focus => {
   }
   // Readiness hints only: these do not verify availability, price or coverage.
   const excluded='form,nav,header,footer,aside,[role="dialog"],[inert]';
-  const records=[...root.querySelectorAll('article,li,[role="listitem"],'+
-    '[itemscope],[data-testid*="card"]')].filter(e=>visible(e)&&!e.closest(excluded)&&
+  const recordMarkers='[data-testid*="card" i],[data-test-target*="card" i],[data-automation*="card" i],'+
+    '[data-testid*="hotel-listing" i],[data-test-target*="hotel-listing" i],[data-automation*="hotel-listing" i],'+
+    '[data-testid*="hotel-list-item" i],[data-test-target*="hotel-list-item" i],[data-automation*="hotel-list-item" i]';
+  const records=[...root.querySelectorAll('article,li,[role="listitem"],[itemscope],'+recordMarkers)].filter(e=>visible(e)&&!e.closest(excluded)&&
       e.querySelector('a[href]')&&clean(e.innerText).length>=40);
   const resultText=chunks.join(' ');
   const priceContexts=[];
@@ -832,12 +1190,35 @@ AGENT_OBSERVATION = r"""focus => {
   // longer renders its destination input. Card headlines and form echoes cannot.
   const resultHeadings=[...root.querySelectorAll('h1,h2,[role="heading"]')]
     .filter(e=>visible(e)&&!e.closest(excluded+', [aria-hidden="true"]')&&
-      !e.closest('article,li,[role="listitem"],[data-testid*="card"],'+
+      !e.closest('article,li,[role="listitem"],'+recordMarkers+','+
         '[itemtype$="/Hotel"],[itemtype$="/Product"],[itemtype$="/Article"]'))
     .map(e=>({text:clean(e.innerText),level:Number(e.getAttribute('aria-level')||
       (/^H[12]$/.test(e.tagName)?e.tagName.slice(1):0))}))
     .filter(e=>[1,2].includes(e.level)&&e.text.length>0&&e.text.length<=240).slice(0,8);
-  const results={record_count:records.filter(e=>!records.some(n=>n!==e&&e.contains(n))).length,
+  const recordLeaves=records.filter(e=>!records.some(n=>n!==e&&e.contains(n)));
+  // A bounded content-change hint for SPA refreshes, never price/availability proof.
+  // Form fields and page chrome are excluded; only actual rendered record text
+  // and link paths contribute. The signature stays out of model context.
+  let recordHash=2166136261;
+  for(const record of recordLeaves.slice(0,8)) {
+    const paths=[...record.querySelectorAll('a[href]')].slice(0,2).map(link=>{
+      try {return new URL(link.href,location.href).pathname;} catch (_) {return '';}
+    }).join('|');
+    const text=clean(record.innerText).slice(0,800)+'|'+paths;
+    for(let i=0;i<text.length;i++) recordHash=Math.imul(recordHash^text.charCodeAt(i),16777619)>>>0;
+  }
+  const resultSignature=recordLeaves.length ?
+    recordHash.toString(16).padStart(8,'0') : emptyResults.test(resultText)?'empty':null;
+  const identities=(focus==='collection'?recordLeaves:[]).map(record=>{
+    const heading=record.querySelector('h1,h2,h3,[role="heading"]');
+    const link=heading?.closest('a[href]')||heading?.querySelector('a[href]')||record.querySelector('a[href]');
+    let path='';try{path=link?new URL(link.href).pathname:'';}catch{}
+    return path+'|'+clean(heading?.innerText||link?.innerText).replace(/^\d+[.)]\s*/,'');
+  }).sort();
+  let identityHash=2166136261;
+  for(const text of identities) for(let i=0;i<text.length;i++) identityHash=Math.imul(identityHash^text.charCodeAt(i),16777619)>>>0;
+  const results={record_count:recordLeaves.length,result_signature:resultSignature,
+    ...(focus==='collection'?{record_set_signature:recordLeaves.length?identityHash.toString(16).padStart(8,'0'):emptyResults.test(resultText)?'empty':null}:{}),
     busy:[...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],[role="status"]')]
       .some(e=>visible(e)&&!e.closest(excluded)&&
         (e.getAttribute('aria-busy')==='true'||e.getAttribute('role')==='progressbar'||
@@ -850,7 +1231,9 @@ AGENT_OBSERVATION = r"""focus => {
     focus,widgets:popupScopes.slice(0,8).map(e=>({role:e.getAttribute('role'),label:label(e),
       text:clean(e.innerText).slice(0,800)})),
     controls_truncated:raw.length>140,visible_control_count:raw.length,
-    viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY},
+    viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY,
+      document_height:document.documentElement.scrollHeight,
+      at_page_end:Math.ceil(scrollY+innerHeight)>=document.documentElement.scrollHeight-4},
     password_or_code_visible:query('input').some(e=>visible(e)&&
       (e.type==='password'||e.autocomplete==='one-time-code'||/otp|verification|^code$/i.test(e.name)))};
 }""".replace("__COUNTER_OBSERVATION__", COUNTER_OBSERVATION)
@@ -877,6 +1260,7 @@ class DOMBrowserTools:
         self.observed_url = None
         self.pages = []
         self.collection_context = None
+        self.capture_options = {}
         self.visual_enabled = visual_enabled
         self.user_pause = user_pause
         self.focus = "auto"
@@ -980,17 +1364,32 @@ class DOMBrowserTools:
         """Bounded passive render wait after one Search; never resubmit or infer prices."""
         deadline = time.monotonic() + max_seconds
         stable, previous = 0, None
+        starting_document = observation.get("document_id", observation.get("url"))
+        busy_seen = False
+
+        def completed():
+            results = dict(observation.get("results") or {})
+            results.pop("busy_seen_during_wait", None)
+            if (busy_seen and starting_document
+                    and observation.get("document_id", observation.get("url")) == starting_document):
+                results["busy_seen_during_wait"] = True
+            return {**observation, "results": results}
+
         while True:
             self.guard()
+            if (starting_document
+                    and observation.get("document_id", observation.get("url")) == starting_document
+                    and observation.get("results", {}).get("busy") is True):
+                busy_seen = True
             if any(f.get("password_or_code_visible") for f in observation.get("frames", [])):
-                return observation
+                return completed()
             facts = observation.get("results", {})
             signature = (observation.get("document_id"), facts.get("record_count"))
             stable = stable + 1 if signature == previous else 0
             if rendered_results_ready(observation) and stable >= 1:
-                return observation
+                return completed()
             if time.monotonic() >= deadline:
-                return observation
+                return completed()
             previous = signature
             self.page.wait_for_timeout(150)
             observation = self.observe()
@@ -1199,6 +1598,7 @@ class DOMBrowserTools:
                             scope["status"] = "mismatch"
                         elif scope["contradictions"]:
                             scope["status"] = "unverified"
+                        scope = reconcile_captured_occupancy(scope, context, fresh)
                         context["result_scope"] = reconcile_captured_result_scope(
                             scope, captured.get("blocks", []), document_id=fresh["document_id"],
                         )
@@ -1227,6 +1627,21 @@ class DOMBrowserTools:
             "url": display_url(captured["url"]),
             "text_chars": len(captured["text"]),
         }
+
+    def capture_records(self, offset=0):
+        """Reuse the same source/context checks for a separate result batch."""
+        previous_pages, previous_options = self.pages, self.capture_options
+        self.pages = []
+        self.capture_options = {"record_window": True, "record_offset": offset, "record_count": 10}
+        if getattr(self, "article_records", False):
+            self.capture_options["article_records"] = True
+        if getattr(self, "record_priority_terms", None):
+            self.capture_options["record_priority_terms"] = self.record_priority_terms
+        try:
+            self.capture("page")
+            return copy.deepcopy(self.pages[0])
+        finally:
+            self.pages, self.capture_options = previous_pages, previous_options
 
     def execute(self, decision):
         self.guard()
@@ -1303,9 +1718,9 @@ class DOMBrowserTools:
                 raise WebsiteError(
                     "This numeric control is read-only; inspect its editable controls."
                 )
-            if abs(delta) > 10 or target > 30:
+            if abs(delta) > MAX_COUNTER_STEPS or target > MAX_COUNTER_TARGET:
                 raise WebsiteError(
-                    "This counter action supports at most ten steps and target 0–30."
+                    "This counter action supports at most 30 verified steps and targets from 0 to 30."
                 )
             direction = "increase" if delta > 0 else "decrease"
             if delta and before["direction"] not in {direction, "unknown", "both"}:
@@ -1313,8 +1728,8 @@ class DOMBrowserTools:
                     "Choose the counter control pointing toward the requested target."
                 )
             observed, completed = before["value"], 0
-            deadline = time.monotonic() + 6
-            while observed != target and time.monotonic() < deadline:
+            deadline = time.monotonic() + max(6, min(30, 1 + abs(delta)))
+            while observed != target and completed < MAX_COUNTER_STEPS and time.monotonic() < deadline:
                 self.guard()
                 fresh = locator.evaluate(COUNTER_OBSERVATION) if locator.count() == 1 else None
                 if (
@@ -1813,6 +2228,34 @@ class OpenAIBrowserDecider:
             self.last_decision["elapsed_seconds"] = round(time.monotonic() - started, 3)
 
 
+def category_navigation_routes(decision, control, observation):
+    """Only plain category links: preserve forms, tabs, hash and query widgets."""
+    if (decision.action != "click" or control.get("tag") != "A" or not control.get("href")
+            or control.get("submits_form") or control.get("role") in {"tab", "button", "option"}
+            or control.get("haspopup") not in {None, "", "false"}
+            or not re.fullmatch(r"hotels?|stays|accommodations?|restaurants?|dining|things to do|attractions?|essentials|flights|shopping|news|sports|business|travel|technology|science",
+                                str(control.get("label") or "").strip(), re.I)):
+        return None
+    current, target = urlsplit(observation.get("url", "")), urlsplit(control["href"])
+    if not current.netloc or not target.netloc or current.fragment or target.fragment:
+        return None
+    route = lambda value: (value.scheme.lower(), value.netloc.lower(), value.path.rstrip("/") or "/", value.query)
+    return route(current), route(target)
+
+
+def category_navigation_transition(before, after):
+    """A document token changing on the same route is not category progress."""
+    old, new = copy.deepcopy(before), copy.deepcopy(after)
+    if before.get("url") == after.get("url"):
+        old["document_id"] = new["document_id"] = before.get("url")
+    effect = transition(old, new)
+    if before.get("document_id") != after.get("document_id") and not effect["document_changed"]:
+        effect["document_reloaded"] = True
+        if effect["status"] == "no_observable_change":
+            effect["note"] = "The same category page reloaded without changing its form or widgets. Continue with the visible search controls; do not reload its category link again."
+    return effect
+
+
 def rendered_results_ready(observation):
     """Structural render hints, deliberately not proof of stay/price matching."""
     facts = observation.get("results", {})
@@ -1932,6 +2375,16 @@ class BrowserAgent:
         self.started = None
         self.seen_actions = {}
         self.task = TaskLedger(instructions)
+        if (not self.task.requested_stay and self.task.collection_scope["default_mode"] == "current_page"
+                and (article_content(instructions) or re.search(r"\bheadlines?\b", instructions, re.I))):
+            self.tools.article_records = True
+            self.tools.capture_options = {**getattr(self.tools, "capture_options", {}), "article_records": True}
+            terms = article_priority_terms(instructions)
+            if terms:
+                self.tools.record_priority_terms = terms
+                self.tools.capture_options = {
+                    **getattr(self.tools, "capture_options", {}), "record_priority_terms": terms,
+                }
         if self.output_fields:
             self.task.set_output_fields(self.output_fields)
         self.finish_rejections = 0
@@ -1941,8 +2394,11 @@ class BrowserAgent:
         self.form_progress_signature = None
         self.pending_effect = None
         self.pending_autocomplete = None
+        self.pending_results_refresh = False
         self.local_submission_attempts = set()
         self.local_fill_attempts = set()
+        self.local_occupancy_attempts = set()
+        self.current_page_capture = None
         self.runtime_actions = 0
         self.last_transition = None
         self.observation_refresh_streak = 0
@@ -1956,6 +2412,16 @@ class BrowserAgent:
         self.failure = None
         self.browser_diagnostics = None
         self.last_observation = None
+        self.manual_age_values = {}
+        self.awaiting_age_confirmation = False
+        self.confirm_ages_on_resume = False
+        self.manual_resume_document = None
+        self.manual_age_reopen_attempted = False
+        self.manual_age_recheck_waited = False
+        self.occupancy_inspection_diagnostic = None
+        self.calendar_navigation_attempts = set()
+        self.calendar_close_attempts = set()
+        self.occupancy_recheck_attempts = {}
         self.phase = "observe"
         self.report = {
             "run_id": self.run_id,
@@ -1973,6 +2439,239 @@ class BrowserAgent:
             "visual_enabled": bool(getattr(tools, "visual_enabled", False)),
             "visual_policy": "adaptive",
         }
+
+    def capture_role(self, requested, current_url):
+        """Collection topology owns roles; model wording cannot promote an index."""
+        if self.task.collection_mode in {"current_page", "search_results", "listing_results"}:
+            return "page"
+        if self.task.collection_mode == "linked_details":
+            indexes = {
+                clean_url(page["url"]) for page in self.tools.pages
+                if page.get("source_kind") == "index"
+            }
+            # The model's display URL omits record query IDs. Use the private
+            # tool URL and keep supported identity fields when comparing roles.
+            actual_url = getattr(self.tools, "current_url", None) or current_url
+            return "detail" if indexes and clean_url(actual_url) not in indexes else "index"
+        return requested if requested in {"page", "index", "detail"} else "page"
+
+    def await_user_input(self, entry, guidance, fields=()):
+        """Keep the same run paused until the user fills the website and resumes."""
+        if not fields and guidance.startswith("Please enter ") and entry.get("control"):
+            fields = (entry["control"],)
+        if (fields and (self.task.requirements.get("destination") or {}).get("expected")
+                and all(re.fullmatch(r"search|query|q", str(field).strip(), re.I) for field in fields)):
+            # The original request supplies this query's value. A wrong query
+            # action is a workflow problem, not missing information from the user.
+            handoff = self.task.result_handoff or {}
+            pending = handoff.get("unverified_fields", []) + handoff.get("mismatched_fields", [])
+            guidance = (
+                "The destination is already in your request; no new Search value is needed. "
+                "Collection status: " + handoff.get("reason", "not_ready")
+                + (" (" + ", ".join(pending) + ")" if pending else "")
+                + ". Inspect the existing stay controls and results instead of submitting the query again."
+            )
+            self.blocked_search_attempts += 1
+            paused = self.blocked_search_attempts >= 2
+            self.history.append({**entry, "status": "wrong_query_paused" if paused else "query_not_needed",
+                                 "input_dispatched": False, "guidance": guidance,
+                                 "result_handoff": copy.deepcopy(handoff)})
+            self.report.pop("awaiting_user_input", None)
+            self.publish("paused" if paused else "verifying", guidance)
+            return {"status": "paused" if paused else "running"}
+        self.report["awaiting_user_input"] = {
+            "fields": [str(field)[:180] for field in fields][:12],
+            "reason": "missing_form_value",
+        }
+        self.awaiting_age_confirmation = entry.get("manual_age_confirmation", False) or any(
+            age_control({}, str(field)) for field in fields
+        ) or bool(re.search(r"\bages?\b", guidance, re.I))
+        if self.awaiting_age_confirmation and not entry.get("manual_age_confirmation"):
+            guidance = "Please enter or confirm all child ages in the website, then press Resume. The agent will preserve your values."
+        self.history.append({**entry, "status": "user_input_required", "pause_reason": "user_input",
+                             "input_dispatched": False, "guidance": guidance})
+        self.publish("paused", guidance)
+        return {"status": "paused"}
+
+    @staticmethod
+    def manual_age_key(control, observation):
+        return json.dumps([observation.get("document_id", observation.get("url")),
+                           identity(control), control.get("form_scope"), control.get("value")], sort_keys=True)
+
+    @staticmethod
+    def age_value_available(control):
+        if control.get("invalid") or control.get("value_missing") or control.get("selection_placeholder"):
+            return False
+        value = "" if control.get("value") is None else str(control["value"])
+        if not value.strip():
+            return False
+        candidates = [value, str(control.get("selected_label") or "")]
+        if control.get("tag") == "SELECT":
+            candidates.extend(str(option.get("label") or "") for option in control.get("options", [])
+                              if str(option.get("value", "")) == value and not option.get("disabled"))
+        return any(re.fullmatch(r"(?:age\s*:?\s*)?\d{1,2}(?:\s*(?:years?|yrs?)(?:\s*old)?)?",
+                                candidate.strip(), re.I) for candidate in candidates)
+
+    def ages_still_confirmed(self, observation):
+        seen = {}
+        for control in self.age_fields(observation):
+            key = self.manual_age_key(control, observation)
+            seen[key] = seen.get(key, 0) + 1
+            if not self.age_value_available(control):
+                return False
+            if self.manual_age_values.get(key, 0) >= seen[key]:
+                continue
+            allowed = set(self.task.allowed_age_values(control, observation))
+            values = [str(control.get("value", "")), str(control.get("selected_label") or "")]
+            values.extend(str(option.get("label") or "") for option in control.get("options", [])
+                          if str(option.get("value", "")) == str(control.get("value", "")))
+            matches = [re.fullmatch(r"(?:age\s*:?\s*)?(\d{1,2})(?:\s*(?:years?|yrs?)(?:\s*old)?)?",
+                                    value.strip(), re.I) for value in values]
+            if not any(match and str(int(match[1])) in allowed for match in matches):
+                return False
+        return True
+
+    def age_fields(self, observation):
+        children = str((self.task.requirements.get("children") or {}).get("expected", "0"))
+        has_children = children.isdigit() and int(children) > 0
+        return [control for frame in observation.get("frames", []) for control in frame.get("controls", [])
+                if (control.get("tag") in {"INPUT", "SELECT", "TEXTAREA"}
+                    or control.get("role") in {"combobox", "textbox", "spinbutton"})
+                and age_control(control) and control.get("enabled", True)
+                and (has_children or control.get("required") or control.get("invalid")
+                     or control.get("value_missing"))]
+
+    def occupancy_inspection(self, observation):
+        """Revalidate reopened rows against the summary observed after Update."""
+        diagnostic = self.occupancy_inspection_diagnostic
+        if not diagnostic:
+            return None
+        return self.task.confirm_occupancy_inspection(observation, diagnostic)
+
+    def occupancy_reopen(self, diagnostic):
+        """Read committed counters at most twice per observed summary per Resume."""
+        key = json.dumps([
+            diagnostic.get("document_id"),
+            {key: diagnostic.get("opener", {}).get(key) for key in ("frame", "form_scope", "label")},
+            diagnostic.get("observed_counts"), diagnostic.get("observed_total_guests"),
+        ], sort_keys=True)
+        attempts = self.occupancy_recheck_attempts.get(key, 0)
+        if attempts >= 2:
+            return {"decision": BrowserDecision(
+                action="pause", control_id=None, value="",
+                explanation="Guest-count verification did not complete after reading the website. Review the separate counts and technical evidence before resuming.",
+                evidence="Reopening the same committed guest summary did not confirm all requested counts.",
+            ).model_dump(), "decision_origin": "runtime"}
+        self.occupancy_recheck_attempts[key] = attempts + 1
+        self.occupancy_inspection_diagnostic = copy.deepcopy(diagnostic)
+        return {"decision": BrowserDecision(
+            action="click", control_id=diagnostic["opener"]["control_id"], value="", purpose="other",
+            explanation="Read the separate adults, children and rooms after Update.",
+            evidence="The closed summary does not independently confirm every requested guest count.",
+        ).model_dump(), "decision_origin": "runtime"}
+
+    def occupancy_confirmation(self, observation):
+        """Use the same completion action as the model's focused widget view."""
+        completion = occupancy_widget_action(observation, self.task.snapshot())
+        if not completion or not self.ages_still_confirmed(observation):
+            return None
+        target = next((item for frame in observation.get("frames", []) for item in frame.get("controls", [])
+                       if item.get("id") == completion["control_id"]), None)
+        return {**target, "completion": completion} if target else None
+
+    def local_occupancy_action(self, observation):
+        """Reuse grounded guest counts and unique observed controls, not a new plan."""
+        if not self.task.requested_stay or self.task.submission or self.task.pending_submission:
+            return None
+        checks = {item["field"]: item for item in self.task.checks}
+        if any(checks.get(field, {}).get("status") != "verified"
+               for field in ("destination", "check_in", "check_out")):
+            return None
+        items = [item for frame in observation.get("frames", []) for item in frame.get("controls", [])]
+        if any(item.get("date_kind") == "day_choice" or item.get("date_kind") == "opener"
+               and item.get("expanded") == "true" for item in items):
+            return None
+        pending = [checks[field] for field in ("adults", "rooms", "children") if field in checks
+                   and checks[field].get("status") != "verified"
+                   and str(checks[field].get("expected", "")).isdigit()]
+        document = observation.get("document_id", observation.get("url"))
+        for check in pending:
+            if check.get("next_action") != "set_counter":
+                continue
+            candidates = []
+            for option in check.get("counter_controls", []):
+                facts = self.tools.references.get(option.get("control_id"), (None, None, {}))[2]
+                counter = facts.get("counter") or {}
+                current = counter.get("value")
+                if (not option.get("enabled", True) or not facts.get("enabled", True)
+                        or age_control(facts) or self.task.counter_field(facts) != check["field"]
+                        or not isinstance(current, int) or isinstance(current, bool)
+                        or str(current) != str(check.get("observed")) or current == int(check["expected"])):
+                    continue
+                direction = "increase" if current < int(check["expected"]) else "decrease"
+                if counter.get("direction") in {direction, "both"}:
+                    candidates.append((option["control_id"], facts, current))
+            if len(candidates) != 1:
+                continue
+            control_id, facts, current = candidates[0]
+            attempt = (document, check["field"], json.dumps(identity(facts), sort_keys=True),
+                       facts.get("form_scope"), current, str(check["expected"]))
+            if attempt in self.local_occupancy_attempts:
+                continue
+            proposed = BrowserDecision(action="set_counter", control_id=control_id, value=str(check["expected"]),
+                purpose="set_field", explanation="Set the visible guest counter to its requested total.",
+                evidence="The request supplies this quantity and one fresh matching counter actuator is available.")
+            try:
+                resolved, _ = resolve_counter_decision(proposed, self.task, self.tools.references)
+            except WebsiteError:
+                continue  # Ambiguous/native widgets retain the model's existing fallback.
+            self.local_occupancy_attempts.add(attempt)
+            return resolved
+        if not pending or foreground_form_widget(observation) or any(item.get("counter") for item in items):
+            return None
+        openers = self.age_panel_openers(observation)
+        if len(openers) != 1:
+            return None
+        opener = openers[0]
+        attempt = (document, "open_guests", json.dumps(identity(opener), sort_keys=True),
+                   tuple((check["field"], str(check["expected"])) for check in pending))
+        if attempt in self.local_occupancy_attempts:
+            return None
+        self.local_occupancy_attempts.add(attempt)
+        return BrowserDecision(action="click", control_id=opener["id"], value="", purpose="set_field",
+            explanation="Open the observed guest widget to set the requested counts.",
+            evidence="The destination and dates are verified; requested guest quantities remain pending.")
+
+    def age_panel_openers(self, observation):
+        """Identify an observed occupancy summary, never an invented selector."""
+        result = []
+        for frame in observation.get("frames", []):
+            for control in frame.get("controls", []):
+                label = str(control.get("label", ""))
+                components = set(occupancy_components(label))
+                popup = control.get("expanded") == "false" or control.get("haspopup") in {
+                    "true", "dialog", "listbox", "menu", "grid"
+                }
+                summary = len(re.findall(r"\b\d+\s+(?:adults?|children|child|kids?|rooms?)\b", label, re.I)) >= 2
+                child_summary = (
+                    "children" in components and bool(components & {"adults", "rooms"})
+                    and (popup or summary)
+                )
+                # A closed occupancy panel can summarize total guests instead of children.
+                rooms_and_guests = "rooms" in components and bool(re.search(r"\bguests?\b", label, re.I))
+                guest_summary = rooms_and_guests and (popup or all(re.search(
+                        rf"\b(?:\d+\s+{quantity}|{quantity}\s*(?:[:=]|\bis\b)?\s*\d+)\b", label, re.I
+                    ) for quantity in (r"rooms?", r"guests?")))
+                if (not (control.get("tag") == "BUTTON" or control.get("role") == "button")
+                    or not control.get("id") or not control.get("enabled", True) or control.get("counter")
+                    or control.get("expanded") == "true" or not (child_summary or guest_summary)
+                    or re.search(r"\b(?:search|find|availability|reserve|book|add|remove|increase|decrease)\b", label, re.I)):
+                    continue
+                proposed = BrowserDecision(action="click", control_id=control["id"], value="",
+                                           explanation="Read the entered ages.", evidence="Observed guest summary.")
+                if not self.task.is_submit(proposed, control):
+                    result.append(control)
+        return result
 
     def capture_failed(self, error, entry):
         """Stop once on source capture failure; no model-funded retry loop."""
@@ -2115,6 +2814,33 @@ class BrowserAgent:
 
     def run(self):
         self.started = time.monotonic()
+        resuming = self.report.get("status") == "paused"
+        if resuming:
+            # The user may have changed the page while paused. Rebuild transient
+            # navigation/readback state; keep paid budgets and real submit guards.
+            self.occupancy_inspection_diagnostic = None
+            self.pending_autocomplete = None
+            self.pending_effect = None
+            self.unsubmitted_transition_watch = None
+            self.pending_results_refresh = False
+            self.seen_actions.clear()
+            self.calendar_navigation_attempts.clear()
+            self.calendar_close_attempts.clear()
+            self.local_fill_attempts.clear()
+            self.local_occupancy_attempts.clear()
+            self.task.result_refresh = None
+            self.task.last_validation_rejection = None
+            self.task.calendar_resume_requested = True
+        requested_confirmation = self.awaiting_age_confirmation and bool(self.report.get("awaiting_user_input"))
+        if requested_confirmation:
+            previous = self.last_observation or {}
+            self.manual_resume_document = previous.get("document_id", previous.get("url"))
+        self.confirm_ages_on_resume = self.confirm_ages_on_resume or requested_confirmation
+        self.manual_age_reopen_attempted = False
+        self.manual_age_recheck_waited = False
+        self.occupancy_recheck_attempts = {}
+        self.awaiting_age_confirmation = False
+        self.report.pop("awaiting_user_input", None)
         self.failure = None
         self.observation_refresh_streak = 0
         self.finish_rejections = 0
@@ -2128,13 +2854,20 @@ class BrowserAgent:
                 return {"status": "paused"}
             observation = self.observe_browser()
             wait = getattr(self.tools, "wait_for_results", None)
+            refresh = self.pending_results_refresh or resuming and observation.get("results", {}).get("busy") is True
+            self.pending_results_refresh = False
+            if refresh:
+                # Preserve a busy observation before waiting for a JS Update.
+                self.task.observe(observation)
             if wait and (
                 self.task.pending_submission
                 and self.task.pending_submission.get("dispatch_status") != "not_dispatched"
                 or self.task.submission and not rendered_results_ready(observation)
+                or refresh
             ):
                 self.publish(
-                    "verifying", "Waiting for the attempted Search; it will not be repeated."
+                    "verifying", "Waiting for updated hotel results."
+                    if refresh else "Waiting for the attempted Search; it will not be repeated."
                 )
                 observation = self.observe_browser(
                     "result_wait",
@@ -2154,9 +2887,28 @@ class BrowserAgent:
             self.last_observation = copy.deepcopy(observation)
             self.task.note_sources(self.tools.pages)
             self.task.observe(observation)
+            if self.confirm_ages_on_resume:
+                document = observation.get("document_id", observation.get("url"))
+                if self.manual_resume_document and document != self.manual_resume_document:
+                    # Update may change a SPA's query URL. Explicit Resume
+                    # authorizes a fresh read here, never copying old ages.
+                    self.manual_resume_document = document
+                age_fields = self.age_fields(observation)
+                confirmed = {}
+                for field in age_fields:
+                    if self.age_value_available(field):
+                        key = self.manual_age_key(field, observation)
+                        confirmed[key] = confirmed.get(key, 0) + 1
+                self.manual_age_values.update(confirmed)
+                # Done may unmount the fields. Absence is not a failed read-back
+                # and must not consume the user's explicit Resume confirmation.
+                if age_fields:
+                    self.confirm_ages_on_resume = False
             if self.pending_effect:
                 before, index = self.pending_effect
-                self.last_transition = transition(before, observation)
+                self.last_transition = (category_navigation_transition(before, observation)
+                                        if self.history[index].get("category_navigation")
+                                        else transition(before, observation))
                 if self.last_transition["status"] == "change_observed":
                     self.observation_refresh_streak = 0
                 if (
@@ -2209,6 +2961,130 @@ class BrowserAgent:
             self.phase = "decide"
             self.guard()
             observation = state["observation"]
+            if self.confirm_ages_on_resume:
+                openers = self.age_panel_openers(observation)
+                if len(openers) == 1 and not self.manual_age_reopen_attempted:
+                    self.manual_age_reopen_attempted = True
+                    self.occupancy_inspection_diagnostic = self.task.occupancy_recheck(
+                        observation, include_verified=True
+                    )
+                    return {"decision": BrowserDecision(
+                        action="click", control_id=openers[0]["id"], value="", purpose="other",
+                        explanation="Reopen the guest panel to read the ages you entered.",
+                        evidence="The guest panel is closed, so its age fields are not visible.",
+                    ).model_dump(), "decision_origin": "runtime"}
+                if self.manual_age_reopen_attempted and not self.manual_age_recheck_waited:
+                    self.manual_age_recheck_waited = True
+                    return {"decision": BrowserDecision(
+                        action="wait", control_id=None, value="", purpose="other",
+                        explanation="Wait once for the reopened age fields to render.",
+                        evidence="The guest panel was opened; its age fields need a fresh read.",
+                    ).model_dump(), "decision_origin": "runtime"}
+                return {"decision": BrowserDecision(
+                    action="pause", control_id=None, value="manual_age", pause_reason="user_input",
+                    explanation="Open the guest panel in the website, then press Resume so the entered child ages can be read.",
+                    evidence="The required age fields are not currently visible for confirmation.",
+                ).model_dump(), "decision_origin": "runtime"}
+            seen_ages = {}
+            if not (self.task.pending_submission or self.task.submission or self.task.collection_search):
+                for control in self.age_fields(observation):
+                    key = self.manual_age_key(control, observation)
+                    seen_ages[key] = seen_ages.get(key, 0) + 1
+                    confirmed = self.manual_age_values.get(key, 0) >= seen_ages[key]
+                    if not confirmed and not self.task.allowed_age_values(control, observation):
+                        return {"decision": BrowserDecision(
+                            action="pause", control_id=None, value="manual_age", pause_reason="user_input",
+                            explanation="Please enter or confirm all child ages in the website, then press Resume. No age will be chosen automatically.",
+                            evidence="A required age field has no unambiguous user-provided value.",
+                        ).model_dump(), "decision_origin": "runtime"}
+            manual_ages_confirmed = bool(seen_ages) and all(
+                self.manual_age_values.get(key, 0) >= count for key, count in seen_ages.items()
+            )
+            if self.task.adopt_matching_results(
+                observation, ages_confirmed=manual_ages_confirmed,
+                post_commit_inspection=self.occupancy_inspection(observation),
+            ):
+                self.task.observe(observation)
+                self.publish("verifying", "Matching stay results are already visible. Collecting their source evidence without another Search.")
+            if not (self.task.submission or self.task.pending_submission):
+                completed_calendar = calendar_completion(observation, self.task.snapshot())
+                if completed_calendar and completed_calendar.get("next_action"):
+                    for action in completed_calendar["close_actions"]:
+                        facts = self.tools.references.get(action["control_id"], (None, None, {}))[2]
+                        attempt = (observation.get("document_id", observation.get("url")),
+                                   completed_calendar["frame"], completed_calendar["widget_id"],
+                                   tuple((check["field"], check["expected"]) for check in self.task.checks
+                                         if check["field"] in {"check_in", "check_out"}),
+                                   action["action"], action["value"], json.dumps(identity(facts), sort_keys=True))
+                        if attempt in self.calendar_close_attempts:
+                            continue
+                        self.calendar_close_attempts.add(attempt)
+                        return {"decision": BrowserDecision(
+                            **action, purpose="set_field",
+                            explanation="Commit or close the selected draft dates once, then read the full stay summary.",
+                            evidence="Fresh calendar progress identifies both requested selections or verified dates.",
+                        ).model_dump(), "decision_origin": "runtime"}
+                    return {"decision": BrowserDecision(
+                        action="pause", control_id=None, value="", pause_reason="blocked",
+                        explanation="The calendar did not close after its observed controls were used. Inspect it before resuming.",
+                        evidence="The same verified/draft date pair and open widget remain; no close input will be repeated.",
+                    ).model_dump(), "decision_origin": "runtime"}
+                month_navigation = calendar_navigation(observation, self.task.snapshot())
+                if month_navigation:
+                    key = (observation.get("page_id") or observation.get("document_id"),
+                           *month_navigation["visible_months"], *month_navigation["fields"])
+                    if key in self.calendar_navigation_attempts:
+                        return {"decision": BrowserDecision(
+                            action="pause", control_id=None, value="",
+                            explanation="The calendar month did not change after its arrow was used. Inspect the calendar before resuming.",
+                            evidence=month_navigation["hint"],
+                        ).model_dump(), "decision_origin": "runtime"}
+                    self.calendar_navigation_attempts.add(key)
+                    return {"decision": BrowserDecision(
+                        **month_navigation["next_action"], purpose="set_field",
+                        explanation=month_navigation["hint"],
+                        evidence="The requested month is outside the observed calendar window; one scoped arrow is available.",
+                    ).model_dump(), "decision_origin": "runtime"}
+                confirm = self.occupancy_confirmation(observation)
+                if confirm:
+                    return {"decision": BrowserDecision(
+                        **confirm["completion"], purpose="set_field",
+                        explanation="Close the completed guest widget, then read the applied stay and hotel results.",
+                        evidence="Requested guest values match and no required widget value is missing.",
+                    ).model_dump(), "decision_origin": "runtime"}
+                if rendered_results_ready(observation):
+                    diagnostic = self.task.occupancy_recheck(observation)
+                    if diagnostic:
+                        return self.occupancy_reopen(diagnostic)
+                core = {check["field"]: check for check in self.task.checks
+                        if check["field"] in {"destination", "check_in", "check_out"}}
+                next_field = (self.task.calendar_progress or {}).get("next_field")
+                pending_date = core.get(next_field) if next_field else next((core[field] for field in ("check_in", "check_out")
+                                     if field in core and core[field]["status"] != "verified"), None)
+                if pending_date and pending_date["status"] == "verified":
+                    pending_date = None
+                if (self.task.calendar_progress or {}).get("status") == "awaiting_commit":
+                    pending_date = None
+                if pending_date and (core.get("destination", {}).get("status") == "verified" or self.task.calendar_progress):
+                    choices = [item for item in self.task.visible_date_choices if item["field"] == pending_date["field"]]
+                    target = choices[0]["control_id"] if len(choices) == 1 else None
+                    if (not target and not foreground_form_widget(observation)
+                            and not any(item.get("date_kind") == "day_choice" and item.get("date_widget_id")
+                                        for frame in observation.get("frames", []) for item in frame.get("controls", []))):
+                        openers = [item for frame in observation.get("frames", []) for item in frame.get("controls", [])
+                                   if item.get("date_kind") in {"opener", "date_opener"}
+                                   and item.get("date_endpoint") == pending_date["field"]
+                                   and item.get("enabled", True) is not False and item.get("expanded") != "true"]
+                        target = openers[0]["id"] if len(openers) == 1 else None
+                    if target:
+                        return {"decision": BrowserDecision(
+                            action="click", control_id=target, value="", purpose="set_field",
+                            explanation="Set the requested stay date before reopening guest counts for readback.",
+                            evidence="One fresh requested day or its endpoint opener is uniquely visible.",
+                        ).model_dump(), "decision_origin": "runtime"}
+                occupancy = self.local_occupancy_action(observation)
+                if occupancy:
+                    return {"decision": occupancy.model_dump(), "decision_origin": "runtime"}
             if (
                 len(self.tools.pages) >= MAX_PAGES and not self.task.pending_submission
                 and not self.task.completion_problem()
@@ -2231,6 +3107,7 @@ class BrowserAgent:
                 and not self.task.pending_submission
                 and not foreground_form_widget(observation)
                 and not self.task.visible_date_choices
+                and (not self.task.requested_stay or self.task.has_stay_form(observation))
             ):
                 for check in self.task.checks:
                     if check.get("next_action") != "fill":
@@ -2277,7 +3154,9 @@ class BrowserAgent:
                     or "Search is awaiting a response; do not resubmit."
                 )
             if local_search:
-                candidates = self.task.submission_candidates
+                calendar_open = any(control.get("date_kind") == "day_choice" and control.get("date_widget_id")
+                                    for frame in observation.get("frames", []) for control in frame.get("controls", []))
+                candidates = [] if self.task.submission or calendar_open or foreground_form_widget(observation) else self.task.submission_candidates
                 document = observation.get("document_id", observation.get("url"))
                 if len(candidates) == 1:
                     target = candidates[0]
@@ -2320,6 +3199,37 @@ class BrowserAgent:
                             "Search responded, but rendered listings are not ready. Inspect the "
                             "page and resume when loaded; Search will not be repeated."
                         )
+            # Once a current-page request has retained actual record evidence,
+            # choosing Capture again or a prohibited section link adds no data.
+            # Use the ordinary finish path so extraction/coverage checks still
+            # run, including any later batched collection. A capture from an
+            # earlier document, or a stay/detail-search task, cannot use this.
+            if (
+                self.task.collection_mode == "current_page"
+                and getattr(self.tools, "article_records", False)
+                and self.task.collection_goal
+                and not self.task.requested_stay
+                and not self.task.completion_problem()
+                and not observation.get("results", {}).get("busy")
+                and self.current_page_capture == (
+                    observation.get("document_id"), clean_url(observation["url"])
+                )
+                and any(
+                    page.get("source_kind", "page") == "page"
+                    and clean_url(page["url"]) == clean_url(observation["url"])
+                    and any(
+                        block.get("association") == "record" and block.get("group_id")
+                        and block.get("kind") in {"heading", "link"} and block.get("href")
+                        for block in page.get("blocks", [])
+                    )
+                    for page in self.tools.pages
+                )
+            ):
+                return {"decision": BrowserDecision(
+                    action="finish", control_id=None, value="page", purpose="collect",
+                    explanation="Pass the captured starting-page records to extraction without another navigation decision.",
+                    evidence="The same observed document has retained record headings and their source links.",
+                ).model_dump(), "decision_origin": "runtime"}
             if self.calls >= self.max_calls:
                 raise WebsiteError(
                     "Browser agent model-call limit reached. No further paid navigation calls."
@@ -2472,6 +3382,7 @@ class BrowserAgent:
                 "source_url": state["observation"]["url"],
                 "expected_change": decision.expected_change,
                 "decision_origin": state.get("decision_origin", "model"),
+                "manual_age_confirmation": decision.action == "pause" and decision.value == "manual_age",
             }
             if entry["decision_origin"] == "runtime":
                 self.runtime_actions += 1
@@ -2486,7 +3397,12 @@ class BrowserAgent:
                 if information_notes:
                     entry["information_need_notes"] = information_notes[:3]
                 declaration_stage = "form_requirements"
-                self.task.declare(decision.requirements, state["observation"])
+                ignored_requirements = self.task.declare(decision.requirements, state["observation"])
+                if ignored_requirements:
+                    entry["ignored_form_requirements"] = ignored_requirements
+            except MissingFormValue as exc:
+                entry["missing_requirement"] = {"field": exc.field, "label": exc.label}
+                return self.await_user_input(entry, str(exc), [exc.label])
             except WebsiteError as exc:
                 self.requirement_rejections += 1
                 self.history.append(
@@ -2507,16 +3423,13 @@ class BrowserAgent:
                 return {"status": "running"}
             self.requirement_rejections = 0
             self.task.observe(state["observation"])
-            if (
-                decision.action == "capture"
-                and self.task.collection_mode == "linked_details"
-                and decision.value in {"", "page"}
-                and not any(page.get("source_kind") == "index" for page in self.tools.pages)
+            if decision.action in {"capture", "finish"} and not (
+                decision.action == "finish" and decision.value == "retained_sources"
+                and entry["decision_origin"] == "runtime"
             ):
-                # The first retained source is the actual current index, not a
-                # fabricated detail page. This also reclassifies an already
-                # retained page without another capture/network/model call.
-                decision = decision.model_copy(update={"value": "index"})
+                role = self.capture_role(decision.value, state["observation"]["url"])
+                entry["capture_role"] = {"requested": decision.value or "page", "resolved": role}
+                decision = decision.model_copy(update={"value": role})
             if decision.action == "fill" and entry["decision_origin"] == "runtime":
                 previous = self.tools.references.get(decision.control_id, (None, None, {}))[2]
                 fresh = self.observe_browser()
@@ -2569,10 +3482,13 @@ class BrowserAgent:
                 fresh = self.observe_browser()
                 self.guard()
                 self.task.observe(fresh)
+                provenance = (self.task.submission or {}).get("submission_provenance") or {}
+                inspected = provenance.get("evidence_method") == "post_commit_readback"
                 if (
                     any(f.get("password_or_code_visible") for f in fresh.get("frames", []))
                     or self.task.completion_problem()
                     or not rendered_results_ready(fresh)
+                    or inspected and (not self.occupancy_inspection(fresh) or not self.ages_still_confirmed(fresh))
                 ):
                     self.history.append({**entry, "status": "handoff_unconfirmed"})
                     self.publish(
@@ -2582,10 +3498,12 @@ class BrowserAgent:
                 state = {**state, "observation": fresh}
             if decision.action in {"pause", "finish"}:
                 if decision.action == "pause":
+                    if decision.pause_reason == "user_input":
+                        return self.await_user_input(entry, decision.explanation)
                     self.history.append(
                         {
                             **entry,
-                            "status": "user_input_required",
+                            "status": "paused" if decision.pause_reason == "none" else "user_input_required",
                             "pause_reason": decision.pause_reason,
                         }
                     )
@@ -2633,7 +3551,7 @@ class BrowserAgent:
                         self.history.append({**entry, "status": "verified_empty_search_results"})
                         self.publish(
                             "ready",
-                            "Search completed with an observed empty result. "
+                            "The verified result page is empty. "
                             "No source records are claimed and no extraction is needed.",
                         )
                         return {"status": "ready"}
@@ -2644,7 +3562,7 @@ class BrowserAgent:
                     self.timed(
                         "capture",
                         self.tools.capture,
-                        decision.value if decision.value in {"detail", "page"} else "page",
+                        decision.value,
                     )
                 except (WebsiteError, PlaywrightError) as exc:
                     return self.capture_failed(exc, entry)
@@ -2758,10 +3676,41 @@ class BrowserAgent:
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
+            category_routes = category_navigation_routes(decision, facts, state["observation"])
+            if category_routes:
+                entry["category_navigation"] = True
+                # New document tokens from a reload must not reset this tally.
+                key = hashlib.sha256(json.dumps([category_routes, [
+                    (check["field"], check.get("expected"), check.get("observed"), check["status"])
+                    for check in self.task.checks
+                ]], sort_keys=True).encode()).hexdigest()
+                if category_routes[0] == category_routes[1]:
+                    self.seen_actions[key] = self.seen_actions.get(key, 0) + 1
+                    guidance = "This category is already open. Its link was not clicked again. Use the visible destination, dates and guest controls, then collect the results."
+                    self.history.append({**entry, "status": "navigation_not_needed", "guidance": guidance})
+                    if self.seen_actions[key] >= 2:
+                        self.publish("paused", "The agent repeatedly chose the current category instead of its search controls. No category reload was sent. Inspect the page before resuming.")
+                        return {"status": "paused"}
+                    self.publish("verifying", guidance)
+                    return {"status": "running"}
             submitting = False
             submission_started = False
+            completing_guests = False
             browser_operation = "observe"
             try:
+                normalized_decision = normalize_counter_click(decision, self.task, self.tools.references)
+                if normalized_decision.action != decision.action:
+                    entry["requested_action"] = decision.action
+                    entry["action"] = normalized_decision.action
+                    entry["counter_target"] = normalized_decision.value
+                    entry["counter_action_normalized"] = True
+                    decision = normalized_decision
+                if decision.action == "set_counter":
+                    key = hashlib.sha256(json.dumps([
+                        state["observation"].get("document_id", state["observation"].get("url")),
+                        state_fingerprint(state["observation"]), self.task.counter_field(facts),
+                        decision.value, "absolute_counter_target",
+                    ], sort_keys=True).encode()).hexdigest()
                 scope_problem = self.task.scope_problem(decision, facts)
                 if scope_problem:
                     raise WebsiteError(scope_problem)
@@ -2774,14 +3723,51 @@ class BrowserAgent:
                         "Search is awaiting its response. Wait, inspect or pause; "
                         "do not navigate away, change fields or submit again."
                     )
-                submitting = self.task.is_submit(decision, facts)
+                discovery_search = self.task.discovery_search(decision, facts, state["observation"])
+                discovery_navigation = self.task.discovery_navigation(decision, facts, state["observation"])
+                submitting = self.task.is_submit(decision, facts, state["observation"]) and not discovery_search
+                scope = self.task.result_scope or observed_result_scope(self.task.requested_stay, state["observation"])
+                location_visible = any(field["field"] == "destination" and field["status"] == "verified"
+                                       and "returned_results_heading" in field.get("method", "")
+                                       for field in scope.get("fields", []))
+                query_action = discovery_query_control(facts) and (
+                    decision.action == "fill" or decision.action == "click"
+                    or decision.action == "press" and decision.value != "Escape"
+                    and not (submitting and not discovery_search)
+                )
+                global_search = discovery_search or (
+                    decision.action == "click" and search_opener(facts)
+                )
+                if (location_visible
+                        and self.task.collection_mode in {"listing_results", "linked_details"}
+                        and self.task.has_stay_form(state["observation"]) and (query_action or global_search)):
+                    raise WebsiteError(
+                        "Hotel results for the requested location are already on this page. "
+                        "Use its date/guest controls for any remaining criteria, then collect the cards. "
+                        "The separate destination Search was not repeated."
+                    )
                 entry["submission_semantics"] = {
                     "is_actual_submit": submitting,
+                    "discovery_search_only": discovery_search,
+                    "discovery_navigation": discovery_navigation,
                     "model_purpose_ignored": decision.purpose == "submit_search" and not submitting,
                 }
+                if decision.action == "press" and decision.value == "Enter" and not (submitting or discovery_search):
+                    raise WebsiteError(
+                        "Enter was not sent: this control is not a verified search submission. "
+                        "Apply/close the open stay widget or collect the matching results already on the page. "
+                        "No additional Search value is needed from the user for this rejected key action."
+                    )
                 before_submit = state["observation"]
-                if not submitting and decision.action in {"click", "fill", "select", "press"}:
+                if not submitting and not discovery_navigation and decision.action in {"click", "fill", "select", "press"}:
                     unresolved = self.task.required_form_fields(state["observation"])
+                    guest_completion = occupancy_widget_action(state["observation"], self.task.snapshot())
+                    if guest_completion and all(getattr(decision, key) == guest_completion[key]
+                                                for key in ("action", "control_id", "value")):
+                        completing_guests = True
+                        entry["guest_widget_completion"] = guest_completion["action"]
+                        unresolved = [field for field in unresolved if not discovery_query_control(
+                            self.tools.references.get(field["control_id"], (None, None, {}))[2])]
                     active_scopes = {
                         self.tools.references.get(field["control_id"], (None, None, {}))[2].get("widget_scope")
                         for field in unresolved
@@ -2795,17 +3781,15 @@ class BrowserAgent:
                     closing = (
                         decision.action == "press" and decision.value == "Escape"
                         or decision.action == "click" and re.fullmatch(
-                            r"done|apply|close", str(facts.get("label") or ""), re.I
+                            r"done|apply|update|confirm|ok|close", str(facts.get("label") or ""), re.I
                         )
                     )
                     if active_scopes and decision.control_id not in owned_choices and (
                         closing or facts.get("widget_scope") not in active_scopes
                     ):
                         guidance = self.task.required_form_problem(state["observation"])
-                        self.history.append({**entry, "status": "required_fields_pending",
-                                             "guidance": guidance})
-                        self.publish("paused", guidance)
-                        return {"status": "paused"}
+                        return self.await_user_input(entry, guidance,
+                                                     [field["label"] for field in unresolved])
                 if submitting:
                     if self.task.pending_submission:
                         raise WebsiteError(
@@ -2838,12 +3822,20 @@ class BrowserAgent:
                     if any(f.get("password_or_code_visible") for f in fresh.get("frames", [])):
                         raise WebsiteError("Finish sign-in/MFA before submitting Search.")
                     self.task.observe(fresh)
+                    if self.task.adopt_matching_results(
+                        fresh, ages_confirmed=self.ages_still_confirmed(fresh),
+                        post_commit_inspection=self.occupancy_inspection(fresh),
+                    ):
+                        self.history.append({**entry, "status": "search_not_needed",
+                                             "input_dispatched": False,
+                                             "note": "Live results became ready before Search; no Search input was sent."})
+                        self.publish("verifying", "The website updated its results automatically. Collecting them without Search.")
+                        return {"status": "running"}
                     form_problem = self.task.required_form_problem(fresh, latest)
                     if form_problem:
-                        self.history.append({**entry, "status": "required_fields_pending",
-                                             "guidance": form_problem})
-                        self.publish("paused", form_problem)
-                        return {"status": "paused"}
+                        form_fields = self.task.required_form_fields(fresh, latest)
+                        return self.await_user_input(entry, form_problem,
+                                                     [field["label"] for field in form_fields])
                     if entry["decision_origin"] == "runtime" and (
                         len(self.task.submission_candidates) != 1
                         or self.task.submission_candidates[0]["control_id"] != decision.control_id
@@ -2873,6 +3865,10 @@ class BrowserAgent:
                     )
                 if (
                     not submitting
+                    and not discovery_search
+                    and not discovery_navigation
+                    and not widget_control(facts)
+                    and (not self.task.requested_stay or self.task.has_stay_form(state["observation"]))
                     and self.task.pending()
                     and decision.action in {"fill", "click", "press", "select"}
                     and (decision.action in {"fill", "press"} or decision.purpose != "navigate")
@@ -2951,6 +3947,9 @@ class BrowserAgent:
                             )
                             + " before advancing the calendar."
                         )
+                value_problem = self.task.action_value_problem(facts, decision, state["observation"], structured=True)
+                if value_problem:
+                    return self.await_user_input(entry, str(value_problem), [value_problem.label])
                 self.seen_actions[key] = self.seen_actions.get(key, 0) + 1
                 if self.seen_actions[key] > 2:
                     guidance = (
@@ -2959,6 +3958,25 @@ class BrowserAgent:
                     )
                     self.publish("paused", guidance)
                     return {"status": "paused"}
+                verified_dates = {check["field"]: check["expected"] for check in self.task.checks
+                                  if check["field"] in {"check_in", "check_out"} and check["status"] == "verified"}
+                if (decision.action == "click" and facts.get("date_kind") == "day_choice"
+                        and len(verified_dates) == 2 and facts.get("date") in verified_dates.values()):
+                    self.history.append({**entry, "status": "already_selected", "input_dispatched": False,
+                        "guidance": "The observed date range already matches. No day was clicked; close the calendar and continue."})
+                    self.publish("verifying", "Requested dates already match. Closing the calendar is the next step.")
+                    return {"status": "running"}
+                calendar_problem = self.task.calendar_action_problem(facts, decision, state["observation"])
+                if calendar_problem:
+                    self.history.append({**entry, "status": "date_confirmation_pending", "input_dispatched": False,
+                                         "guidance": calendar_problem})
+                    self.publish("paused", calendar_problem)
+                    return {"status": "paused"}
+                if (decision.action == "click" and facts.get("date_kind") == "day_choice"
+                        and self.task.calendar_reselection_required(facts, state["observation"])):
+                    reference = self.tools.references[decision.control_id]
+                    facts = {**facts, "calendar_selection_required": True}
+                    self.tools.references[decision.control_id] = (reference[0], reference[1], facts)
                 if decision.action == "fill":
                     same_value = isinstance(facts.get("value"), str) and (
                         facts["value"] == decision.value
@@ -3011,7 +4029,28 @@ class BrowserAgent:
                     self.publish(
                         "acting", "Attempting the verified Search once; its response is unconfirmed."
                     )
+                inspection_opening = (
+                    entry["decision_origin"] == "runtime" and decision.action == "click"
+                    and self.occupancy_inspection_diagnostic
+                    and decision.control_id == self.occupancy_inspection_diagnostic["opener"]["control_id"]
+                )
+                if not inspection_opening and decision.action not in {"wait", "inspect", "scroll"}:
+                    # Any edit or navigation ends the read-only inspection.
+                    # A new closed summary must be observed after the next Update.
+                    self.occupancy_inspection_diagnostic = None
                 outcome = self.timed("action", self.tools.execute, decision)
+                if decision.action == "capture" and outcome.get("status") == "captured":
+                    document = state["observation"].get("document_id")
+                    self.current_page_capture = (
+                        (document, clean_url(state["observation"]["url"])) if document else None
+                    )
+                if inspection_opening and outcome.get("dispatched") is False and outcome.get("control_preflight"):
+                    self.history.append({**entry, **outcome})
+                    reason = outcome["control_preflight"].get("reason", "control_changed")
+                    self.publish("paused", "The guest control could not be opened before input ("
+                                 + str(reason) + "). Open the guest panel in the website and Resume; "
+                                 "no click was sent and no Search value is needed.")
+                    return {"status": "paused"}
                 if submitting and outcome.get("status") == "validation_blocked":
                     after = self.observe_browser("submit_validation")
                     if self.task.reject_pending_submission(after, outcome):
@@ -3057,6 +4096,26 @@ class BrowserAgent:
                     self.task.submission = None
                     self.task.pending_submission = None
                 self.task.remember_action(facts, outcome, decision, state["observation"])
+                if decision.action == "set_counter" and outcome.get("counter_rejection"):
+                    self.counter_diagnostics = {
+                        **(self.counter_diagnostics or {}),
+                        "counter_rejection": copy.deepcopy(outcome["counter_rejection"]),
+                        **{name: outcome[name] for name in ("before", "expected", "observed", "attempts", "dispatched")
+                           if name in outcome},
+                    }
+                    guidance = outcome.get("guidance") or outcome.get("note") or "The counter request was rejected before input. Inspect its limits and controls before resuming."
+                    self.history.append({**entry, **outcome, "guidance": guidance})
+                    self.publish("paused", guidance)
+                    return {"status": "paused"}
+                checkout = self.task.requirements.get("check_out") or {}
+                final_date = (decision.action in {"click", "check"} and checkout.get("expected")
+                              and facts.get("date_kind") == "day_choice"
+                              and facts.get("date") == checkout["expected"])
+                if (not submitting and outcome.get("status") in {"action_performed", "value_verified"}
+                        and (completing_guests or final_date or decision.action == "click" and self.task.result_refresh
+                             and any(re.fullmatch(r"update|apply|done|confirm|ok", str(facts.get(key) or "").strip(), re.I)
+                                     for key in ("label", "text")))):
+                    self.pending_results_refresh = True
                 if submitting and outcome["status"] in {"action_performed", "value_verified"}:
                     browser_operation = "post_submit_observe"
                     after = self.observe_browser(browser_operation)
@@ -3095,6 +4154,21 @@ class BrowserAgent:
             except WebsiteError as exc:
                 if decision.action == "capture":
                     return self.capture_failed(exc, entry)
+                if decision.action == "set_counter" and not submission_started:
+                    if getattr(exc, "code", None) == "unsupported":
+                        guidance = "The website counter executor does not support this operation. Inspect the current count and counter details before resuming; the unchanged request will not be retried automatically."
+                        self.history.append({**entry, "status": "counter_unconfirmed", "guidance": guidance,
+                                             "counter_failure_reason": "executor_unsupported"})
+                        self.counter_diagnostics = {**(self.counter_diagnostics or {}),
+                                                    "counter_failure_reason": "executor_unsupported"}
+                        self.publish("paused", guidance)
+                        return {"status": "paused"}
+                    self.seen_actions[key] = self.seen_actions.get(key, 0) + 1
+                    if self.seen_actions[key] >= 2:
+                        guidance = "The requested counter could not be read or set reliably. Inspect the open guest panel before resuming. " + str(exc)
+                        self.history.append({**entry, "status": "counter_unconfirmed", "guidance": guidance})
+                        self.publish("paused", guidance)
+                        return {"status": "paused"}
                 if submission_started:
                     if browser_operation == "submit_action" and self.task.pending_submission:
                         self.task.pending_submission["dispatch_status"] = "not_dispatched"

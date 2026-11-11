@@ -22,7 +22,7 @@ def source_ui(request):
 
 def test_source_preview_shows_prices_but_cannot_be_saved_or_downloaded(source_ui):
     state = source_ui.evaluate("""async () => {
-      window.fixtureApi=async () => ({job_id:'fixture',kind:'custom-plan',framework:'langgraph',
+      window.fixtureApi=async () => ({browser:null,job:{job_id:'fixture',kind:'custom-plan',framework:'langgraph',
         status:'needs_input',stages:[{stage:'inspect_website'},{stage:'extract_content'},{stage:'review_content'}],
         result:{review_outcome:'constraint_unresolved',guidance:'Nightly basis unavailable',
           columns:[{name:'hotel_name',kind:'text'},{name:'price',kind:'number'},{name:'hotel_url',kind:'text'}],
@@ -30,7 +30,7 @@ def test_source_preview_shows_prices_but_cannot_be_saved_or_downloaded(source_ui
           unverified_preview:[{listing_id:'record-0001',hotel_name:'Harbor House',price:'300',
             hotel_url:'https://example.org/hotel/harbor',source_url:'https://example.org/results',
             evidence:{hotel_name:'Harbor House',price:'US$300 for two nights',hotel_url:'https://example.org/hotel/harbor'}}],
-          unverified_preview_more_available:true}});
+          unverified_preview_more_available:true}}});
       await customSelect('fixture');
       return {savable:canApproveWeb(),reviewHidden:$('web-review').hidden,
         downloadsHidden:$('web-downloads').hidden,count:$('web-count').textContent,

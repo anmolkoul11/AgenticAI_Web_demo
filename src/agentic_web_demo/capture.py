@@ -84,15 +84,15 @@ class ValueContext(BaseModel):
 
 class Block(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: str = Field(pattern=r"^b[0-9]{1,4}$")
+    id: str = Field(pattern=r"^b[0-9]{1,6}$")
     kind: Literal["heading", "paragraph", "table_row", "link", "text"]
     text: str = Field(min_length=1, max_length=6000)
     href: str | None = Field(default=None, max_length=2048)
     # Optional for older extension captures and plain-text sources.
-    group_id: str | None = Field(default=None, pattern=r"^g[0-9]{1,4}$")
+    group_id: str | None = Field(default=None, pattern=r"^g[0-9]{1,6}$")
     association: Literal["record", "page", "ambiguous"] | None = None
     heading_level: int | None = Field(default=None, ge=1, le=6)
-    content_role: Literal["headline", "body", "other", "currency_setting"] | None = None
+    content_role: Literal["headline", "body", "other", "currency_setting", "price_setting"] | None = None
     value_context: ValueContext | None = None
 
     @model_validator(mode="after")
@@ -121,6 +121,12 @@ class Coverage(BaseModel):
         "source-inventory-v5", "source-inventory-v6",
     ]
     scope: Literal["loaded_dom"]
+    price_setting_status: Literal["not_reported", "not_found", "captured", "ambiguous"] = "not_reported"
+    price_settings_detected: int = Field(default=0, ge=0, le=100)
+    record_window: bool = False
+    records_detected: int = Field(default=0, ge=0, le=10000)
+    record_offset: int = Field(default=0, ge=0, le=10000)
+    records_selected: int = Field(default=0, ge=0, le=50)
     page_url_identity_omitted: bool = False
     eligible_text_chars: int = Field(ge=0, le=10_000_000)
     captured_text_chars: int = Field(ge=0, le=24_000)
